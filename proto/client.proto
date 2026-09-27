@@ -1,0 +1,22 @@
+// Стык Rust (bridge) <-> Go (net/gen): решение О-1/О-4 в
+// Архитектура/nuncio - Риски и открытые вопросы.md. Правится вручную,
+// генерируется в net/gen (protoc-gen-go) и в Rust (prost, bridge/build.rs).
+//
+// Пока это заглушка каркаса (веха В0): одна команда и одно событие, только
+// чтобы конвейер генерации был реальным. Настоящие команды (вход, история,
+// отправка и т.д.) добавляются по мере веховой работы (см. План реализации).
+
+syntax = "proto3";
+
+package nuncio.client.v0;
+
+option go_package = "nuncio/net/gen;gen";
+
+// Проверка живости моста (Rust -> Go -> Rust), временная.
+message Ping {
+  string message = 1;
+}
+
+message Pong {
+  string message = 1;
+}

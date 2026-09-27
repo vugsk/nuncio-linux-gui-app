@@ -1,0 +1,18 @@
+[package]
+name = "ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+slint = { version = "1", default-features = false, features = [
+    "std",
+    "backend-winit",
+    "renderer-software",
+    "software-renderer-systemfonts",
+    "compat-1-2",
+] }
+
+[build-dependencies]
+slint-build = "1"

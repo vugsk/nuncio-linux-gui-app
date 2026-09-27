@@ -1,0 +1,55 @@
+# cargo-deny: проверка лицензий Rust-зависимостей (см. Архитектура/nuncio -
+# Сборка и структура репозитория.md, раздел 4). Проект — GPL-3.0-or-later
+# (Св-7а); список разрешённых лицензий взят по факту зависимостей Slint
+# и рабочего окружения на 2026-09-27 (см. память проекта, инвентаризация
+# 422 крейтов). Пополнять по мере появления новых зависимостей (В8 — ещё
+# и ffmpeg-next/ffmpeg-sys-next под WTFPL, cpal под Apache-2.0).
+
+[graph]
+all-features = true
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Unlicense",
+    "BSL-1.0",
+    # Slint: GPL-3.0-only или собственные лицензии Royalty-free/коммерческая.
+    # Проект сам GPL-3.0-or-later (Св-7а), несовместимости нет.
+    "GPL-3.0-only",
+]
+# WTFPL добавить сюда на вехе В8 вместе с ffmpeg-next/ffmpeg-sys-next
+# (см. Архитектура/nuncio - План реализации.md).
+private = { ignore = true }
+
+[[licenses.clarify]]
+name = "slint"
+expression = "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0"
+license-files = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+ignore = [
+    # ttf-parser не обслуживается (RUSTSEC-2026-0192), безопасной замены нет.
+    # Тянется транзитивно через Slint (sctk-adwaita, оформление окна на
+    # Wayland), не через наш код. Проверять при каждом обновлении Slint,
+    # не снимать из ignore без замены версии.
+    "RUSTSEC-2026-0192",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

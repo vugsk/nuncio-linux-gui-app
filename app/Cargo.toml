@@ -1,0 +1,16 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "nuncio"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../ui", version = "0.1.0" }
+domain = { path = "../domain", version = "0.1.0" }
+bridge = { path = "../bridge", version = "0.1.0" }
+slint = { version = "1", default-features = false, features = ["std"] }

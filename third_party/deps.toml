@@ -1,0 +1,57 @@
+# Внешние зависимости, скачиваемые и собираемые `just deps` (шаг 0 из
+# Архитектура/nuncio - Сборка и структура репозитория.md). Исходники не
+# хранятся в репозитории (Св-7в): решение пользователя после поправки
+# размера (OpenSSL 55 МБ, а не 18 — см. память проекта), скачиваются
+# по этому файлу и проверяются по SHA-256.
+#
+# Версии и SHA-256 закреплены здесь как единственный источник правды
+# для fetch_deps.py и для документации (не дублировать числа в другом
+# месте).
+
+[openssl]
+# Р-11: в пакете Arch нет статической libcrypto.a; собираем сами,
+# урезанным набором (проверено в Проверки/nuncio - Проверка П-6 …md
+# и Архитектура/nuncio - Сборка и структура репозитория.md, раздел 4).
+version = "3.6.4"
+url = "https://github.com/openssl/openssl/releases/download/openssl-3.6.4/openssl-3.6.4.tar.gz"
+sha256 = "9bffaa1ad1e07b354c21bd3324ec02fa15579f45a7d0494b3e74bc449b7333ef"
+# Оставлены: RSA, DH (BIGNUM), AES, SHA, HMAC, PBKDF2, RAND.
+configure_args = [
+    "no-shared", "no-dso", "no-apps", "no-docs", "no-tests", "no-module",
+    "no-engine", "no-legacy", "no-quic", "no-tls", "no-dtls", "no-comp",
+    "no-ssl3", "no-srp", "no-cms", "no-ct", "no-ocsp", "no-ts", "no-http",
+    "no-cmp", "no-ui-console", "no-afalgeng", "no-ec", "no-ecdsa", "no-ecdh",
+    "no-dsa", "no-des", "no-bf", "no-cast", "no-rc2", "no-rc4", "no-rc5",
+    "no-camellia", "no-aria", "no-seed", "no-sm2", "no-sm3", "no-sm4",
+    "no-md4", "no-mdc2", "no-whirlpool", "no-rmd160", "no-idea", "no-chacha",
+    "no-poly1305", "no-siphash", "no-scrypt", "no-argon2", "no-blake2",
+    "no-gost", "-fPIC",
+]
+build_target = "build_generated libcrypto.a"
+artifacts = ["libcrypto.a"]
+
+[ffmpeg]
+# Р-15/П-6: видео и звук внутри приложения (Св-2) — только свой
+# минимальный статический FFmpeg (LGPL-2.1+), не системный динамический
+# (тот добавляет +23 МБ PSS и 162 зависимости).
+version = "9.0.1"
+url = "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz"
+sha256 = "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635"
+# Подпись .asc опубликована, но пока не проверена (см. заметку П-6) —
+# сделать до выпуска (раздел 5 Плана реализации).
+configure_args = [
+    "--disable-everything", "--disable-programs", "--disable-doc",
+    "--disable-avdevice", "--disable-avfilter", "--disable-network",
+    "--disable-autodetect", "--enable-static", "--disable-shared",
+    "--enable-pic", "--enable-small", "--enable-swscale", "--enable-swresample",
+    "--enable-decoder=h264,hevc,vp8,vp9,mpeg4,aac,opus,vorbis,mp3,flac,pcm_s16le",
+    "--enable-parser=h264,hevc,vp8,vp9,aac,opus,vorbis,mpegaudio,flac,mpeg4video",
+    "--enable-demuxer=mov,matroska,ogg,mp3,aac,flac,wav",
+    "--enable-protocol=file",
+]
+build_target = ""
+artifacts = [
+    "libavcodec/libavcodec.a", "libavformat/libavformat.a",
+    "libavutil/libavutil.a", "libswscale/libswscale.a",
+    "libswresample/libswresample.a",
+]
