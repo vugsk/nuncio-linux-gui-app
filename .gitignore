@@ -11,6 +11,7 @@
 
 # Артефакты C++ и Go
 /core/build/
+/core/build-*/
 *.o
 *.a
 *.so

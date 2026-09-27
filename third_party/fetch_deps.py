@@ -81,6 +81,12 @@ def build_openssl(dep: dict) -> None:
     for artifact in dep["artifacts"]:
         shutil.copy2(src / artifact, NATIVE / Path(artifact).name)
         print(f"  -> target/native/{Path(artifact).name}")
+    # Заголовки (включая сгенерированные configuration.h и opensslv.h) нужны ядру.
+    headers = NATIVE / "include" / "openssl"
+    if headers.exists():
+        shutil.rmtree(headers)
+    shutil.copytree(src / "include" / "openssl", headers)
+    print("  -> target/native/include/openssl/")
 
 
 def build_ffmpeg(dep: dict) -> None:
