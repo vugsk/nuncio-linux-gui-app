@@ -194,6 +194,16 @@ func FactorizePQ(pq uint64) (p, q uint32, err error) {
 // HasRSAKey — знает ли ядро открытый ключ сервера с таким отпечатком.
 func HasRSAKey(fingerprint uint64) bool { return C.tg_rsa_has_key(C.uint64_t(fingerprint)) == 1 }
 
+// AddRSAKey регистрирует открытый ключ сервера (модуль 256 байт big-endian) и
+// возвращает его отпечаток, вычисленный ядром.
+func AddRSAKey(modulus []byte, e uint32) (uint64, error) {
+	var fp C.uint64_t
+	if err := status(C.tg_rsa_add_key(ptr(modulus), C.size_t(len(modulus)), C.uint32_t(e), &fp)); err != nil {
+		return 0, err
+	}
+	return uint64(fp), nil
+}
+
 // RSAPad шифрует p_q_inner_data (не длиннее 144 байт) по RSA_PAD.
 func RSAPad(data []byte, fingerprint uint64) ([]byte, error) {
 	var out C.tg_buf

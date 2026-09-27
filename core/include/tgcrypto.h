@@ -74,6 +74,11 @@ TG_API tg_status tg_pq_factorize(uint64_t pq, uint32_t *p, uint32_t *q);
 TG_API tg_status tg_rsa_pad_encrypt(const uint8_t *data, size_t len, uint64_t fingerprint, tg_buf *out);
 /* Дополнение В1: известен ли ядру ключ сервера с таким отпечатком (1 — да). */
 TG_API int tg_rsa_has_key(uint64_t fingerprint);
+/* Дополнение В2: зарегистрировать открытый ключ сервера (модуль 2048 бит big-endian,
+ * экспонента). Отпечаток вычисляется ядром (64 младших бита SHA1(TL bytes n + TL bytes e))
+ * и возвращается. Нужен для смены ключей Telegram, ключей тестовых серверов
+ * my.telegram.org и поддельного сервера в тестах сети. Не больше 16 ключей. */
+TG_API tg_status tg_rsa_add_key(const uint8_t *n, size_t nlen, uint32_t e, uint64_t *fingerprint);
 
 typedef struct tg_authgen tg_authgen;
 /* Выводит временные tmp_aes_key/tmp_aes_iv из new_nonce и server_nonce. */

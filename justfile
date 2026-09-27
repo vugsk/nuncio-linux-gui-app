@@ -28,7 +28,7 @@ deps *what:
 openssl:
     [ -f target/native/libcrypto.a ] && [ -f target/native/include/openssl/evp.h ] || python3 third_party/fetch_deps.py openssl
 
-# Шаг 1: генератор TL-кодека (пока читает пустые схемы, см. tools/tlgen).
+# Шаг 1: TL-кодек net/tl из schema/*.tl (замыкание от корней schema/used.txt).
 tl:
     cd tools/tlgen && go run . -schema ../../schema -out ../../net/tl
 
@@ -64,12 +64,17 @@ proto:
 net:
     cd net && go vet ./... && go build -buildmode=c-archive -o ../target/native/libnuncio_net.a ./ffi
 
+# Ручная проверка против настоящего DC Telegram (не входит в test): обмен ключами,
+# ping; с ~/.config/nuncio/api.env ещё help.getConfig. Пример: just nettest -dc 4
+nettest *args: tl core
+    cd net && go run ./cmd/nettest {{args}}
+
 # Проверки качества (раздел 4 заметки о сборке).
 lint:
     cargo clippy --all-targets -- -D warnings
     cargo deny check
-    cd net && go vet ./... && staticcheck ./...
-    cd tools/tlgen && go vet ./... && staticcheck ./...
+    cd net && test -z "$(gofmt -l .)" && go vet ./... && staticcheck ./...
+    cd tools/tlgen && test -z "$(gofmt -l .)" && go vet ./... && staticcheck ./...
     cd core && clang-tidy -p build src/*.cpp tests/*.cpp
 
 clean:

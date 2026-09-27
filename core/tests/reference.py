@@ -384,6 +384,31 @@ def main():
         got = core("obfs", transport, dc, secret, bytes(ir), payload)
         check(got == f"{final.hex()} {enc_payload.hex() or '-'}", f"obfs #{i}")
 
+    # Официальный пример обмена ключами (core.telegram.org/mtproto/samples-auth_key):
+    # побайтовое совпадение с опубликованными значениями.
+    import json
+    ex = json.load(open(os.path.join(os.path.dirname(__file__), "data", "auth_key_sample.json")))
+    H = bytes.fromhex
+    nn = H(ex["new_nonce"])
+    answer = H(ex["answer"])
+    # server_DH_inner_data: id, nonce, server_nonce, g, dh_prime (bytes 256), g_a (bytes 256), server_time
+    sn = answer[20:36]
+    g_ex = int.from_bytes(answer[36:40], "little")
+    dh_prime_ex = answer[44:300]
+    g_a_ex = answer[304:560]
+    check(dh_prime_ex == DH_PRIME and g_ex == 3, "пример: dh_prime и g = 3")
+    check(core("tmp_key", nn, sn) == f"{ex['tmp_aes_key'].lower()} {ex['tmp_aes_iv'].lower()}", "пример: tmp_aes_key/iv")
+    # В примере поле answer включает и 8 байт случайного дополнения (answer_with_hash[20:]);
+    # сам server_DH_inner_data — 564 байта, на этой длине и сходится SHA1.
+    got = H(core("dec_dh", nn, sn, H(ex["encrypted_answer"])))
+    awh = H(ex["answer_with_hash"])
+    check(len(got) == 564 and sha1(got) == awh[:20] and answer.startswith(got), "пример: расшифровка encrypted_answer")
+    out = core("dh", nn, sn, dh_prime_ex, g_ex, g_a_ex, H(ex["b"])).split()
+    check(out[0] == ex["g_b"].lower(), "пример: g_b")
+    check(out[1] == ex["auth_key"].lower(), "пример: auth_key")
+    check(out[2] == ex["new_nonce_hash1"].lower(), "пример: new_nonce_hash1")
+    check(core("pq", ex["pq"]) == f"{ex['p']} {ex['q']}", "пример: разложение pq")
+
     core.close()
     print(f"эталон: проверок {checks}, расхождений {len(failures)}")
     for f in failures[:20]:

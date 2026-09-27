@@ -294,6 +294,28 @@ void test_rsa_pq() {
     CHECK(tg_rsa_has_key(0xd09d1d85de64fd85ULL) == 1);
     CHECK(tg_rsa_has_key(0xb25898df208d2603ULL) == 1);
     CHECK(tg_rsa_has_key(0x1234) == 0);
+    // Отпечаток, вычисленный ядром при регистрации, совпадает с опубликованным.
+    {
+        uint64_t fp = 0;
+        CHECK(tg_rsa_add_key(tg::rsa_key_modulus(0xd09d1d85de64fd85ULL), 256, 65537, &fp) == TG_OK);
+        CHECK(fp == 0xd09d1d85de64fd85ULL);
+        CHECK(tg_rsa_add_key(tg::rsa_key_modulus(0xb25898df208d2603ULL), 256, 65537, &fp) == TG_OK);
+        CHECK(fp == 0xb25898df208d2603ULL);
+        // Новый ключ регистрируется и становится доступен RSA_PAD.
+        Bytes n = rnd(256);
+        n[0] |= 0x80;
+        CHECK(tg_rsa_add_key(n.data(), 256, 65537, &fp) == TG_OK);
+        CHECK(tg_rsa_has_key(fp) == 1);
+        tg_buf enc{};
+        const Bytes d = rnd(50);
+        const tg_status st = tg_rsa_pad_encrypt(d.data(), d.size(), fp, &enc);
+        CHECK(st == TG_OK);
+        if (st == TG_OK) CHECK(take(enc).size() == 256);
+        Bytes small = n;
+        small[0] = 0x10;  // меньше 2048 бит
+        CHECK(tg_rsa_add_key(small.data(), 256, 65537, &fp) == TG_ERR_ARG);
+        CHECK(tg_rsa_add_key(n.data(), 256, 4, &fp) == TG_ERR_ARG);
+    }
     const Bytes data = rnd(144);
     tg_buf out{};
     CHECK(tg_rsa_pad_encrypt(data.data(), 144, 0xd09d1d85de64fd85ULL, &out) == TG_OK);

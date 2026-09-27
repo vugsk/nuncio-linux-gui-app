@@ -12,6 +12,8 @@
 #include "internal.h"
 
 #include <memory>
+#include <mutex>
+#include <vector>
 
 #include <openssl/bn.h>
 
@@ -28,10 +30,36 @@ const RsaKey kKeys[] = {
 #include "rsa_keys.inc"
 };
 
+// Ключи, добавленные во время работы (tg_rsa_add_key). Хранятся в куче по одному
+// и не удаляются, поэтому выданные указатели остаются действительными.
+std::mutex g_keys_mu;
+std::vector<std::unique_ptr<RsaKey>> &added_keys() {
+    static std::vector<std::unique_ptr<RsaKey>> v;
+    return v;
+}
+
 const RsaKey *find_key(uint64_t fp) {
     for (const auto &k : kKeys)
         if (k.fingerprint == fp) return &k;
+    std::lock_guard<std::mutex> lock(g_keys_mu);
+    for (const auto &k : added_keys())
+        if (k->fingerprint == fp) return k.get();
     return nullptr;
+}
+
+// Сериализация TL bytes для вычисления отпечатка.
+void tl_bytes(std::vector<uint8_t> &out, const uint8_t *p, size_t n) {
+    const size_t start = out.size();
+    if (n < 254) {
+        out.push_back(static_cast<uint8_t>(n));
+    } else {
+        out.push_back(254);
+        out.push_back(static_cast<uint8_t>(n));
+        out.push_back(static_cast<uint8_t>(n >> 8));
+        out.push_back(static_cast<uint8_t>(n >> 16));
+    }
+    out.insert(out.end(), p, p + n);
+    while ((out.size() - start) % 4 != 0) out.push_back(0);
 }
 
 struct BnDel {
@@ -92,6 +120,36 @@ tg_status rsa_pad_once(const uint8_t *data, size_t len, uint64_t fingerprint, co
 }  // namespace tg
 
 extern "C" int tg_rsa_has_key(uint64_t fingerprint) { return tg::find_key(fingerprint) != nullptr ? 1 : 0; }
+
+extern "C" tg_status tg_rsa_add_key(const uint8_t *n, size_t nlen, uint32_t e, uint64_t *fingerprint) {
+    TG_GUARD_BEGIN
+    if (n == nullptr || nlen != 256 || fingerprint == nullptr || e < 3 || (e % 2) == 0) return TG_ERR_ARG;
+    if ((n[0] & 0x80) == 0) return TG_ERR_ARG;  // ровно 2048 бит
+    uint8_t eb[4];
+    size_t elen = 0;
+    for (int shift = 24; shift >= 0; shift -= 8) {
+        const auto byte = static_cast<uint8_t>(e >> shift);
+        if (elen != 0 || byte != 0) eb[elen++] = byte;
+    }
+    std::vector<uint8_t> ser;
+    tg::tl_bytes(ser, n, 256);
+    tg::tl_bytes(ser, eb, elen);
+    uint8_t h[20];
+    tg::sha1(ser.data(), ser.size(), h);
+    uint64_t fp = 0;
+    for (int i = 0; i < 8; ++i) fp |= static_cast<uint64_t>(h[12 + i]) << (8 * i);
+    *fingerprint = fp;
+    if (tg::find_key(fp) != nullptr) return TG_OK;  // уже известен
+    std::lock_guard<std::mutex> lock(tg::g_keys_mu);
+    if (tg::added_keys().size() >= 16) return TG_ERR_STATE;
+    auto k = std::make_unique<tg::RsaKey>();
+    k->fingerprint = fp;
+    k->e = e;
+    std::memcpy(k->n, n, 256);
+    tg::added_keys().push_back(std::move(k));
+    return TG_OK;
+    TG_GUARD_END
+}
 
 extern "C" tg_status tg_rsa_pad_encrypt(const uint8_t *data, size_t len, uint64_t fingerprint, tg_buf *out) {
     TG_GUARD_BEGIN
