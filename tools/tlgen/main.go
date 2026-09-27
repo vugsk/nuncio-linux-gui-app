@@ -438,7 +438,18 @@ func (g *gen) combinator(c *combinator) error {
 				}
 				qf := "o." + goName(q.Name)
 				if types[j].kind == "prim" && types[j].name == "true" {
-					g.p("if %s { %s |= 1 << %d }", qf, fv, q.FlagBit)
+					// Флаг-true на общем бите со значениями (starGift: limited и
+					// availability_*): бит задают значения, иначе он поднят без них.
+					shared := false
+					for k, r := range c.Params {
+						if r.Optional && r.FlagVar == p.Name && r.FlagBit == q.FlagBit &&
+							!(types[k].kind == "prim" && types[k].name == "true") {
+							shared = true
+						}
+					}
+					if !shared {
+						g.p("if %s { %s |= 1 << %d }", qf, fv, q.FlagBit)
+					}
 				} else {
 					g.p("if %s != nil { %s |= 1 << %d }", qf, fv, q.FlagBit)
 				}
@@ -500,6 +511,7 @@ func (g *gen) combinator(c *combinator) error {
 		if t.kind == "flags" {
 			g.p("var flags_%s uint32", p.Name)
 			g.p("if flags_%s, err = d.Uint32(); err != nil { return err }", p.Name)
+			g.p("_ = flags_%s", p.Name)
 			continue
 		}
 		if p.Optional {

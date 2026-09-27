@@ -1,0 +1,369 @@
+package fakeserver
+
+import (
+	"bytes"
+	"crypto/pbkdf2"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/binary"
+	"fmt"
+	"math/big"
+	"sync"
+	"time"
+
+	"nuncio/net/tl"
+	"nuncio/net/tlbin"
+)
+
+// Account — аккаунт поддельного сервера для проверки входа. Один объект можно
+// отдать нескольким серверам (DC): токены QR и авторизации общие.
+type Account struct {
+	Phone      string // только цифры
+	Code       string
+	Password   string // пусто — без облачного пароля
+	Hint       string
+	Registered bool   // false — auth.signIn вернёт authorizationSignUpRequired
+	UserID     int64  // id пользователя
+	FirstName  string // для ответа users.getUsers
+	Terms      string // текст условий при регистрации
+	QRDC       int    // 0 — QR подтверждается в том же DC; иначе loginTokenMigrateTo на этот DC
+
+	mu         sync.Mutex
+	authorized map[uint64]bool // auth_key_id -> вошли
+	needPwd    map[uint64]bool // auth_key_id -> код принят, ждём пароль
+	tokens     map[string]qrToken
+	codeHash   string
+	srp        *srpState
+	loggedOut  int
+	codesSent  int
+}
+
+type qrToken struct {
+	key       uint64
+	confirmed bool
+}
+
+// SignedIn — сколько ключей сейчас авторизовано.
+func (a *Account) SignedIn() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.authorized)
+}
+
+// LoggedOut — сколько раз вызван auth.logOut.
+func (a *Account) LoggedOut() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.loggedOut
+}
+
+// Revoke завершает все сессии аккаунта (как «завершить сеанс» с другого устройства).
+func (a *Account) Revoke() {
+	a.mu.Lock()
+	a.authorized = map[uint64]bool{}
+	a.mu.Unlock()
+}
+
+type rpcErr struct {
+	code int32
+	msg  string
+}
+
+func (e *rpcErr) Error() string { return fmt.Sprintf("%d %s", e.code, e.msg) }
+
+func (a *Account) init() {
+	if a.authorized == nil {
+		a.authorized = map[uint64]bool{}
+		a.needPwd = map[uint64]bool{}
+		a.tokens = map[string]qrToken{}
+	}
+}
+
+func (a *Account) user() *tl.User {
+	name := a.FirstName
+	return &tl.User{Self: true, Id: a.UserID, FirstName: &name}
+}
+
+func (a *Account) authorization() *tl.AuthAuthorization {
+	return &tl.AuthAuthorization{User: a.user()}
+}
+
+// ConfirmQR — «телефон отсканировал код»: все выданные токены подтверждены, клиенты
+// получают updateShort{updateLoginToken}. Возвращает число подтверждённых токенов.
+func (s *Server) ConfirmQR() int {
+	a := s.opt.Account
+	a.mu.Lock()
+	a.init()
+	keys := map[uint64]bool{}
+	for t, q := range a.tokens {
+		q.confirmed = true
+		a.tokens[t] = q
+		keys[q.key] = true
+	}
+	a.mu.Unlock()
+	upd, _ := tlbin.Marshal(&tl.UpdateShort{Update: &tl.UpdateLoginToken{}, Date: int32(time.Now().Unix())})
+	s.mu.Lock()
+	var conns []*conn
+	for c := range s.conns {
+		if keys[c.keyID] {
+			conns = append(conns, c)
+		}
+	}
+	s.mu.Unlock()
+	for _, c := range conns {
+		_ = c.sendMsgs(true, [][]byte{upd})
+	}
+	return len(keys)
+}
+
+func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
+	a := c.s.opt.Account
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.init()
+	key := c.keyID
+	unauthorized := &rpcErr{401, "AUTH_KEY_UNREGISTERED"}
+	switch r := o.(type) {
+	case *tl.AuthSendCodeRequest:
+		if r.PhoneNumber != a.Phone {
+			return nil, &rpcErr{400, "PHONE_NUMBER_INVALID"}
+		}
+		a.codesSent++
+		a.codeHash = fmt.Sprintf("hash%d", a.codesSent)
+		t := int32(30)
+		return &tl.AuthSentCode{Type: &tl.AuthSentCodeTypeApp{Length: int32(len(a.Code))}, PhoneCodeHash: a.codeHash,
+			NextType: &tl.AuthCodeTypeSms{}, Timeout: &t}, nil
+	case *tl.AuthResendCodeRequest:
+		if r.PhoneCodeHash != a.codeHash {
+			return nil, &rpcErr{400, "PHONE_CODE_HASH_EMPTY"}
+		}
+		return &tl.AuthSentCode{Type: &tl.AuthSentCodeTypeSms{Length: int32(len(a.Code))}, PhoneCodeHash: a.codeHash}, nil
+	case *tl.AuthCancelCodeRequest:
+		a.codeHash = ""
+		return boolTrue{}, nil
+	case *tl.AuthSignInRequest:
+		if r.PhoneNumber != a.Phone || r.PhoneCodeHash != a.codeHash || a.codeHash == "" {
+			return nil, &rpcErr{400, "PHONE_CODE_EXPIRED"}
+		}
+		if r.PhoneCode == nil || *r.PhoneCode != a.Code {
+			return nil, &rpcErr{400, "PHONE_CODE_INVALID"}
+		}
+		if !a.Registered {
+			return &tl.AuthAuthorizationSignUpRequired{TermsOfService: &tl.HelpTermsOfService{
+				Id: &tl.DataJSON{Data: "{}"}, Text: a.Terms, Entities: []tl.MessageEntityClass{}}}, nil
+		}
+		if a.Password != "" {
+			a.needPwd[key] = true
+			return nil, &rpcErr{401, "SESSION_PASSWORD_NEEDED"}
+		}
+		a.authorized[key] = true
+		return a.authorization(), nil
+	case *tl.AuthSignUpRequest:
+		if r.PhoneNumber != a.Phone || r.PhoneCodeHash != a.codeHash || a.Registered {
+			return nil, &rpcErr{400, "PHONE_NUMBER_OCCUPIED"}
+		}
+		if r.FirstName == "" {
+			return nil, &rpcErr{400, "FIRSTNAME_INVALID"}
+		}
+		a.Registered, a.FirstName = true, r.FirstName
+		a.authorized[key] = true
+		return a.authorization(), nil
+	case *tl.AccountGetPasswordRequest:
+		if !a.authorized[key] && !a.needPwd[key] {
+			return nil, unauthorized
+		}
+		st, err := newSRP(a.Password)
+		if err != nil {
+			return nil, err
+		}
+		a.srp = st
+		id := st.id
+		hint := a.Hint
+		return &tl.AccountPassword{HasPassword: true, HasRecovery: true, Hint: &hint, SrpId: &id,
+			SrpB: st.bBytes, CurrentAlgo: &tl.PasswordKdfAlgoSHA256SHA256PBKDF2HMACSHA512iter100000SHA256ModPow{
+				Salt1: st.salt1, Salt2: st.salt2, G: 3, P: dhPrime.FillBytes(make([]byte, 256))},
+			NewAlgo: &tl.PasswordKdfAlgoUnknown{}, NewSecureAlgo: &tl.SecurePasswordKdfAlgoUnknown{},
+			SecureRandom: make([]byte, 32)}, nil
+	case *tl.AuthCheckPasswordRequest:
+		in, ok := r.Password.(*tl.InputCheckPasswordSRP)
+		if !a.needPwd[key] || a.srp == nil || !ok || in.SrpId != a.srp.id {
+			return nil, &rpcErr{400, "SRP_ID_INVALID"}
+		}
+		st := a.srp
+		a.srp = nil // одноразовый
+		if !st.check(in.A, in.M1) {
+			return nil, &rpcErr{400, "PASSWORD_HASH_INVALID"}
+		}
+		delete(a.needPwd, key)
+		a.authorized[key] = true
+		return a.authorization(), nil
+	case *tl.AuthExportLoginTokenRequest:
+		if a.authorized[key] {
+			return a.loginSuccess(), nil
+		}
+		for t, q := range a.tokens {
+			if q.key == key && q.confirmed {
+				delete(a.tokens, t)
+				if a.QRDC != 0 && a.QRDC != c.s.opt.DC {
+					nt := randomToken()
+					a.tokens[string(nt)] = qrToken{confirmed: true}
+					return &tl.AuthLoginTokenMigrateTo{DcId: int32(a.QRDC), Token: nt}, nil
+				}
+				if a.Password != "" {
+					a.needPwd[key] = true
+					return nil, &rpcErr{401, "SESSION_PASSWORD_NEEDED"}
+				}
+				a.authorized[key] = true
+				return a.loginSuccess(), nil
+			}
+		}
+		tok := randomToken()
+		a.tokens[string(tok)] = qrToken{key: key}
+		return &tl.AuthLoginToken{Expires: int32(time.Now().Unix() + 30), Token: tok}, nil
+	case *tl.AuthImportLoginTokenRequest:
+		q, ok := a.tokens[string(r.Token)]
+		if !ok || !q.confirmed {
+			return nil, &rpcErr{400, "AUTH_TOKEN_INVALID"}
+		}
+		delete(a.tokens, string(r.Token))
+		if a.Password != "" {
+			a.needPwd[key] = true
+			return nil, &rpcErr{401, "SESSION_PASSWORD_NEEDED"}
+		}
+		a.authorized[key] = true
+		return a.loginSuccess(), nil
+	case *tl.UsersGetUsersRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		return &userVector{[]*tl.User{a.user()}}, nil
+	case *tl.UpdatesGetStateRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		return &tl.UpdatesState{Pts: 1, Qts: 0, Date: int32(time.Now().Unix()), Seq: 1}, nil
+	case *tl.AuthLogOutRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		delete(a.authorized, key)
+		a.loggedOut++
+		return &tl.AuthLoggedOut{}, nil
+	case *tl.HelpGetCountriesListRequest:
+		ru, en := "Россия", "Russia"
+		name := &ru
+		if r.LangCode == "en" {
+			name = &en
+		}
+		return &tl.HelpCountriesList{Countries: []tl.HelpCountryClass{
+			&tl.HelpCountry{Iso2: "RU", DefaultName: "Russia", Name: name, CountryCodes: []tl.HelpCountryCodeClass{
+				&tl.HelpCountryCode{CountryCode: "7", Patterns: []string{"XXX XXX XXXX"}}}},
+		}, Hash: 1}, nil
+	}
+	return nil, &rpcErr{400, "METHOD_NOT_IMPLEMENTED_IN_FAKESERVER"}
+}
+
+func (a *Account) loginSuccess() *tl.AuthLoginTokenSuccess {
+	return &tl.AuthLoginTokenSuccess{Authorization: a.authorization()}
+}
+
+func randomToken() []byte {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return b
+}
+
+// boolTrue — boolTrue#997275b5 (Bool в кодеке — встроенный тип, не объект).
+type boolTrue struct{}
+
+func (boolTrue) TLID() uint32                      { return 0x997275b5 }
+func (boolTrue) TLName() string                    { return "boolTrue" }
+func (boolTrue) TLEncodeBare(*tlbin.Encoder) error { return nil }
+func (boolTrue) TLDecodeBare(*tlbin.Decoder) error { return nil }
+
+// userVector — Vector<User> как ответ (голый вектор не является Object).
+type userVector struct{ users []*tl.User }
+
+func (*userVector) TLID() uint32   { return 0x1cb5c415 }
+func (*userVector) TLName() string { return "vector" }
+func (v *userVector) TLEncodeBare(e *tlbin.Encoder) error {
+	e.PutInt32(int32(len(v.users)))
+	for _, u := range v.users {
+		if err := tlbin.EncodeBoxed(e, u); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (v *userVector) TLDecodeBare(*tlbin.Decoder) error { return fmt.Errorf("не нужен") }
+
+// ---------------------------------------------------------------- SRP (сервер)
+//
+// По core.telegram.org/api/srp, независимо от ядра: стандартная криптография Go.
+
+type srpState struct {
+	id           int64
+	salt1, salt2 []byte
+	v, b, bBig   *big.Int
+	bBytes       []byte
+}
+
+func h(parts ...[]byte) []byte {
+	s := sha256.New()
+	for _, p := range parts {
+		s.Write(p)
+	}
+	return s.Sum(nil)
+}
+
+func sh(data, salt []byte) []byte { return h(salt, data, salt) }
+
+func pad256(x *big.Int) []byte { return x.FillBytes(make([]byte, 256)) }
+
+func passwordX(pw string, salt1, salt2 []byte) *big.Int {
+	ph1 := sh(sh([]byte(pw), salt1), salt2)
+	dk, _ := pbkdf2.Key(sha512.New, string(ph1), salt1, 100000, 64)
+	return new(big.Int).SetBytes(sh(dk, salt2))
+}
+
+func newSRP(pw string) (*srpState, error) {
+	st := &srpState{salt1: make([]byte, 40), salt2: make([]byte, 16)}
+	_, _ = rand.Read(st.salt1)
+	_, _ = rand.Read(st.salt2)
+	var idb [8]byte
+	_, _ = rand.Read(idb[:])
+	st.id = int64(binary.LittleEndian.Uint64(idb[:]) >> 1)
+	g := big.NewInt(3)
+	x := passwordX(pw, st.salt1, st.salt2)
+	st.v = new(big.Int).Exp(g, x, dhPrime)
+	k := new(big.Int).SetBytes(h(pad256(dhPrime), pad256(g)))
+	b, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 2048))
+	if err != nil {
+		return nil, err
+	}
+	st.b = b
+	bb := new(big.Int).Mul(k, st.v)
+	bb.Add(bb, new(big.Int).Exp(g, b, dhPrime))
+	bb.Mod(bb, dhPrime)
+	st.bBig, st.bBytes = bb, pad256(bb)
+	return st, nil
+}
+
+func (st *srpState) check(aBytes, m1 []byte) bool {
+	A := new(big.Int).SetBytes(aBytes)
+	if A.Sign() <= 0 || A.Cmp(dhPrime) >= 0 {
+		return false
+	}
+	g := big.NewInt(3)
+	u := new(big.Int).SetBytes(h(pad256(A), st.bBytes))
+	S := new(big.Int).Exp(new(big.Int).Mul(A, new(big.Int).Exp(st.v, u, dhPrime)), st.b, dhPrime)
+	K := h(pad256(S))
+	hp, hg := h(pad256(dhPrime)), h(pad256(g))
+	x := make([]byte, 32)
+	for i := range x {
+		x[i] = hp[i] ^ hg[i]
+	}
+	want := h(x, h(st.salt1), h(st.salt2), pad256(A), st.bBytes, K)
+	return bytes.Equal(want, m1)
+}

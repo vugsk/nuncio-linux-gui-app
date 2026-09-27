@@ -7,3 +7,25 @@ invokeWithLayer
 initConnection
 help.getConfig
 help.getNearestDc
+
+# В3: вход, регистрация, 2FA, выход, список стран, обновления (updateLoginToken)
+auth.sendCode
+auth.resendCode
+auth.cancelCode
+auth.signIn
+auth.signUp
+auth.checkPassword
+auth.exportLoginToken
+auth.importLoginToken
+auth.logOut
+account.getPassword
+help.getCountriesList
+users.getUsers
+updates.getState
+updateShort
+updates
+updatesCombined
+updateShortMessage
+updateShortChatMessage
+updateShortSentMessage
+updatesTooLong

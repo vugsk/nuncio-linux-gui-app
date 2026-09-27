@@ -3,9 +3,8 @@
 // bridge/build.rs). Правила: номера полей не переиспользуются, только
 // добавление; в этом файле нет ничего из TL.
 //
-// Веха В0 (вертикаль-заглушка): StartRequest, Command с одной командой Ping и
-// Event с CommandResult/FatalError. Настоящие команды (вход, история, отправка)
-// добавляются по вехам, см. Архитектура/nuncio - План реализации.md.
+// Команды и события добавляются по вехам (Архитектура/nuncio - План реализации.md):
+// В0 — Ping; В3 — вход, прокси, список стран, состояние соединения.
 
 syntax = "proto3";
 
@@ -17,21 +16,133 @@ option go_package = "nuncio/net/gen;gen";
 message StartRequest {
   // Должна совпасть с PROTO_VERSION на стороне Go, иначе nn_start вернёт ошибку.
   uint32 proto_version = 1;
+  int32 api_id = 2;              // из ~/.config/nuncio/api.env (не из репозитория)
+  string api_hash = 3;
+  string data_dir = 4;           // ~/.local/share/nuncio: здесь session.bin
+  string device_model = 5;
+  string system_version = 6;
+  string app_version = 7;
+  string lang_code = 8;          // язык интерфейса: ru или en
+  string system_lang_code = 9;
+  bool test_servers = 10;        // тестовые серверы Telegram (запасной путь, Э-2 п. 7)
+  ProxySettings proxy = 11;
+  string log_dir = 12;           // ~/.local/state/nuncio: журнал Go (без секретов)
+  string keyring_app = 13;       // имя записи в связке ключей; пусто = "nuncio"
+}
+
+message ProxySettings {
+  enum Kind {
+    NONE = 0;
+    SOCKS5 = 1;
+    MTPROXY = 2;
+  }
+  Kind kind = 1;
+  string addr = 2;               // host:port
+  string user = 3;               // SOCKS5
+  string password = 4;           // SOCKS5
+  string secret = 5;             // MTProxy
 }
 
 message Command {
   uint64 id = 1;          // корреляция с CommandResult.cmd_id
   uint64 account_id = 2;  // сейчас всегда 1
   oneof body {
+    SendCode send_code = 10;
+    SignIn sign_in = 11;
+    CheckPassword check_password = 12;
+    RequestQr request_qr = 13;
+    LogOut log_out = 14;
+    SignUp sign_up = 15;
+    ResendCode resend_code = 16;
+    CancelCode cancel_code = 17;
+    SetProxy set_proxy = 60;
+    TestProxy test_proxy = 61;
+    GetCountries get_countries = 62;
+    RetryStartup retry_startup = 63;
     Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
   }
 }
 
+message SendCode { string phone = 1; }
+message SignIn { string code = 1; }
+message CheckPassword { string password = 1; }
+message RequestQr {}
+message LogOut {}
+message SignUp { string first_name = 1; string last_name = 2; }
+message ResendCode {}
+message CancelCode {}
+message SetProxy { ProxySettings proxy = 1; }   // для новых соединений; текущие переподключаются
+message TestProxy { ProxySettings proxy = 1; }  // проверка без сохранения: обмен ключами и ping
+message GetCountries { string lang_code = 1; }
+message RetryStartup {}                          // «Повторить» на критическом экране (Со-4)
+
 message Event {
   oneof body {
     CommandResult result = 1;
+    ConnectionState connection = 2;
+    AuthState auth = 3;
     FatalError fatal = 6;
+    StartupError startup = 7;
   }
+}
+
+message ConnectionState {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    CONNECTING = 1;
+    CONNECTED = 2;
+    WAITING_NETWORK = 3;
+  }
+  State state = 1;
+}
+
+message AuthState {
+  enum Step {
+    STEP_UNSPECIFIED = 0;
+    QR = 1;
+    CODE = 2;
+    PASSWORD = 3;
+    SIGN_UP = 4;
+    READY = 5;
+    LOGGED_OUT = 6;
+  }
+  Step step = 1;
+  string qr_url = 2;
+  int64 qr_expires_unix = 3;
+  CodeInfo code = 4;
+  string password_hint = 5;
+  bool has_recovery = 6;
+  string terms = 7;
+  User user = 8;
+  // LOGGED_OUT: logged_out, session_ended, keyring_no_key, session_broken или пусто.
+  string reason = 9;
+}
+
+message CodeInfo {
+  string kind = 1;       // app, sms, call, flash_call, missed_call, email, fragment, other
+  uint32 length = 2;
+  string next_kind = 3;
+  uint32 timeout = 4;
+}
+
+message User {
+  int64 id = 1;
+  string first_name = 2;
+  string last_name = 3;
+  string username = 4;
+}
+
+// Критическая ошибка старта (Со-4): экран с «Повторить» и «Выйти».
+message StartupError {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KEYRING_UNAVAILABLE = 1;  // нет Secret Service (О-6)
+    KEYRING_DISMISSED = 2;    // пользователь не разблокировал связку
+    CONFIG = 3;               // нет api_id/api_hash или неверные параметры
+    OTHER = 4;
+  }
+  Kind kind = 1;
+  string text = 2;
 }
 
 message CommandResult {
@@ -39,7 +150,30 @@ message CommandResult {
   Error error = 2;        // не задано = успех
   oneof payload {
     Pong pong = 100;
+    Countries countries = 101;
+    ProxyCheck proxy_check = 102;
   }
+}
+
+message Countries {
+  repeated Country countries = 1;
+}
+
+message Country {
+  string iso2 = 1;
+  string name = 2;           // на языке запроса
+  string default_name = 3;   // английское
+  repeated CountryCode codes = 4;
+}
+
+message CountryCode {
+  string code = 1;               // код набора без «+»
+  repeated string prefixes = 2;
+  repeated string patterns = 3;  // маски вида "XXX XXX XXXX"
+}
+
+message ProxyCheck {
+  uint32 rtt_ms = 1;
 }
 
 // Единая ошибка, см. правило 4 в заметке о стыках.

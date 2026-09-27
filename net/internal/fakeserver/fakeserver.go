@@ -53,6 +53,9 @@ type Options struct {
 	Migrate          map[string]int // метод -> *_MIGRATE_n (всегда)
 	PushUnknown      bool           // после первого ответа прислать неизвестный конструктор (обновление)
 	DropAfterReplies int            // закрыть соединение после стольких ответов (0 — не закрывать)
+	Account          *Account       // аккаунт для методов входа (account.go); общий для нескольких DC
+	Secret           []byte         // секрет MTProxy (16 байт): ключи обфускации с его участием
+	ExtraPadding     bool           // padded intermediate: дописывать к ответам до 80 байт (как настоящий DC4)
 }
 
 // Server — поддельный сервер.
@@ -66,11 +69,20 @@ type Server struct {
 	keys     map[uint64][]byte // auth_key_id -> auth_key
 	calls    map[string]int
 	accepted int
+	conns    map[*conn]bool
 }
 
-// Start запускает сервер на 127.0.0.1 со своим ключом RSA-2048.
+var (
+	keyOnce sync.Once
+	keyPriv *rsa.PrivateKey
+	keyErr  error
+)
+
+// Start запускает сервер на 127.0.0.1. Ключ RSA-2048 один на процесс: ядро
+// принимает не больше 16 дополнительных ключей, а тестов с серверами больше.
 func Start(opt Options) (*Server, error) {
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	keyOnce.Do(func() { keyPriv, keyErr = rsa.GenerateKey(rand.Reader, 2048) })
+	priv, err := keyPriv, keyErr
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +90,8 @@ func Start(opt Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{ln: ln, opt: opt, priv: priv, keys: map[uint64][]byte{}, calls: map[string]int{}}
+	s := &Server{ln: ln, opt: opt, priv: priv, keys: map[uint64][]byte{}, calls: map[string]int{},
+		conns: map[*conn]bool{}}
 	s.fp = fingerprint(&priv.PublicKey)
 	go s.accept()
 	return s, nil
@@ -127,9 +140,16 @@ func (s *Server) accept() {
 		s.mu.Lock()
 		s.accepted++
 		s.mu.Unlock()
+		cn := &conn{s: s, c: c}
+		s.mu.Lock()
+		s.conns[cn] = true
+		s.mu.Unlock()
 		go func() {
 			defer c.Close()
-			_ = (&conn{s: s, c: c}).serve()
+			_ = cn.serve()
+			s.mu.Lock()
+			delete(s.conns, cn)
+			s.mu.Unlock()
 		}()
 	}
 }
@@ -139,6 +159,7 @@ func (s *Server) accept() {
 type conn struct {
 	s        *Server
 	c        net.Conn
+	wmu      sync.Mutex // запись: ответы из цикла и обновления из теста
 	in, out  cipher.Stream
 	abridged bool
 	padded   bool
@@ -151,6 +172,7 @@ type conn struct {
 	prevAux            int64 // auth_key_aux_hash неудачной попытки (ожидаемый retry_id)
 
 	// состояние сессии
+	keyID     uint64
 	key       []byte
 	sessionID int64
 	salt      int64
@@ -206,7 +228,7 @@ func (c *conn) obfuscated(head []byte) error {
 		return err
 	}
 	init := append(head, tail...)
-	blk, _ := aes.NewCipher(init[8:40])
+	blk, _ := aes.NewCipher(c.obfsKey(init[8:40]))
 	c.in = cipher.NewCTR(blk, init[40:56])
 	dec := make([]byte, 64)
 	c.in.XORKeyStream(dec, init)
@@ -224,9 +246,18 @@ func (c *conn) obfuscated(head []byte) error {
 	for i := range full {
 		rev[i] = full[63-i]
 	}
-	blk2, _ := aes.NewCipher(rev[8:40])
+	blk2, _ := aes.NewCipher(c.obfsKey(rev[8:40]))
 	c.out = cipher.NewCTR(blk2, rev[40:56])
 	return nil
+}
+
+// obfsKey — ключ AES-CTR: для MTProxy sha256(ключ из init + секрет).
+func (c *conn) obfsKey(k []byte) []byte {
+	if len(c.s.opt.Secret) == 0 {
+		return k
+	}
+	h := sha256.Sum256(append(append([]byte{}, k...), c.s.opt.Secret...))
+	return h[:]
 }
 
 func (c *conn) recvPacket() ([]byte, error) {
@@ -279,8 +310,20 @@ func (c *conn) sendPacket(p []byte) error {
 			frame = append([]byte{0x7f, byte(n), byte(n >> 8), byte(n >> 16)}, p...)
 		}
 	} else {
-		frame = binary.LittleEndian.AppendUint32(nil, uint32(len(p)))
+		pad := 0
+		if c.padded && c.s.opt.ExtraPadding {
+			// Открытые ответы настоящий сервер дополняет сильнее (до 72+ байт),
+			// зашифрованные — на 0–15 (длина конверта 24+16k однозначна).
+			var r [1]byte
+			_, _ = rand.Read(r[:])
+			pad = int(r[0]) % 16
+			if len(p) >= 8 && binary.LittleEndian.Uint64(p) == 0 {
+				pad = int(r[0]) % 81
+			}
+		}
+		frame = binary.LittleEndian.AppendUint32(nil, uint32(len(p)+pad))
 		frame = append(frame, p...)
+		frame = append(frame, make([]byte, pad)...)
 	}
 	if c.out != nil {
 		c.out.XORKeyStream(frame, frame)
@@ -330,6 +373,8 @@ func (c *conn) msgID(response bool) int64 {
 // ---------------------------------------------------------------- обмен ключами
 
 func (c *conn) sendPlain(o tlbin.Object) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
 	body, err := tlbin.Marshal(o)
 	if err != nil {
 		return err
@@ -539,9 +584,12 @@ func (c *conn) encrypted(pkt []byte) error {
 	authKey := c.s.keys[keyID]
 	c.s.mu.Unlock()
 	if authKey == nil {
+		c.wmu.Lock()
+		defer c.wmu.Unlock()
 		return c.sendPacket(binary.LittleEndian.AppendUint32(nil, uint32(0xfffffe6c))) // -404
 	}
 	c.key = authKey
+	c.keyID = keyID
 	msgKey := pkt[8:24]
 	k, iv := envKeys(authKey, msgKey, 0)
 	pt := ige(k, iv, pkt[24:], false)
@@ -662,6 +710,17 @@ func (c *conn) answer(reqID int64, o tlbin.Object) error {
 	case *tl.HelpGetNearestDcRequest:
 		res = &tl.NearestDc{Country: "RU", ThisDc: int32(c.s.opt.DC), NearestDc: int32(c.s.opt.DC)}
 	default:
+		if c.s.opt.Account != nil {
+			r, err := c.accountAnswer(o)
+			if err != nil {
+				var re *rpcErr
+				if errors.As(err, &re) {
+					return c.rpcError(reqID, re.code, re.msg)
+				}
+				return err
+			}
+			return c.rpcResult(reqID, r)
+		}
 		return c.rpcError(reqID, 400, "METHOD_NOT_IMPLEMENTED_IN_FAKESERVER")
 	}
 	return c.rpcResult(reqID, res)
@@ -717,6 +776,8 @@ func (c *conn) send(content bool, o tlbin.Object) error {
 
 // sendMsgs отправляет одно сообщение или контейнер (x = 8).
 func (c *conn) sendMsgs(content bool, bodies [][]byte) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
 	nextSeq := func(content bool) int32 {
 		s := c.seq * 2
 		if content {

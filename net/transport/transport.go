@@ -55,6 +55,8 @@ type Options struct {
 	Secret []byte
 	// Timeout — предел на установку соединения и на запись.
 	Timeout time.Duration
+	// Proxy — SOCKS5 или MTProxy (для MTProxy Secret и кадрирование берутся из него).
+	Proxy Proxy
 }
 
 // Conn — соединение с DC: целые пакеты MTProto на вход и на выход.
@@ -72,7 +74,7 @@ func Dial(addr string, opt Options) (*Conn, error) {
 	if opt.Timeout == 0 {
 		opt.Timeout = 15 * time.Second
 	}
-	nc, err := net.DialTimeout("tcp", addr, opt.Timeout)
+	nc, err := dialVia(addr, &opt)
 	if err != nil {
 		return nil, err
 	}

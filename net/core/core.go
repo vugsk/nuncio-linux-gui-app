@@ -95,7 +95,7 @@ func Random(b []byte) error {
 // Key — ключ авторизации; байты в Go не попадают. Неизменяем, безопасен для
 // одновременного использования из нескольких горутин.
 type Key struct {
-	mu sync.Mutex
+	mu sync.RWMutex // вызовы ядра держат RLock, Free — Lock: нет освобождения посреди вызова
 	k  *C.tg_key
 }
 
@@ -123,10 +123,16 @@ func (k *Key) handle() *C.tg_key {
 }
 
 // ID — auth_key_id.
-func (k *Key) ID() uint64 { return uint64(C.tg_key_id(k.handle())) }
+func (k *Key) ID() uint64 {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	return uint64(C.tg_key_id(k.handle()))
+}
 
 // Seal запечатывает ключ для файла сессии ключом обёртки из Secret Service.
 func (k *Key) Seal(wrap *[32]byte) ([]byte, error) {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
 	var out C.tg_buf
 	st := C.tg_key_seal(k.handle(), (*C.uint8_t)(unsafe.Pointer(&wrap[0])), &out)
 	runtime.KeepAlive(k)
@@ -156,6 +162,8 @@ type EnvHeader struct {
 
 // Encrypt запечатывает тело (TL, длина кратна 4) в конверт клиент -> сервер.
 func (k *Key) Encrypt(h EnvHeader, body []byte) ([]byte, error) {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
 	ch := C.tg_env_hdr{salt: C.uint64_t(h.Salt), session_id: C.uint64_t(h.SessionID), msg_id: C.uint64_t(h.MsgID),
 		seq_no: C.uint32_t(h.SeqNo)}
 	var out C.tg_buf
@@ -170,6 +178,8 @@ func (k *Key) Encrypt(h EnvHeader, body []byte) ([]byte, error) {
 // Decrypt открывает конверт сервер -> клиент. Проверки session_id и msg_id —
 // дело вызывающего (пакет session).
 func (k *Key) Decrypt(wire []byte) (EnvHeader, []byte, error) {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
 	var ch C.tg_env_hdr
 	var out C.tg_buf
 	st := C.tg_env_decrypt(k.handle(), ptr(wire), C.size_t(len(wire)), &ch, &out)

@@ -41,6 +41,7 @@ var Test = map[int]string{
 // App — поля initConnection.
 type App struct {
 	APIID          int32
+	APIHash        string // для auth.sendCode и auth.exportLoginToken
 	DeviceModel    string
 	SystemVersion  string
 	AppVersion     string
@@ -58,6 +59,10 @@ type Options struct {
 	Transport transport.Options
 	Limits    *rpc.Limits // пределы частоты (по умолчанию rpc.DefaultLimits)
 	OnUpdate  func(dc int, body []byte)
+	// OnKey — создан новый ключ авторизации DC (сохранить в файл сессии).
+	OnKey func(dc int, k *session.AuthKey)
+	// OnConn — состояние соединения с основным DC (полоса «Подключение…»).
+	OnConn func(ConnState)
 	// DisablePing — для тестов.
 	DisablePing bool
 }
@@ -135,6 +140,58 @@ func (m *Manager) SetKey(dc int, k *session.AuthKey) {
 	m.mu.Unlock()
 }
 
+// ConnState — состояние соединения с основным DC.
+type ConnState int
+
+const (
+	Connecting ConnState = iota + 1
+	Connected
+	WaitingNetwork
+)
+
+func (m *Manager) connState(dc int, st ConnState) {
+	if m.opt.OnConn != nil && dc == m.Home() {
+		m.opt.OnConn(st)
+	}
+}
+
+// SetProxy меняет прокси для новых соединений и закрывает текущие (они
+// переподключатся при следующем запросе). Ключи сохраняются.
+func (m *Manager) SetProxy(p transport.Proxy) {
+	m.mu.Lock()
+	m.opt.Transport.Proxy = p
+	m.mu.Unlock()
+	m.Close()
+}
+
+// App — параметры приложения (api_id, api_hash, сведения об устройстве).
+func (m *Manager) App() App { return m.opt.App }
+
+// Keys — снимок ключей по DC (для файла сессии).
+func (m *Manager) Keys() map[int]*session.AuthKey {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[int]*session.AuthKey, len(m.keys))
+	for k, v := range m.keys {
+		out[k] = v
+	}
+	return out
+}
+
+// Reset закрывает соединения и забывает все ключи (выход из аккаунта):
+// следующий запрос начнёт с нового обмена ключами.
+func (m *Manager) Reset() {
+	m.Close()
+	m.mu.Lock()
+	keys := m.keys
+	m.keys = map[int]*session.AuthKey{}
+	m.home = m.opt.Home
+	m.mu.Unlock()
+	for _, k := range keys {
+		k.Key.Free()
+	}
+}
+
 // Close закрывает все соединения.
 func (m *Manager) Close() {
 	m.mu.Lock()
@@ -179,13 +236,17 @@ func (m *Manager) connect(ctx context.Context, dc int) (*conn, error) {
 		return nil, fmt.Errorf("dc: неизвестный DC %d", dc)
 	}
 
+	m.mu.Lock()
 	topt := m.opt.Transport
+	m.mu.Unlock()
 	topt.DC = dc
 	if m.opt.TestDCs {
 		topt.DC = dc + 10000
 	}
+	m.connState(dc, Connecting)
 	tc, err := transport.Dial(addr, topt)
 	if err != nil {
+		m.connState(dc, WaitingNetwork)
 		return nil, fmt.Errorf("dc %d: %w", dc, err)
 	}
 	if key == nil {
@@ -198,11 +259,15 @@ func (m *Manager) connect(ctx context.Context, dc int) (*conn, error) {
 		cancel()
 		if err != nil {
 			tc.Close()
+			m.connState(dc, WaitingNetwork)
 			return nil, fmt.Errorf("dc %d: обмен ключами: %w", dc, err)
 		}
 		m.mu.Lock()
 		m.keys[dc] = key
 		m.mu.Unlock()
+		if m.opt.OnKey != nil {
+			m.opt.OnKey(dc, key)
+		}
 	}
 	dcID := dc
 	s := session.New(session.Config{Conn: tc, Key: key.Key, Salt: key.Salt, TimeOffset: key.TimeOffset,
@@ -218,6 +283,16 @@ func (m *Manager) connect(ctx context.Context, dc int) (*conn, error) {
 	m.mu.Lock()
 	m.conns[dc] = c
 	m.mu.Unlock()
+	m.connState(dc, Connected)
+	go func() {
+		<-s.Done()
+		m.mu.Lock()
+		current := m.conns[dc] == c
+		m.mu.Unlock()
+		if current { // обрыв, а не закрытие менеджером
+			m.connState(dc, WaitingNetwork)
+		}
+	}()
 	return c, nil
 }
 
