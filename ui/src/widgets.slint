@@ -1,0 +1,194 @@
+// Простые виджеты в стиле макетов. Без анимаций, теней и прозрачных
+// наложений: рендер на CPU (Дизайн - Каркас и навигация, раздел 4).
+import { Theme } from "theme.slint";
+
+export component Button inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> primary: true;
+    in property <length> button-width: Theme.field-width;
+    callback clicked();
+    width: button-width;
+    height: Theme.button-height;
+    border-radius: Theme.radius;
+    background: !enabled ? Theme.row-bg : primary ? (touch.has-hover ? Theme.accent-hover : Theme.accent) : Theme.row-bg;
+    border-width: 1px;
+    border-color: enabled && primary ? Theme.accent-border : Theme.card-border;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-enabled: enabled;
+    accessible-action-default => { if (enabled) { clicked(); } }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+    Text {
+        text: root.text;
+        color: root.enabled ? Theme.text : Theme.text-muted;
+        font-size: Theme.body-size;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component Link inherits Text {
+    in property <bool> enabled: true;
+    callback clicked();
+    color: enabled ? (link-touch.has-hover ? Theme.text : Theme.link) : Theme.text-muted;
+    font-size: Theme.small-size;
+    horizontal-alignment: center;
+    accessible-role: button;
+    accessible-label: self.text;
+    accessible-action-default => { if (enabled) { clicked(); } }
+    link-touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Поле ввода: рамка, подсветка при фокусе, подсказка в пустом поле.
+export component Field inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    in property <bool> password: false;
+    in property <bool> invalid: false;
+    in property <length> field-width: Theme.field-width;
+    in property <string> prefix;
+    // Ссылка справа внутри поля («показать» у пароля, макет «Вход», шаг 5).
+    in property <string> suffix;
+    callback suffix-clicked();
+    callback edited(string);
+    callback accepted();
+    callback escape();
+    public function focus-input() { input.focus(); }
+    public function cursor-to-end() { input.set-selection-offsets(1000000, 1000000); }
+    width: field-width;
+    height: Theme.field-height;
+    border-radius: Theme.radius;
+    background: Theme.field-bg;
+    border-width: 1px;
+    border-color: invalid ? Theme.error : input.has-focus ? Theme.field-focus : Theme.field-border;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 8px;
+        if root.prefix != "": Text {
+            text: root.prefix;
+            color: Theme.text;
+            font-size: Theme.body-size;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            input := TextInput {
+                width: 100%;
+                height: 100%;
+                enabled: root.enabled;
+                color: Theme.text;
+                font-size: Theme.body-size;
+                vertical-alignment: center;
+                single-line: true;
+                input-type: root.password ? InputType.password : InputType.text;
+                selection-background-color: Theme.accent;
+                selection-foreground-color: Theme.text;
+                accessible-label: root.placeholder;
+                edited => { root.edited(self.text); }
+                accepted => { root.accepted(); }
+                key-pressed(e) => {
+                    if (e.text == Key.Escape) { root.escape(); return accept; }
+                    reject
+                }
+            }
+            if input.text == "": Text {
+                x: 0;
+                width: 100%;
+                height: 100%;
+                text: root.placeholder;
+                color: Theme.text-muted;
+                font-size: Theme.body-size;
+                vertical-alignment: center;
+            }
+        }
+        if root.suffix != "": Link {
+            text: root.suffix;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+            clicked => { root.suffix-clicked(); }
+        }
+    }
+}
+
+export component CheckBox inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled();
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    background: checked ? Theme.accent : Theme.field-bg;
+    border-width: 1px;
+    border-color: Theme.accent-border;
+    accessible-role: checkbox;
+    accessible-checkable: true;
+    accessible-checked: checked;
+    accessible-action-default => { toggled(); }
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
+    }
+    if root.checked: Path {
+        width: 14px;
+        height: 14px;
+        stroke: Theme.text;
+        stroke-width: 2px;
+        commands: "M 2 7 L 6 11 L 12 3";
+        viewbox-width: 14;
+        viewbox-height: 14;
+    }
+}
+
+// Выбор одного из нескольких вариантов (тип прокси).
+export component Segmented inherits Rectangle {
+    in property <[string]> items;
+    in-out property <int> current;
+    callback selected(int);
+    height: 36px;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.card-border;
+    background: Theme.field-bg;
+    HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+        for item[i] in root.items: Rectangle {
+            border-radius: Theme.radius - 2px;
+            background: i == root.current ? Theme.row-selected : transparent;
+            accessible-role: button;
+            accessible-label: item;
+            Text {
+                text: item;
+                color: Theme.text;
+                font-size: Theme.small-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.current = i; root.selected(i); }
+            }
+        }
+    }
+}
+
+// Модальная подложка: сплошной фон окна (прозрачных наложений нет — рендер на
+// CPU, Дизайн - Каркас, раздел 4) и перехват кликов.
+export component Modal inherits Rectangle {
+    background: Theme.window-bg;
+    TouchArea { }
+    @children
+}

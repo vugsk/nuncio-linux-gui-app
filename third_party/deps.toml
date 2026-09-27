@@ -55,3 +55,15 @@ artifacts = [
     "libavutil/libavutil.a", "libswscale/libswscale.a",
     "libswresample/libswresample.a",
 ]
+
+[noto-emoji]
+# О-14 (решение: набор Noto Emoji). Растровый шрифт CBDT: из него при сборке
+# ui извлекаются картинки флагов стран (экран входа, Вх-2) и эмодзи (В5).
+# Шрифт — SIL OFL 1.1, картинки проекта — Apache 2.0, флаги — общественное
+# достояние (third_party/region-flags/LICENSE в репозитории noto-emoji).
+version = "v2026-09-24-unicode18_0"
+url = "https://raw.githubusercontent.com/googlefonts/noto-emoji/v2026-09-24-unicode18_0/2D/fonts/NotoColorEmoji.ttf"
+sha256 = "15671215ab769fdc7162a045d56fd7d7e477c51b04e6b3c761d914d8fdd6cc44"
+license_url = "https://raw.githubusercontent.com/googlefonts/noto-emoji/v2026-09-24-unicode18_0/2D/fonts/LICENSE"
+license_sha256 = "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+artifacts = ["NotoColorEmoji.ttf", "NotoColorEmoji.LICENSE"]

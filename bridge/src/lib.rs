@@ -3,23 +3,27 @@
 //! Rust вызывает Go; обратных вызовов нет: события забирает поток-насос
 //! блокирующим `next_event`.
 //!
-//! Веха В0: `GoBackend` умеет старт, отправку команды, приём события и
-//! остановку; из команд есть только `Ping`.
+//! `GoBackend` и `FakeBackend` реализуют `domain::Backend`; отображение
+//! доменных типов в protobuf — в `map`.
 
 mod ffi;
+pub mod map;
 
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/nuncio.client.v0.rs"));
 }
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-use domain::Backend;
+use domain::model::{Command, Event, ProxySettings};
+use domain::{Backend, BackendError, Next};
 use prost::Message;
 
 /// Версия client.proto, которую понимает эта сборка (сверяется с Go).
-pub const PROTO_VERSION: u32 = 1;
+pub const PROTO_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeError {
@@ -55,6 +59,16 @@ impl std::fmt::Display for BridgeError {
 
 impl std::error::Error for BridgeError {}
 
+impl From<BridgeError> for BackendError {
+    fn from(e: BridgeError) -> Self {
+        match e {
+            BridgeError::NotRunning => BackendError::NotRunning,
+            BridgeError::QueueFull => BackendError::QueueFull,
+            e => BackendError::Other(e.to_string()),
+        }
+    }
+}
+
 fn map_rc(rc: i32) -> Result<(), BridgeError> {
     match rc {
         ffi::NN_OK => Ok(()),
@@ -67,12 +81,31 @@ fn map_rc(rc: i32) -> Result<(), BridgeError> {
     }
 }
 
-/// Исход ожидания события.
+/// Исход ожидания события (сырые protobuf-события). Живёт одно мгновение,
+/// поэтому разница размеров вариантов не важна.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum NextEvent {
     Event(proto::Event),
     Timeout,
     Stopped,
+}
+
+/// Параметры старта сетевого слоя (`StartRequest`).
+#[derive(Clone, Default)]
+pub struct StartParams {
+    pub api_id: i32,
+    pub api_hash: String,
+    pub data_dir: String,
+    pub log_dir: String,
+    pub device_model: String,
+    pub system_version: String,
+    pub app_version: String,
+    pub lang_code: String,
+    pub system_lang_code: String,
+    pub test_servers: bool,
+    pub proxy: ProxySettings,
+    pub keyring_app: String,
 }
 
 static STARTED: AtomicBool = AtomicBool::new(false);
@@ -84,11 +117,26 @@ pub struct GoBackend {
 
 impl GoBackend {
     /// Запускает Go-рантайм и сервис. Можно вызвать один раз за процесс.
-    pub fn start() -> Result<Self, BridgeError> {
+    pub fn start(p: &StartParams) -> Result<Self, BridgeError> {
         if STARTED.swap(true, Ordering::SeqCst) {
             return Err(BridgeError::AlreadyStarted);
         }
-        let req = proto::StartRequest { proto_version: PROTO_VERSION }.encode_to_vec();
+        let req = proto::StartRequest {
+            proto_version: PROTO_VERSION,
+            api_id: p.api_id,
+            api_hash: p.api_hash.clone(),
+            data_dir: p.data_dir.clone(),
+            device_model: p.device_model.clone(),
+            system_version: p.system_version.clone(),
+            app_version: p.app_version.clone(),
+            lang_code: p.lang_code.clone(),
+            system_lang_code: p.system_lang_code.clone(),
+            test_servers: p.test_servers,
+            proxy: Some(map::proxy_to(&p.proxy)),
+            log_dir: p.log_dir.clone(),
+            keyring_app: p.keyring_app.clone(),
+        }
+        .encode_to_vec();
         // SAFETY: указатель и длина описывают живой срез на время вызова; Go копирует вход.
         let rc = unsafe { ffi::nn_start(req.as_ptr(), req.len()) };
         match rc {
@@ -97,15 +145,15 @@ impl GoBackend {
         }
     }
 
-    /// Ставит команду в очередь; не блокирует.
-    pub fn submit(&self, cmd: &proto::Command) -> Result<(), BridgeError> {
+    /// Ставит protobuf-команду в очередь; не блокирует.
+    pub fn submit_raw(&self, cmd: &proto::Command) -> Result<(), BridgeError> {
         let data = cmd.encode_to_vec();
         // SAFETY: как в start.
         map_rc(unsafe { ffi::nn_submit(cmd.id, data.as_ptr(), data.len()) })
     }
 
-    /// Ждёт событие не дольше `timeout`. Безопасно вызывать из отдельного потока-насоса.
-    pub fn next_event(&self, timeout: Duration) -> Result<NextEvent, BridgeError> {
+    /// Ждёт protobuf-событие не дольше `timeout`.
+    pub fn next_raw(&self, timeout: Duration) -> Result<NextEvent, BridgeError> {
         let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
         let mut buf = ffi::NnBuf { ptr: std::ptr::null_mut(), len: 0 };
         // SAFETY: buf — валидный выходной параметр; Go заполняет его памятью из malloc.
@@ -130,33 +178,138 @@ impl GoBackend {
     }
 
     /// Останавливает сервис (Go-рантайм при этом остаётся жить до конца процесса).
-    pub fn shutdown(&self, timeout: Duration) -> Result<(), BridgeError> {
+    pub fn stop(&self, timeout: Duration) -> Result<(), BridgeError> {
         let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
         // SAFETY: без аргументов-указателей.
         map_rc(unsafe { ffi::nn_shutdown(ms) })
     }
 }
 
-impl Backend for GoBackend {}
+impl Backend for GoBackend {
+    fn submit(&self, id: u64, cmd: Command) -> Result<(), BackendError> {
+        Ok(self.submit_raw(&map::command_to(id, cmd))?)
+    }
 
-/// Заглушка для тестов домена без Go и ядра (наполняется на вехе В3).
+    fn next_event(&self, timeout: Duration) -> Result<Next, BackendError> {
+        loop {
+            return Ok(match self.next_raw(timeout)? {
+                NextEvent::Event(ev) => match map::event_from(ev) {
+                    Some(e) => Next::Event(e),
+                    None => continue, // пустое событие новой версии — пропускаем
+                },
+                NextEvent::Timeout => Next::Timeout,
+                NextEvent::Stopped => Next::Stopped,
+            });
+        }
+    }
+
+    fn shutdown(&self, timeout: Duration) -> Result<(), BackendError> {
+        Ok(self.stop(timeout)?)
+    }
+}
+
+/// Поддельный сетевой слой для тестов домена и интерфейса: запоминает
+/// команды, отдаёт заранее положенные события, может отвечать сценарием.
 #[derive(Default)]
-pub struct FakeBackend;
+pub struct FakeBackend {
+    state: Mutex<FakeState>,
+    cv: Condvar,
+}
 
-impl Backend for FakeBackend {}
+type Script = Box<dyn FnMut(u64, &Command) -> Vec<Event> + Send>;
+
+#[derive(Default)]
+struct FakeState {
+    commands: Vec<(u64, Command)>,
+    events: VecDeque<Event>,
+    stopped: bool,
+    script: Option<Script>,
+}
+
+impl FakeBackend {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Сценарий: на каждую команду возвращает события, которые встанут в очередь.
+    pub fn with_script(f: impl FnMut(u64, &Command) -> Vec<Event> + Send + 'static) -> Self {
+        let b = Self::default();
+        b.state.lock().unwrap().script = Some(Box::new(f));
+        b
+    }
+
+    /// Кладёт событие в очередь.
+    pub fn push(&self, e: Event) {
+        self.state.lock().unwrap().events.push_back(e);
+        self.cv.notify_all();
+    }
+
+    /// Команды, полученные к этому моменту.
+    pub fn commands(&self) -> Vec<(u64, Command)> {
+        self.state.lock().unwrap().commands.clone()
+    }
+}
+
+impl Backend for FakeBackend {
+    fn submit(&self, id: u64, cmd: Command) -> Result<(), BackendError> {
+        let mut st = self.state.lock().unwrap();
+        if st.stopped {
+            return Err(BackendError::NotRunning);
+        }
+        let evs = st.script.as_mut().map(|s| s(id, &cmd)).unwrap_or_default();
+        st.commands.push((id, cmd));
+        st.events.extend(evs);
+        drop(st);
+        self.cv.notify_all();
+        Ok(())
+    }
+
+    fn next_event(&self, timeout: Duration) -> Result<Next, BackendError> {
+        let st = self.state.lock().unwrap();
+        let (mut st, _) = self.cv.wait_timeout_while(st, timeout, |s| s.events.is_empty() && !s.stopped).unwrap();
+        if let Some(e) = st.events.pop_front() {
+            return Ok(Next::Event(e));
+        }
+        Ok(if st.stopped { Next::Stopped } else { Next::Timeout })
+    }
+
+    fn shutdown(&self, _timeout: Duration) -> Result<(), BackendError> {
+        self.state.lock().unwrap().stopped = true;
+        self.cv.notify_all();
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use domain::model::{CommandResult, Payload};
 
     #[test]
     fn proto_types_roundtrip() {
-        let cmd = proto::Command {
-            id: 1,
-            account_id: 1,
-            body: Some(proto::command::Body::Ping(proto::Ping { message: "привет".into() })),
-        };
+        let cmd = map::command_to(1, Command::Ping("привет".into()));
         let back = proto::Command::decode(cmd.encode_to_vec().as_slice()).unwrap();
         assert_eq!(back, cmd);
+    }
+
+    #[test]
+    fn fake_backend_scripts_and_orders() {
+        let b = FakeBackend::with_script(|id, _| {
+            vec![Event::Result(CommandResult { cmd_id: id, error: None, payload: Payload::None })]
+        });
+        for i in 1..=30 {
+            b.submit(i, Command::RequestQr).unwrap();
+        }
+        for i in 1..=30 {
+            match b.next_event(Duration::from_millis(10)).unwrap() {
+                Next::Event(Event::Result(r)) => assert_eq!(r.cmd_id, i),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(b.next_event(Duration::from_millis(5)).unwrap(), Next::Timeout);
+        b.shutdown(Duration::ZERO).unwrap();
+        assert_eq!(b.next_event(Duration::from_millis(5)).unwrap(), Next::Stopped);
+        assert_eq!(b.submit(99, Command::LogOut), Err(BackendError::NotRunning));
+        assert_eq!(b.commands().len(), 30);
     }
 }

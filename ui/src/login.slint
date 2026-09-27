@@ -1,0 +1,628 @@
+// Экран входа (Дизайн/nuncio - Дизайн - Вход.md, макет «Вход»): карточка по
+// центру, шаги заменяют друг друга (Вх-3). Состояние задаёт Rust через
+// глобальный `Login`; действия уходят в Rust колбэками.
+import { ListView, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Button, Link, Field, CheckBox, Segmented, Modal } from "widgets.slint";
+
+export struct CountryRow {
+    iso: string,
+    name: string,
+    code: string, // "+7"
+    flag: image,
+    selected: bool,
+}
+
+export global Login {
+    // Шаг: 0 QR, 1 номер, 2 список стран, 3 код, 4 пароль, 5 регистрация.
+    in property <int> step;
+    in property <bool> busy;
+    // Ошибка: 0 нет, 1 неверный номер, 2 номер заблокирован, 3 неверный код,
+    // 4 код просрочен, 5 неверный пароль, 6 нет имени, 7 FLOOD_WAIT, 8 нет сети,
+    // 9 сбой QR, 10 прочее (error-detail).
+    in property <int> error;
+    in property <string> error-detail;
+    in property <string> flood-time; // "0:42"
+    // Полоса над карточкой: 0 нет, 1 сеанс завершён, 2 ключа нет в связке, 3 файл сессии повреждён.
+    in property <int> banner;
+    in property <string> lang: "ru";
+
+    in property <image> qr;
+    in property <bool> qr-ready;
+
+    in property <string> country-name;
+    in property <string> country-code;
+    in property <image> country-flag;
+    in-out property <string> phone-text;
+    in property <[CountryRow]> countries;
+    in-out property <string> country-filter;
+
+    in property <int> code-length: 5;
+    // Куда отправлен код: 0 приложение, 1 SMS, 2 звонок, 3 другое.
+    in property <int> code-kind;
+    in-out property <string> code-text;
+    in property <[string]> code-chars; // введённые цифры по одной (для ячеек)
+    in property <string> phone-sent;
+    in property <string> resend-time; // пусто — можно отправить повторно
+    // Как отправить повторно: 0 нельзя, 1 SMS, 2 звонок, 3 другое.
+    in property <int> resend-kind;
+
+    in property <string> password-hint;
+    in property <string> terms;
+    in property <bool> terms-accepted;
+
+    callback show-phone();
+    callback show-qr();
+    callback open-countries();
+    callback close-countries();
+    callback filter-countries(string);
+    callback pick-country(string);
+    callback phone-edited(string);
+    callback submit-phone();
+    callback code-edited(string);
+    callback resend-code();
+    callback change-number();
+    callback submit-password(string);
+    callback back();
+    callback toggle-terms();
+    callback submit-sign-up(string, string);
+    callback set-language(string);
+    callback open-proxy();
+}
+
+export global Proxy {
+    in property <bool> open;
+    // 0 без прокси, 1 SOCKS5, 2 MTProxy
+    in-out property <int> kind;
+    in-out property <string> host;
+    in-out property <string> port;
+    in-out property <string> user;
+    in-out property <string> password;
+    in-out property <string> secret;
+    in property <bool> checking;
+    // 0 не проверялось, 1 успех, 2 ошибка
+    in property <int> check-state;
+    in property <string> check-text;
+    callback changed();
+    callback test();
+    callback save();
+    callback cancel();
+}
+
+component Title inherits Text {
+    color: Theme.text;
+    font-size: Theme.title-size;
+    font-weight: 600;
+    horizontal-alignment: center;
+    wrap: word-wrap;
+}
+
+component Muted inherits Text {
+    color: Theme.text-muted;
+    font-size: Theme.small-size;
+    horizontal-alignment: center;
+    wrap: word-wrap;
+}
+
+component ErrorText inherits Text {
+    color: Theme.error;
+    font-size: Theme.tiny-size;
+    horizontal-alignment: center;
+    wrap: word-wrap;
+    text: Login.error == 1 ? @tr("Invalid phone number")
+        : Login.error == 2 ? @tr("This phone number is banned")
+        : Login.error == 3 ? @tr("Invalid code")
+        : Login.error == 4 ? @tr("The code has expired. Request a new one")
+        : Login.error == 5 ? @tr("Invalid password")
+        : Login.error == 6 ? @tr("Enter your first name")
+        : Login.error == 7 ? @tr("Too many attempts. Please wait {}", Login.flood-time)
+        : Login.error == 8 ? @tr("No connection. Check your network or connection settings")
+        : Login.error == 9 ? @tr("Could not get a QR code")
+        : Login.error == 10 ? @tr("Error: {}", Login.error-detail)
+        : "";
+    visible: Login.error != 0;
+}
+
+component Footer inherits HorizontalLayout {
+    alignment: space-between;
+    HorizontalLayout {
+        spacing: 4px;
+        Link {
+            text: "Русский";
+            color: Login.lang == "ru" ? Theme.text : Theme.text-muted;
+            font-size: Theme.tiny-size;
+            clicked => { Login.set-language("ru"); }
+        }
+        Text { text: "/"; color: Theme.text-muted; font-size: Theme.tiny-size; }
+        Link {
+            text: "English";
+            color: Login.lang == "en" ? Theme.text : Theme.text-muted;
+            font-size: Theme.tiny-size;
+            clicked => { Login.set-language("en"); }
+        }
+    }
+    Link {
+        text: @tr("Connection settings");
+        color: Theme.text-muted;
+        font-size: Theme.tiny-size;
+        clicked => { Login.open-proxy(); }
+    }
+}
+
+// 1. QR (Вх-1, Вх-11, Вх-12: подсказка своими словами, путь как в Telegram Desktop).
+component QrStep inherits VerticalLayout {
+    spacing: 16px;
+    alignment: start;
+    Title { text: @tr("Scan from your phone"); }
+    HorizontalLayout {
+        alignment: center;
+        Rectangle {
+            width: 200px;
+            height: 200px;
+            background: Theme.qr-bg;
+            border-radius: 4px;
+            if Login.qr-ready: Image {
+                x: 8px;
+                y: 8px;
+                width: 184px;
+                height: 184px;
+                source: Login.qr;
+                image-rendering: pixelated;
+                accessible-role: image;
+                accessible-label: @tr("QR code for logging in");
+            }
+            if !Login.qr-ready: Text {
+                text: Login.error == 9 ? "" : @tr("Loading…");
+                color: #5b6875;
+                font-size: Theme.small-size;
+            }
+        }
+    }
+    VerticalLayout {
+        spacing: 6px;
+        padding-left: 24px;
+        padding-right: 24px;
+        Text { text: @tr("1. Open the Telegram app on your phone"); color: Theme.text-muted; font-size: Theme.small-size; wrap: word-wrap; }
+        Text { text: @tr("2. Go to Settings > Devices > Add Device"); color: Theme.text-muted; font-size: Theme.small-size; wrap: word-wrap; }
+        Text { text: @tr("3. Point your phone at this code to log in"); color: Theme.text-muted; font-size: Theme.small-size; wrap: word-wrap; }
+    }
+    ErrorText { }
+    if Login.error == 9: HorizontalLayout {
+        alignment: center;
+        Link { text: @tr("Refresh"); clicked => { Login.show-qr(); } }
+    }
+    HorizontalLayout {
+        alignment: center;
+        Button {
+            button-width: 280px;
+            text: @tr("Log in by phone number");
+            clicked => { Login.show-phone(); }
+        }
+    }
+}
+
+// 2. Номер: страна из списка, потом номер (Вх-2).
+component PhoneStep inherits VerticalLayout {
+    spacing: 14px;
+    alignment: start;
+    Title { text: @tr("Your phone number"); }
+    Muted { text: @tr("Choose your country and enter your number"); }
+    HorizontalLayout {
+        alignment: center;
+        Rectangle {
+            width: Theme.field-width;
+            height: Theme.field-height;
+            border-radius: Theme.radius;
+            background: Theme.field-bg;
+            border-width: 1px;
+            border-color: Theme.field-border;
+            accessible-role: combobox;
+            accessible-label: @tr("Country");
+            accessible-value: Login.country-name;
+            TouchArea {
+                enabled: !Login.busy;
+                mouse-cursor: pointer;
+                clicked => { Login.open-countries(); }
+            }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 10px;
+                Image { source: Login.country-flag; width: 24px; height: 24px; y: (parent.height - 24px) / 2; }
+                Text {
+                    text: Login.country-name == "" ? @tr("Country") : Login.country-name;
+                    color: Login.country-name == "" ? Theme.text-muted : Theme.text;
+                    font-size: Theme.body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Text { text: Login.country-code; color: Theme.text-muted; font-size: Theme.body-size; vertical-alignment: center; }
+                Text { text: "▾"; color: Theme.text-muted; font-size: Theme.small-size; vertical-alignment: center; }
+            }
+        }
+    }
+    HorizontalLayout {
+        alignment: center;
+        phone := Field {
+            prefix: Login.country-code;
+            placeholder: @tr("Phone number");
+            text <=> Login.phone-text;
+            enabled: !Login.busy;
+            invalid: Login.error == 1 || Login.error == 2;
+            edited(t) => { Login.phone-edited(t); self.cursor-to-end(); }
+            accepted => { Login.submit-phone(); }
+            escape => { Login.show-qr(); }
+            init => { self.focus-input(); }
+        }
+    }
+    ErrorText { }
+    HorizontalLayout {
+        alignment: center;
+        Button {
+            text: Login.busy ? @tr("Checking…") : @tr("Next");
+            enabled: !Login.busy && Login.error != 7;
+            clicked => { Login.submit-phone(); }
+        }
+    }
+    Link { text: @tr("Log in by QR code"); clicked => { Login.show-qr(); } }
+}
+
+// 3. Список стран с поиском.
+component CountriesStep inherits VerticalLayout {
+    spacing: 10px;
+    HorizontalLayout {
+        alignment: center;
+        Field {
+            field-width: 320px;
+            placeholder: @tr("Search");
+            text <=> Login.country-filter;
+            edited(t) => { Login.filter-countries(t); }
+            escape => { Login.close-countries(); }
+            init => { self.focus-input(); }
+        }
+    }
+    ListView {
+        vertical-stretch: 1;
+        for c in Login.countries: Rectangle {
+            height: 44px;
+            background: c.selected ? Theme.row-selected : row-touch.has-hover ? Theme.row-bg : transparent;
+            border-radius: 4px;
+            accessible-role: list-item;
+            accessible-label: c.name;
+            row-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { Login.pick-country(c.iso); }
+            }
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 14px;
+                spacing: 12px;
+                Image { source: c.flag; width: 24px; height: 24px; y: (parent.height - 24px) / 2; }
+                Text { text: c.name; color: Theme.text; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                Text { text: c.code; color: Theme.text-muted; font-size: 13px; vertical-alignment: center; }
+            }
+        }
+    }
+    Link { text: @tr("Back"); clicked => { Login.close-countries(); } }
+}
+
+// 4. Код: ячейки под цифры (Вх-6). Скрытый TextInput принимает ввод, вставку и
+// удаление; ячейки только рисуют его символы.
+component CodeStep inherits VerticalLayout {
+    spacing: 14px;
+    alignment: start;
+    Title { text: @tr("Enter the code"); }
+    Muted {
+        text: Login.code-kind == 0 ? @tr("We sent the code to the Telegram app on your other device ({})", Login.phone-sent)
+            : Login.code-kind == 1 ? @tr("We sent the code by SMS to {}", Login.phone-sent)
+            : Login.code-kind == 2 ? @tr("We are calling {} to dictate the code", Login.phone-sent)
+            : @tr("We sent the code to {}", Login.phone-sent);
+    }
+    HorizontalLayout {
+        alignment: center;
+        cells := Rectangle {
+            width: Login.code-length * 46px + (Login.code-length - 1) * 8px;
+            height: 56px;
+            hidden := TextInput {
+                x: 0;
+                y: 0;
+                width: 100%;
+                height: 100%;
+                color: transparent;
+                selection-background-color: transparent;
+                selection-foreground-color: transparent;
+                text <=> Login.code-text;
+                enabled: !Login.busy;
+                single-line: true;
+                accessible-label: @tr("Code");
+                edited => { Login.code-edited(self.text); self.set-selection-offsets(1000000, 1000000); }
+                key-pressed(e) => {
+                    if (e.text == Key.Escape) { Login.change-number(); return accept; }
+                    reject
+                }
+                init => { self.focus(); }
+            }
+            for i in Login.code-length: Rectangle {
+                x: i * 54px;
+                width: 46px;
+                height: 56px;
+                border-radius: Theme.radius;
+                background: Theme.field-bg;
+                border-width: 1px;
+                border-color: Login.error == 3 ? Theme.error
+                    : (hidden.has-focus && i == Login.code-chars.length) ? Theme.field-focus
+                    : i < Login.code-chars.length ? Theme.accent-border : Theme.field-border;
+                Text {
+                    // Символ i из введённых цифр.
+                    text: i < Login.code-chars.length ? Login.code-chars[i] : "";
+                    color: Theme.text;
+                    font-size: 20px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            TouchArea { clicked => { hidden.focus(); } }
+        }
+    }
+    ErrorText { }
+    if Login.resend-time != "": Muted { text: @tr("Resend the code in {}", Login.resend-time); }
+    if Login.resend-time == "" && Login.resend-kind != 0: Link {
+        text: Login.resend-kind == 1 ? @tr("Send the code by SMS") : Login.resend-kind == 2 ? @tr("Call me instead") : @tr("Send the code again");
+        enabled: !Login.busy;
+        clicked => { Login.resend-code(); }
+    }
+    HorizontalLayout {
+        alignment: center;
+        Button {
+            text: Login.busy ? @tr("Checking…") : @tr("Next");
+            enabled: !Login.busy && Login.code-chars.length == Login.code-length && Login.error != 7;
+            clicked => { Login.code-edited(Login.code-text); }
+        }
+    }
+    Link { text: @tr("Change number"); clicked => { Login.change-number(); } }
+}
+
+// 5. Облачный пароль.
+component PasswordStep inherits VerticalLayout {
+    in-out property <bool> show;
+    spacing: 14px;
+    alignment: start;
+    Title { text: @tr("Cloud password"); }
+    Muted { text: Login.password-hint == "" ? @tr("Two-step verification is enabled. Enter your password") : @tr("Hint: {}", Login.password-hint); }
+    HorizontalLayout {
+        alignment: center;
+        pw := Field {
+            placeholder: @tr("Password");
+            password: !root.show;
+            enabled: !Login.busy;
+            invalid: Login.error == 5;
+            suffix: root.show ? @tr("hide") : @tr("show");
+            suffix-clicked => { root.show = !root.show; }
+            accepted => { Login.submit-password(self.text); }
+            escape => { Login.back(); }
+            init => { self.focus-input(); }
+        }
+    }
+    ErrorText { }
+    HorizontalLayout {
+        alignment: center;
+        Button {
+            text: Login.busy ? @tr("Checking…") : @tr("Log in");
+            enabled: !Login.busy && pw.text != "" && Login.error != 7;
+            clicked => { Login.submit-password(pw.text); }
+        }
+    }
+    Link { text: @tr("Back"); clicked => { Login.back(); } }
+}
+
+// 6. Регистрация (Вх-5, Вх-9: условия только ссылкой и флажком).
+component SignUpStep inherits VerticalLayout {
+    callback show-terms();
+    spacing: 14px;
+    alignment: start;
+    Title { text: @tr("Registration"); }
+    Muted { text: @tr("This number is not registered in Telegram yet"); }
+    HorizontalLayout {
+        alignment: center;
+        first := Field {
+            placeholder: @tr("First name");
+            enabled: !Login.busy;
+            invalid: Login.error == 6;
+            init => { self.focus-input(); }
+            accepted => { last.focus-input(); }
+            escape => { Login.back(); }
+        }
+    }
+    HorizontalLayout {
+        alignment: center;
+        last := Field {
+            placeholder: @tr("Last name (optional)");
+            enabled: !Login.busy;
+            accepted => { if (Login.terms-accepted) { Login.submit-sign-up(first.text, last.text); } }
+            escape => { Login.back(); }
+        }
+    }
+    HorizontalLayout {
+        alignment: center;
+        spacing: 10px;
+        CheckBox {
+            checked: Login.terms-accepted;
+            toggled => { Login.toggle-terms(); }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            Text { text: @tr("I accept the"); color: Theme.text; font-size: Theme.small-size; vertical-alignment: center; }
+            Link { text: @tr("Terms of Service"); vertical-alignment: center; clicked => { root.show-terms(); } }
+        }
+    }
+    ErrorText { }
+    HorizontalLayout {
+        alignment: center;
+        Button {
+            text: Login.busy ? @tr("Checking…") : @tr("Sign up");
+            enabled: !Login.busy && Login.terms-accepted && Login.error != 7;
+            clicked => { Login.submit-sign-up(first.text, last.text); }
+        }
+    }
+    Link { text: @tr("Back"); clicked => { Login.back(); } }
+}
+
+// 7. Настройки соединения (Вх-4).
+component ProxyDialog inherits Rectangle {
+    width: 360px;
+    height: layout.preferred-height;
+    background: Theme.card-bg;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.card-border;
+    layout := VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        Text { text: @tr("Connection settings"); color: Theme.text; font-size: 16px; font-weight: 600; horizontal-alignment: center; }
+        Segmented {
+            items: [@tr("No proxy"), "SOCKS5", "MTProxy"];
+            current <=> Proxy.kind;
+            selected => { Proxy.changed(); }
+        }
+        if Proxy.kind != 0: HorizontalLayout {
+            spacing: 8px;
+            Field { field-width: 220px; placeholder: @tr("Address"); text <=> Proxy.host; edited => { Proxy.changed(); } }
+            Field { field-width: 80px; placeholder: @tr("Port"); text <=> Proxy.port; edited => { Proxy.changed(); } }
+        }
+        if Proxy.kind == 1: HorizontalLayout {
+            spacing: 8px;
+            Field { field-width: 150px; placeholder: @tr("Username"); text <=> Proxy.user; edited => { Proxy.changed(); } }
+            Field { field-width: 150px; placeholder: @tr("Password"); password: true; text <=> Proxy.password; edited => { Proxy.changed(); } }
+        }
+        if Proxy.kind == 2: Field {
+            field-width: 312px;
+            placeholder: @tr("Secret");
+            text <=> Proxy.secret;
+            edited => { Proxy.changed(); }
+        }
+        if Proxy.kind != 0: HorizontalLayout {
+            spacing: 10px;
+            Link {
+                text: Proxy.checking ? @tr("Checking…") : @tr("Check connection");
+                enabled: !Proxy.checking;
+                horizontal-alignment: left;
+                clicked => { Proxy.test(); }
+            }
+            Text {
+                text: Proxy.check-state == 1 ? @tr("Connected ({} ms)", Proxy.check-text)
+                    : Proxy.check-state == 2 ? @tr("Failed: {}", Proxy.check-text) : "";
+                color: Proxy.check-state == 1 ? Theme.success : Theme.error;
+                font-size: Theme.tiny-size;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            Button { button-width: 150px; primary: false; text: @tr("Cancel"); clicked => { Proxy.cancel(); } }
+            Button { button-width: 150px; text: @tr("Save"); clicked => { Proxy.save(); } }
+        }
+    }
+}
+
+component TermsDialog inherits Rectangle {
+    callback close();
+    width: 440px;
+    height: 480px;
+    background: Theme.card-bg;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.card-border;
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        Text { text: @tr("Terms of Service"); color: Theme.text; font-size: 16px; font-weight: 600; horizontal-alignment: center; }
+        ScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+            content-height: terms.preferred-height;
+            terms := Text {
+                width: parent.width;
+                text: Login.terms == "" ? @tr("The server did not send the text of the terms") : Login.terms;
+                color: Theme.text;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+        }
+        HorizontalLayout {
+            alignment: center;
+            Button { button-width: 150px; text: @tr("Close"); clicked => { root.close(); } }
+        }
+    }
+}
+
+export component LoginScreen inherits Rectangle {
+    in-out property <bool> terms-open;
+    background: Theme.window-bg;
+    VerticalLayout {
+        alignment: center;
+        spacing: 12px;
+        if Login.banner != 0: HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: Theme.card-width;
+                height: banner-text.preferred-height + 16px;
+                background: Theme.strip-bg;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.card-border;
+                banner-text := Text {
+                    width: parent.width - 24px;
+                    text: Login.banner == 1 ? @tr("The session was ended on another device. Log in again")
+                        : Login.banner == 2 ? @tr("The session key is missing from the keyring. Log in again")
+                        : @tr("The session file is damaged. Log in again");
+                    color: Theme.text;
+                    font-size: Theme.small-size;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: Theme.card-width;
+                height: Theme.card-min-height;
+                background: Theme.card-bg;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.card-border;
+                VerticalLayout {
+                    padding: 24px;
+                    padding-top: 28px;
+                    padding-bottom: 14px;
+                    Rectangle {
+                        vertical-stretch: 1;
+                        if Login.step == 0: QrStep { width: 100%; height: 100%; }
+                        if Login.step == 1: PhoneStep { width: 100%; height: 100%; }
+                        if Login.step == 2: CountriesStep { width: 100%; height: 100%; }
+                        if Login.step == 3: CodeStep { width: 100%; height: 100%; }
+                        if Login.step == 4: PasswordStep { width: 100%; height: 100%; }
+                        if Login.step == 5: SignUpStep {
+                            width: 100%;
+                            height: 100%;
+                            show-terms => { root.terms-open = true; }
+                        }
+                    }
+                    Footer { }
+                }
+            }
+        }
+    }
+    if Proxy.open: Modal {
+        width: 100%;
+        height: 100%;
+        ProxyDialog { }
+    }
+    if root.terms-open: Modal {
+        width: 100%;
+        height: 100%;
+        TermsDialog { close => { root.terms-open = false; } }
+    }
+}

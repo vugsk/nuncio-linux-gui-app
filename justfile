@@ -9,7 +9,7 @@ set shell := ["bash", "-uc"]
 export PATH := env_var('HOME') / "go/bin:" + env_var('PATH')
 
 # Полная сборка: шаги 1–5 (без deps — она тяжёлая и отдельная).
-build: tl core proto net
+build: tl core proto net emoji
     cargo build
 
 # Все тесты по слоям (ядро — ещё и под ASan/UBSan).
@@ -27,6 +27,10 @@ deps *what:
 # Статический OpenSSL нужен ядру: собирается, только если его ещё нет.
 openssl:
     [ -f target/native/libcrypto.a ] && [ -f target/native/include/openssl/evp.h ] || python3 third_party/fetch_deps.py openssl
+
+# Шрифт Noto Color Emoji для флагов и эмодзи (О-14): скачивается, только если его нет.
+emoji:
+    [ -f target/native/NotoColorEmoji.ttf ] || python3 third_party/fetch_deps.py noto-emoji
 
 # Шаг 1: TL-кодек net/tl из schema/*.tl (замыкание от корней schema/used.txt).
 tl:

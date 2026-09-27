@@ -7,8 +7,8 @@
 отличается, сообщение об ошибке должно быть понятным, а не голым traceback.
 
 Использование:
-    python3 third_party/fetch_deps.py [openssl] [ffmpeg]
-(без аргументов — оба).
+    python3 third_party/fetch_deps.py [openssl] [ffmpeg] [noto-emoji]
+(без аргументов — все).
 """
 from __future__ import annotations
 
@@ -102,14 +102,25 @@ def build_ffmpeg(dep: dict) -> None:
         print(f"  -> target/native/{Path(artifact).name}")
 
 
+def fetch_noto_emoji(dep: dict) -> None:
+    print("Noto Color Emoji", dep["version"])
+    NATIVE.mkdir(parents=True, exist_ok=True)
+    download(dep["url"], CACHE / "NotoColorEmoji.ttf", dep["sha256"])
+    download(dep["license_url"], CACHE / "NotoColorEmoji.LICENSE", dep["license_sha256"])
+    for name in dep["artifacts"]:
+        shutil.copy2(CACHE / name, NATIVE / name)
+
+
 def main() -> None:
     deps = tomllib.loads((ROOT / "third_party" / "deps.toml").read_text())
-    wanted = sys.argv[1:] or ["openssl", "ffmpeg"]
+    wanted = sys.argv[1:] or ["openssl", "ffmpeg", "noto-emoji"]
     CACHE.mkdir(exist_ok=True)
     if "openssl" in wanted:
         build_openssl(deps["openssl"])
     if "ffmpeg" in wanted:
         build_ffmpeg(deps["ffmpeg"])
+    if "noto-emoji" in wanted:
+        fetch_noto_emoji(deps["noto-emoji"])
     print("Готово:", NATIVE)
 
 

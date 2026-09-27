@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/godbus/dbus/v5"
 
@@ -80,6 +81,11 @@ func Open(app string) (*Keyring, error) {
 	}
 	k := &Keyring{conn: conn, svc: conn.Object(service, servicePath),
 		attrs: map[string]string{"application": app, "purpose": "session-wrap-key"}}
+	// Для автоматических проверок: своя коллекция (например, «session» в памяти
+	// службы — без запроса пароля и без записи в основную связку пользователя).
+	if c := os.Getenv("NUNCIO_KEYRING_COLLECTION"); c != "" {
+		k.Collection = dbus.ObjectPath("/org/freedesktop/secrets/collection/" + c)
+	}
 	var out dbus.Variant
 	if err := k.svc.Call(ifService+".OpenSession", 0, "plain", dbus.MakeVariant("")).Store(&out, &k.session); err != nil {
 		conn.Close()

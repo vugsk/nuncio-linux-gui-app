@@ -14,3 +14,5 @@ ui = { path = "../ui", version = "0.1.0" }
 domain = { path = "../domain", version = "0.1.0" }
 bridge = { path = "../bridge", version = "0.1.0" }
 slint = { version = "1", default-features = false, features = ["std"] }
+log = "0.4.34"
+signal-hook = "0.4.4"

@@ -1,84 +1,352 @@
-//! Точка входа. Поток UI (Slint) остаётся главным; сетевой слой (Go)
-//! запускается из отдельного потока-насоса, который забирает события
-//! через `next_event` и передаёт их в UI через `invoke_from_event_loop`
-//! (Архитектура/nuncio - Приложение (Rust и Slint).md, раздел 2).
-//!
-//! Веха В0: насос отправляет Ping и показывает версию ядра, полученную
-//! по цепочке Rust -> Go -> ядро C++ -> Go -> Rust.
+//! Точка входа: собирает части вместе (Архитектура/nuncio - Приложение (Rust и
+//! Slint).md, раздел 2). Потоки: UI (главный, цикл Slint), домен (модель и
+//! эффекты), БД (единственный владелец SQLite), насос (`next_event` сети).
+//! Сигналы SIGINT/SIGTERM/SIGHUP закрывают окно штатно: сеть останавливается
+//! через `nn_shutdown`, файл сессии дописывается (Границы и C ABI, «Сигналы»).
 
-use std::sync::mpsc;
-use std::time::Duration;
+mod logger;
 
-use bridge::proto::{self, command, command_result, event};
-use bridge::{GoBackend, NextEvent};
+use std::cell::RefCell;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use bridge::{GoBackend, StartParams};
+use domain::config::{self, Config, Paths};
+use domain::login::{CriticalKind, Effect, LoginModel, Screen};
+use domain::model::Event;
+use domain::store::{DbThread, Store};
+use domain::{Backend, Next};
 use slint::ComponentHandle;
+use ui::Action;
 
-enum Control {
+fn now() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+enum Msg {
+    Action(Action),
+    Event(Event),
     Stop,
 }
 
-fn set_status(ui: &slint::Weak<ui::App>, text: String, ok: bool) {
-    let ui = ui.clone();
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(ui) = ui.upgrade() {
-            ui.set_status(text.into());
-            ui.set_ok(ok);
-        }
-    });
+/// Снимок модели для UI: кладётся в слот, UI забирает последний (не чаще кадра).
+#[derive(Default)]
+struct Outbox {
+    model: Option<LoginModel>,
+    lang: Option<String>,
+    scheduled: bool,
 }
 
-fn pump(ui: slint::Weak<ui::App>, control: mpsc::Receiver<Control>) {
-    let backend = match GoBackend::start() {
-        Ok(b) => b,
-        Err(e) => return set_status(&ui, format!("Сетевой слой не запустился: {e}"), false),
-    };
-    let ping = proto::Command {
-        id: 1,
-        account_id: 1,
-        body: Some(command::Body::Ping(proto::Ping { message: "проверка связки".into() })),
-    };
-    if let Err(e) = backend.submit(&ping) {
-        set_status(&ui, format!("Команда не отправлена: {e}"), false);
-    }
-    loop {
-        if let Ok(Control::Stop) = control.try_recv() {
-            let _ = backend.shutdown(Duration::from_secs(2));
+struct Domain {
+    model: LoginModel,
+    cfg: Config,
+    paths: Paths,
+    db: Option<DbThread>,
+    backend: Option<Arc<dyn Backend>>,
+    ui: slint::Weak<ui::App>,
+    out: Arc<Mutex<Outbox>>,
+    quit: bool,
+}
+
+impl Domain {
+    fn publish(&self, lang: Option<String>) {
+        let mut o = self.out.lock().unwrap();
+        o.model = Some(self.model.clone());
+        if lang.is_some() {
+            o.lang = lang;
+        }
+        if o.scheduled {
             return;
         }
-        match backend.next_event(Duration::from_millis(200)) {
-            Ok(NextEvent::Event(proto::Event { body: Some(event::Body::Result(r)) })) => {
-                match (r.error, r.payload) {
-                    (None, Some(command_result::Payload::Pong(p))) => set_status(
-                        &ui,
-                        format!("Связка Rust → Go → ядро работает: {}", p.core_version),
-                        true,
-                    ),
-                    (Some(e), _) => set_status(&ui, format!("Ошибка команды: {}", e.text), false),
-                    _ => {}
+        o.scheduled = true;
+        let out = self.out.clone();
+        let ui = self.ui.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let (model, lang) = {
+                let mut o = out.lock().unwrap();
+                o.scheduled = false;
+                (o.model.take(), o.lang.take())
+            };
+            if let Some(lang) = lang {
+                ui::apply_language(&lang);
+            }
+            if let (Some(app), Some(m)) = (ui.upgrade(), model) {
+                RENDERER.with(|r| r.borrow_mut().render(&app, &m));
+            }
+        });
+    }
+
+    fn apply(&mut self, effects: Vec<Effect>) {
+        let mut lang = None;
+        for e in effects {
+            match e {
+                Effect::Send { id, cmd } => {
+                    if let Some(b) = &self.backend {
+                        if let Err(err) = b.submit(id, cmd) {
+                            log::warn!("команда не отправлена: {err}");
+                        }
+                    }
+                }
+                Effect::SaveConfig => {
+                    self.cfg.lang = self.model.lang.clone();
+                    self.cfg.last_country = self.model.default_country.clone();
+                    self.cfg.proxy = self.model.saved_proxy.clone();
+                    if let Err(err) = self.cfg.save(&self.paths.config) {
+                        log::warn!("config.toml не сохранён: {err}");
+                    }
+                }
+                Effect::ApplyLanguage(l) => lang = Some(l),
+                Effect::WipeLocalData => {
+                    log::info!("удаление локальных данных аккаунта");
+                    if let Some(db) = &self.db {
+                        db.run(|s| {
+                            if let Err(e) = s.wipe_account() {
+                                log::error!("очистка базы: {e}");
+                            }
+                        });
+                    }
+                    let _ = std::fs::remove_dir_all(self.paths.cache.join("media"));
+                }
+                Effect::Quit => self.quit = true,
+            }
+        }
+        self.publish(lang);
+    }
+
+    fn handle(&mut self, msg: Msg) {
+        self.model.now = now();
+        match msg {
+            Msg::Event(e) => {
+                let before = screen_name(&self.model);
+                let fx = self.model.event(e);
+                let after = screen_name(&self.model);
+                if before != after {
+                    log::info!("экран: {after}");
+                }
+                self.apply(fx);
+            }
+            // «Повторить» на экране повреждённой базы: открыть базу ещё раз.
+            Msg::Action(Action::Login(domain::login::Intent::Retry))
+                if matches!(self.model.screen(), Screen::Critical(ref c) if c.kind == CriticalKind::DatabaseCorrupt) =>
+            {
+                match Store::open(&self.paths.database()) {
+                    Ok(s) => {
+                        self.db = Some(DbThread::spawn(s));
+                        self.model.screen = Some(Screen::Starting);
+                        start_network(self);
+                    }
+                    Err(e) => self.model.critical(CriticalKind::DatabaseCorrupt, e.to_string()),
+                }
+                self.publish(None);
+            }
+            Msg::Action(Action::Login(i)) => {
+                let opening_proxy = matches!(i, domain::login::Intent::OpenProxy);
+                let fx = self.model.intent(i);
+                self.apply(fx);
+                if opening_proxy {
+                    let p = self.model.proxy.draft.clone();
+                    let _ = self.ui.upgrade_in_event_loop(move |app| ui::Renderer::fill_proxy(&app, &p));
                 }
             }
-            Ok(NextEvent::Event(proto::Event { body: Some(event::Body::Fatal(f)) })) => {
-                set_status(&ui, format!("Сбой сетевого слоя: {}", f.text), false);
+            Msg::Action(Action::Quit) => self.quit = true,
+            Msg::Action(Action::ResetData) => {
+                // Со-5: удаляем базу и открываем заново; сессия (session.bin) остаётся.
+                let db = self.paths.database();
+                for suffix in ["", "-wal", "-shm"] {
+                    let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+                }
+                match Store::open(&db) {
+                    Ok(s) => {
+                        log::info!("локальная база пересоздана");
+                        self.db = Some(DbThread::spawn(s));
+                        self.model.screen = Some(Screen::Starting);
+                        start_network(self);
+                    }
+                    Err(e) => self.model.critical(CriticalKind::DatabaseCorrupt, e.to_string()),
+                }
+                self.publish(None);
             }
-            Ok(NextEvent::Stopped) => return,
-            Ok(_) => {}
-            Err(e) => set_status(&ui, format!("Ошибка стыка: {e}"), false),
+            Msg::Stop => self.quit = true,
         }
     }
+}
+
+fn screen_name(m: &LoginModel) -> &'static str {
+    match m.screen() {
+        Screen::Starting => "старт",
+        Screen::Critical(_) => "критическое состояние",
+        Screen::Login => "вход",
+        Screen::Main => "главное окно",
+    }
+}
+
+thread_local! {
+    static RENDERER: RefCell<ui::Renderer> = RefCell::new(ui::Renderer::default());
+}
+
+static TX: Mutex<Option<mpsc::Sender<Msg>>> = Mutex::new(None);
+
+fn send(msg: Msg) {
+    if let Some(tx) = TX.lock().unwrap().as_ref() {
+        let _ = tx.send(msg);
+    }
+}
+
+/// Название системы для initConnection (видно в списке сеансов Telegram).
+fn system_version() -> String {
+    std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string()))
+        })
+        .unwrap_or_else(|| "Linux".into())
+}
+
+/// Запускает сеть (Go) и насос событий. Go-рантайм стартует один раз за процесс.
+fn start_network(d: &mut Domain) {
+    if d.backend.is_some() {
+        return;
+    }
+    let Some(creds) = config::load_api_credentials(&d.paths.config) else {
+        d.model.critical(CriticalKind::NoApiCredentials, String::new());
+        return;
+    };
+    let params = StartParams {
+        api_id: creds.api_id,
+        api_hash: creds.api_hash,
+        data_dir: d.paths.data.display().to_string(),
+        log_dir: d.paths.state.display().to_string(),
+        device_model: "nuncio".into(),
+        system_version: system_version(),
+        app_version: env!("CARGO_PKG_VERSION").into(),
+        lang_code: d.model.lang.clone(),
+        system_lang_code: d.model.lang.clone(),
+        test_servers: d.cfg.test_servers,
+        proxy: d.cfg.proxy.clone(),
+        keyring_app: std::env::var("NUNCIO_KEYRING_APP").unwrap_or_default(),
+    };
+    match GoBackend::start(&params) {
+        Ok(b) => {
+            let b: Arc<dyn Backend> = Arc::new(b);
+            d.backend = Some(b.clone());
+            std::thread::Builder::new()
+                .name("nuncio-pump".into())
+                .spawn(move || pump(b))
+                .expect("не удалось запустить поток-насос");
+        }
+        Err(e) => d.model.critical(CriticalKind::NetworkFailed, e.to_string()),
+    }
+}
+
+/// Поток-насос: только забирает события и передаёт их домену.
+fn pump(b: Arc<dyn Backend>) {
+    loop {
+        match b.next_event(Duration::from_millis(500)) {
+            Ok(Next::Event(e)) => send(Msg::Event(e)),
+            Ok(Next::Timeout) => {}
+            Ok(Next::Stopped) => return,
+            Err(e) => {
+                log::error!("насос: {e}");
+                return;
+            }
+        }
+    }
+}
+
+fn domain_loop(mut d: Domain, rx: mpsc::Receiver<Msg>) {
+    d.publish(Some(d.model.lang.clone()));
+    while !d.quit {
+        let wait = if d.model.needs_tick() { Duration::from_secs(1) } else { Duration::from_secs(30) };
+        match rx.recv_timeout(wait) {
+            Ok(msg) => d.handle(msg),
+            Err(RecvTimeoutError::Timeout) => {
+                d.model.now = now();
+                d.publish(None);
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let _ = slint::invoke_from_event_loop(|| {
+        let _ = slint::quit_event_loop();
+    });
+    if let Some(b) = d.backend.take() {
+        if let Err(e) = b.shutdown(Duration::from_secs(3)) {
+            log::warn!("остановка сети: {e}");
+        }
+    }
+    drop(d.db.take());
+    log::info!("домен остановлен");
 }
 
 fn main() {
+    let paths = Paths::system();
+    logger::init(&paths.state);
+    log::info!("запуск nuncio {}", env!("CARGO_PKG_VERSION"));
+
+    let (cfg, cfg_err) = Config::load(&paths.config);
+    if let Some(e) = cfg_err {
+        log::warn!("{e}");
+    }
+    let env = |k: &str| std::env::var(k).ok();
+    let lang = config::ui_language(&cfg, env);
+    ui::apply_language(lang);
+    let country = if cfg.last_country.is_empty() {
+        config::locale_country(env).unwrap_or_else(|| "RU".into())
+    } else {
+        cfg.last_country.clone()
+    };
+    let model = LoginModel::new(lang, &country, cfg.proxy.clone(), now());
+
     let app = ui::App::new().expect("не удалось создать окно (нужен доступный бэкенд Slint)");
     let (tx, rx) = mpsc::channel();
-    let weak = app.as_weak();
-    let pump = std::thread::Builder::new()
-        .name("nuncio-pump".into())
-        .spawn(move || pump(weak, rx))
-        .expect("не удалось запустить поток-насос");
+    *TX.lock().unwrap() = Some(tx);
+    ui::bind(&app, |a| send(Msg::Action(a)));
+
+    let mut d = Domain {
+        model,
+        cfg,
+        paths: paths.clone(),
+        db: None,
+        backend: None,
+        ui: app.as_weak(),
+        out: Arc::new(Mutex::new(Outbox::default())),
+        quit: false,
+    };
+    match Store::open(&paths.database()) {
+        Ok(s) => {
+            d.db = Some(DbThread::spawn(s));
+            start_network(&mut d);
+        }
+        Err(e) => {
+            log::error!("база: {e}");
+            d.model.critical(CriticalKind::DatabaseCorrupt, e.to_string());
+        }
+    }
+    let domain = std::thread::Builder::new()
+        .name("nuncio-domain".into())
+        .spawn(move || domain_loop(d, rx))
+        .expect("не удалось запустить поток домена");
+
+    // Штатное завершение по сигналам: закрыть окно, остановить сеть.
+    if let Ok(mut signals) =
+        signal_hook::iterator::Signals::new([signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM,
+            signal_hook::consts::SIGHUP])
+    {
+        std::thread::Builder::new()
+            .name("nuncio-signals".into())
+            .spawn(move || {
+                if let Some(sig) = signals.forever().next() {
+                    log::info!("сигнал {sig}: завершение");
+                    send(Msg::Stop);
+                }
+            })
+            .expect("не удалось запустить поток сигналов");
+    }
 
     app.run().expect("окно завершилось с ошибкой");
-
-    // Закрытие: остановить сетевой слой и дождаться насоса.
-    let _ = tx.send(Control::Stop);
-    let _ = pump.join();
+    send(Msg::Stop);
+    let _ = domain.join();
+    log::info!("выход");
 }

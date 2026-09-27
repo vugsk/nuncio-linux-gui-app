@@ -1,0 +1,278 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: ru\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+
+msgid "1. Open the Telegram app on your phone"
+msgstr "1. Откройте приложение Telegram на телефоне"
+
+msgid "2. Go to Settings > Devices > Add Device"
+msgstr "2. Зайдите в Настройки > Устройства > Подключить устройство"
+
+msgid "3. Point your phone at this code to log in"
+msgstr "3. Наведите камеру телефона на этот код"
+
+msgid "Address"
+msgstr "Адрес"
+
+msgid "Back"
+msgstr "Назад"
+
+msgid "Call me instead"
+msgstr "Позвонить мне"
+
+msgid "Cancel"
+msgstr "Отмена"
+
+msgid "Change number"
+msgstr "Изменить номер"
+
+msgid "Chats will appear in the next version."
+msgstr "Чаты появятся в следующей версии."
+
+msgid "Check connection"
+msgstr "Проверить подключение"
+
+msgid "Checking…"
+msgstr "Проверка…"
+
+msgid "Choose your country and enter your number"
+msgstr "Выберите страну и введите номер"
+
+msgid "Close"
+msgstr "Закрыть"
+
+msgid "Cloud password"
+msgstr "Облачный пароль"
+
+msgid "Code"
+msgstr "Код"
+
+msgid "Connected ({} ms)"
+msgstr "Подключение установлено ({} мс)"
+
+msgid "Connecting…"
+msgstr "Подключение…"
+
+msgid "Connection settings"
+msgstr "Настройки соединения"
+
+msgid "Could not get a QR code"
+msgstr "Не удалось получить QR-код"
+
+msgid "Country"
+msgstr "Страна"
+
+msgid "Create ~/.config/nuncio/api.env with the lines API_ID=… and API_HASH=… (get them at my.telegram.org) and restart the app."
+msgstr "Создайте файл ~/.config/nuncio/api.env со строками API_ID=… и API_HASH=… (их выдаёт my.telegram.org) и перезапустите приложение."
+
+msgid "Delete all local data? You will stay logged in; chats will be downloaded again."
+msgstr "Удалить все локальные данные? Вход сохранится, чаты загрузятся заново."
+
+msgid "Enter the code"
+msgstr "Введите код"
+
+msgid "Enter your first name"
+msgstr "Введите имя"
+
+msgid "Error: {}"
+msgstr "Ошибка: {}"
+
+msgid "Failed: {}"
+msgstr "Не удалось: {}"
+
+msgid "First name"
+msgstr "Имя"
+
+msgid "Hint: {}"
+msgstr "Подсказка: {}"
+
+msgid "I accept the"
+msgstr "Принимаю"
+
+msgid "If the system asks, unlock the keyring"
+msgstr "Если система попросит, разблокируйте связку ключей"
+
+msgid "Invalid code"
+msgstr "Неверный код"
+
+msgid "Invalid password"
+msgstr "Неверный пароль"
+
+msgid "Invalid phone number"
+msgstr "Неверный номер"
+
+msgid "Keyring (Secret Service) not found"
+msgstr "Не найдена связка ключей (Secret Service)"
+
+msgid "Last name (optional)"
+msgstr "Фамилия (необязательно)"
+
+msgid "Loading…"
+msgstr "Загрузка…"
+
+msgid "Log in"
+msgstr "Войти"
+
+msgid "Log in by QR code"
+msgstr "Войти по QR-коду"
+
+msgid "Log in by phone number"
+msgstr "Войти по номеру телефона"
+
+msgid "Log out"
+msgstr "Выйти"
+
+msgid "Log out? The session will be ended and all local data (messages, cache, keys) deleted."
+msgstr "Выйти из аккаунта? Сеанс будет завершён, все локальные данные (сообщения, кэш, ключи) удалены."
+
+msgid "Logged in as {}"
+msgstr "Вы вошли как {}"
+
+msgid "Logging out…"
+msgstr "Выход…"
+
+msgid "Next"
+msgstr "Далее"
+
+msgid "No connection. Check your network or connection settings"
+msgstr "Нет соединения. Проверьте сеть или настройки соединения"
+
+msgid "No network. Connecting…"
+msgstr "Нет сети. Подключение…"
+
+msgid "No proxy"
+msgstr "Без прокси"
+
+msgid "Password"
+msgstr "Пароль"
+
+msgid "Phone number"
+msgstr "Номер телефона"
+
+msgid "Port"
+msgstr "Порт"
+
+msgid "QR code for logging in"
+msgstr "QR-код для входа"
+
+msgid "Quit"
+msgstr "Выйти"
+
+msgid "Refresh"
+msgstr "Обновить"
+
+msgid "Resend the code in {}"
+msgstr "Отправить код повторно через {}"
+
+msgid "Reset"
+msgstr "Сбросить"
+
+msgid "Reset local data"
+msgstr "Сбросить локальные данные"
+
+msgid "Retry"
+msgstr "Повторить"
+
+msgid "Save"
+msgstr "Сохранить"
+
+msgid "Scan from your phone"
+msgstr "Отсканируйте код телефоном"
+
+msgid "Registration"
+msgstr "Регистрация"
+
+msgid "Search"
+msgstr "Поиск"
+
+msgid "Secret"
+msgstr "Секрет"
+
+msgid "Send the code again"
+msgstr "Отправить код ещё раз"
+
+msgid "Send the code by SMS"
+msgstr "Отправить код по SMS"
+
+msgid "Sign up"
+msgstr "Зарегистрироваться"
+
+msgid "Terms of Service"
+msgstr "Условия использования"
+
+msgid "The app cannot read its local data. You can retry, quit, or reset the local data (messages will be downloaded again)."
+msgstr "Приложение не может прочитать локальные данные. Можно повторить, выйти или сбросить локальные данные (сообщения загрузятся заново)."
+
+msgid "The code has expired. Request a new one"
+msgstr "Код просрочен. Запросите новый"
+
+msgid "The keyring is locked"
+msgstr "Связка ключей заблокирована"
+
+msgid "The local database is damaged"
+msgstr "Локальная база повреждена"
+
+msgid "The network layer failed to start"
+msgstr "Сетевой слой не запустился"
+
+msgid "The server did not send the text of the terms"
+msgstr "Сервер не прислал текст условий"
+
+msgid "The session file is damaged. Log in again"
+msgstr "Файл сеанса повреждён. Войдите снова"
+
+msgid "The session key is missing from the keyring. Log in again"
+msgstr "Ключа сеанса нет в связке ключей. Войдите снова"
+
+msgid "The session was ended on another device. Log in again"
+msgstr "Сеанс завершён на другом устройстве. Войдите снова"
+
+msgid "This number is not registered in Telegram yet"
+msgstr "Этого номера ещё нет в Telegram"
+
+msgid "This phone number is banned"
+msgstr "Этот номер заблокирован"
+
+msgid "Too many attempts. Please wait {}"
+msgstr "Слишком много попыток. Подождите {}"
+
+msgid "Try again. If it keeps failing, see the log in ~/.local/state/nuncio."
+msgstr "Попробуйте ещё раз. Если не помогает, посмотрите журнал в ~/.local/state/nuncio."
+
+msgid "Two-step verification is enabled. Enter your password"
+msgstr "Включена двухэтапная проверка. Введите пароль"
+
+msgid "Unlock the keyring when the system asks for its password, then press Retry."
+msgstr "Разблокируйте связку ключей, когда система спросит пароль, и нажмите «Повторить»."
+
+msgid "Username"
+msgstr "Логин"
+
+msgid "We are calling {} to dictate the code"
+msgstr "Звоним на {}, чтобы продиктовать код"
+
+msgid "We sent the code by SMS to {}"
+msgstr "Код отправлен по SMS на {}"
+
+msgid "We sent the code to the Telegram app on your other device ({})"
+msgstr "Код отправлен в Telegram на другое ваше устройство ({})"
+
+msgid "We sent the code to {}"
+msgstr "Код отправлен на {}"
+
+msgid "Your phone number"
+msgstr "Ваш номер телефона"
+
+msgid "api_id and api_hash are not set"
+msgstr "Не заданы api_id и api_hash"
+
+msgid "hide"
+msgstr "скрыть"
+
+msgid "nuncio keeps the session key only in the system keyring. Start GNOME Keyring, KWallet or KeePassXC with Secret Service integration and press Retry."
+msgstr "nuncio хранит ключ сеанса только в системной связке ключей. Запустите GNOME Keyring, KWallet или KeePassXC с интеграцией Secret Service и нажмите «Повторить»."
+
+msgid "show"
+msgstr "показать"

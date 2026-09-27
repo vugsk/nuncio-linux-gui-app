@@ -1,29 +1,226 @@
-// Веха В0: окно-заглушка, показывает результат вертикали Rust -> Go -> ядро.
-// Настоящие экраны — по заметкам в Дизайн/ (вехи В3–В9), рендерер —
-// software (О-13, Нс-8).
-export component App inherits Window {
-    in property <string> status: "Запуск…";
-    in property <bool> ok: false;
-    title: "nuncio";
-    preferred-width: 480px;
-    preferred-height: 320px;
-    background: #17212b;
+// Корневое окно: старт, критические состояния (Со-4), вход, главное окно.
+// Рендерер — software (О-13); рамка окна системная (Дз-5).
+import { Theme } from "theme.slint";
+import { Button, Link, Modal } from "widgets.slint";
+import { Login, Proxy, CountryRow, LoginScreen } from "login.slint";
+
+export { Theme, Login, Proxy, CountryRow }
+
+export global Shell {
+    // 0 старт, 1 критическое состояние, 2 вход, 3 главное окно
+    in property <int> screen;
+    // Критическое: 0 нет Secret Service, 1 связка заблокирована, 2 нет api.env,
+    // 3 повреждена база, 4 сбой сетевого слоя.
+    in property <int> critical-kind;
+    in property <string> critical-detail;
+    // Соединение: 0 подключено или ещё не известно, 1 подключение, 2 нет сети.
+    in property <int> conn;
+    in property <string> user-name;
+    in property <bool> busy;
+    callback retry();
+    callback quit();
+    callback log-out();
+    callback reset-data();
+}
+
+component Strip inherits Rectangle {
+    height: 28px;
+    background: Theme.strip-bg;
+    HorizontalLayout {
+        alignment: center;
+        spacing: 12px;
+        Text {
+            text: Shell.conn == 2 ? @tr("No network. Connecting…") : @tr("Connecting…");
+            color: Theme.text-muted;
+            font-size: Theme.small-size;
+            vertical-alignment: center;
+        }
+        if Shell.screen == 2: Link {
+            text: @tr("Connection settings");
+            vertical-alignment: center;
+            clicked => { Login.open-proxy(); }
+        }
+    }
+}
+
+component StartingScreen inherits Rectangle {
+    background: Theme.window-bg;
     VerticalLayout {
         alignment: center;
         spacing: 8px;
-        padding: 16px;
+        Text { text: "nuncio"; color: Theme.text; font-size: 20px; horizontal-alignment: center; }
+        Text { text: @tr("Loading…"); color: Theme.text-muted; font-size: Theme.small-size; horizontal-alignment: center; }
         Text {
-            text: "nuncio";
-            color: #e6edf3;
-            font-size: 20px;
+            text: @tr("If the system asks, unlock the keyring");
+            color: Theme.text-muted;
+            font-size: Theme.tiny-size;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+component Confirm inherits Rectangle {
+    in property <string> text;
+    in property <string> ok-text;
+    callback ok();
+    callback cancel();
+    width: 380px;
+    height: layout.preferred-height;
+    background: Theme.card-bg;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.card-border;
+    layout := VerticalLayout {
+        padding: 24px;
+        spacing: 18px;
+        Text { text: root.text; color: Theme.text; font-size: 13px; wrap: word-wrap; horizontal-alignment: center; }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 12px;
+            Button { button-width: 150px; primary: false; text: @tr("Cancel"); clicked => { root.cancel(); } }
+            Button { button-width: 150px; text: root.ok-text; clicked => { root.ok(); } }
+        }
+    }
+}
+
+// Со-4: отдельный экран в окне — причина, что делать, «Повторить» и «Выйти»;
+// для повреждённой базы ещё «Сбросить локальные данные» (Со-5).
+component CriticalScreen inherits Rectangle {
+    in-out property <bool> confirm-reset;
+    background: Theme.window-bg;
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 440px;
+                height: layout.preferred-height;
+                background: Theme.card-bg;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.card-border;
+                layout := VerticalLayout {
+                    padding: 28px;
+                    spacing: 14px;
+                    Text {
+                        text: Shell.critical-kind == 0 ? @tr("Keyring (Secret Service) not found")
+                            : Shell.critical-kind == 1 ? @tr("The keyring is locked")
+                            : Shell.critical-kind == 2 ? @tr("api_id and api_hash are not set")
+                            : Shell.critical-kind == 3 ? @tr("The local database is damaged")
+                            : @tr("The network layer failed to start");
+                        color: Theme.text;
+                        font-size: Theme.title-size;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: Shell.critical-kind == 0 ? @tr("nuncio keeps the session key only in the system keyring. Start GNOME Keyring, KWallet or KeePassXC with Secret Service integration and press Retry.")
+                            : Shell.critical-kind == 1 ? @tr("Unlock the keyring when the system asks for its password, then press Retry.")
+                            : Shell.critical-kind == 2 ? @tr("Create ~/.config/nuncio/api.env with the lines API_ID=… and API_HASH=… (get them at my.telegram.org) and restart the app.")
+                            : Shell.critical-kind == 3 ? @tr("The app cannot read its local data. You can retry, quit, or reset the local data (messages will be downloaded again).")
+                            : @tr("Try again. If it keeps failing, see the log in ~/.local/state/nuncio.");
+                        color: Theme.text-muted;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    if Shell.critical-detail != "": Text {
+                        text: Shell.critical-detail;
+                        color: Theme.text-muted;
+                        font-size: Theme.tiny-size;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 12px;
+                        if Shell.critical-kind != 2: Button {
+                            button-width: 150px;
+                            text: @tr("Retry");
+                            enabled: !Shell.busy;
+                            clicked => { Shell.retry(); }
+                        }
+                        Button { button-width: 150px; primary: false; text: @tr("Quit"); clicked => { Shell.quit(); } }
+                    }
+                    if Shell.critical-kind == 3: HorizontalLayout {
+                        alignment: center;
+                        Link { text: @tr("Reset local data"); color: Theme.error; clicked => { root.confirm-reset = true; } }
+                    }
+                }
+            }
+        }
+    }
+    if root.confirm-reset: Modal {
+        width: 100%;
+        height: 100%;
+        Confirm {
+            text: @tr("Delete all local data? You will stay logged in; chats will be downloaded again.");
+            ok-text: @tr("Reset");
+            ok => { root.confirm-reset = false; Shell.reset-data(); }
+            cancel => { root.confirm-reset = false; }
+        }
+    }
+}
+
+// Главное окно появится на вехе В4; пока — кто вошёл и выход.
+component MainPlaceholder inherits Rectangle {
+    in-out property <bool> confirm-logout;
+    background: Theme.window-bg;
+    VerticalLayout {
+        alignment: center;
+        spacing: 14px;
+        Text {
+            text: @tr("Logged in as {}", Shell.user-name);
+            color: Theme.text;
+            font-size: Theme.title-size;
             horizontal-alignment: center;
         }
         Text {
-            text: root.status;
-            color: root.ok ? #6ab3f3 : #8a9aa8;
-            font-size: 14px;
+            text: @tr("Chats will appear in the next version.");
+            color: Theme.text-muted;
+            font-size: Theme.small-size;
             horizontal-alignment: center;
-            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: center;
+            Button {
+                button-width: 200px;
+                primary: false;
+                text: Shell.busy ? @tr("Logging out…") : @tr("Log out");
+                enabled: !Shell.busy;
+                clicked => { root.confirm-logout = true; }
+            }
+        }
+    }
+    if root.confirm-logout: Modal {
+        width: 100%;
+        height: 100%;
+        Confirm {
+            text: @tr("Log out? The session will be ended and all local data (messages, cache, keys) deleted.");
+            ok-text: @tr("Log out");
+            ok => { root.confirm-logout = false; Shell.log-out(); }
+            cancel => { root.confirm-logout = false; }
+        }
+    }
+}
+
+export component App inherits Window {
+    title: "nuncio";
+    preferred-width: 1100px;
+    preferred-height: 800px;
+    min-width: 400px;
+    min-height: 600px;
+    background: Theme.window-bg;
+    default-font-size: Theme.body-size;
+    VerticalLayout {
+        if (Shell.screen == 2 || Shell.screen == 3) && Shell.conn != 0: Strip { }
+        Rectangle {
+            vertical-stretch: 1;
+            if Shell.screen == 0: StartingScreen { width: 100%; height: 100%; }
+            if Shell.screen == 1: CriticalScreen { width: 100%; height: 100%; }
+            if Shell.screen == 2: LoginScreen { width: 100%; height: 100%; }
+            if Shell.screen == 3: MainPlaceholder { width: 100%; height: 100%; }
         }
     }
 }
