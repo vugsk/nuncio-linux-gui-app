@@ -1,7 +1,6 @@
 # Шаги сборки — см. Архитектура/nuncio - Сборка и структура репозитория.md.
-# Каркас (веха В0): все шаги реальны (ничего не заглушено в justfile), но
-# то, что они собирают, — по большей части ещё пустые заготовки без
-# логики (см. комментарии в исходниках каждого шага).
+# Порядок важен: core раньше net (cgo линкует libtgcrypto.a), net раньше
+# cargo build (bridge линкует libnuncio_net.a).
 
 set shell := ["bash", "-uc"]
 
@@ -16,7 +15,7 @@ build: tl core proto net
 # Все тесты по слоям.
 test:
     cd core/build && ctest --output-on-failure
-    cd net && go vet ./... && go test ./...
+    cd net && go vet ./... && go test -race ./...
     cd tools/tlgen && go vet ./... && go test ./...
     cargo test
 
@@ -40,17 +39,18 @@ proto:
     mkdir -p net/gen
     protoc -I proto --go_out=net/gen --go_opt=paths=source_relative proto/client.proto
 
-# Шаг 4: сеть Go (пока без -buildmode=c-archive: вертикаль-заглушка ещё
-# не написана, см. Архитектура/nuncio - План реализации.md, веха В0/В3).
+# Шаг 4: сеть Go -> target/native/libnuncio_net.a (+ .h). Нужна libtgcrypto.a
+# (шаг 2): cgo пробно линкует C-часть уже при сборке архива.
 net:
-    cd net && go vet ./... && go build ./...
+    cd net && go vet ./... && go build -buildmode=c-archive -o ../target/native/libnuncio_net.a ./ffi
 
 # Проверки качества (раздел 4 заметки о сборке).
 lint:
     cargo clippy --all-targets -- -D warnings
     cargo deny check
-    cd net && go vet ./... && staticcheck ./... || true
-    cd core && clang-tidy src/*.cpp -- -std=c++20 -Iinclude || true
+    cd net && go vet ./... && staticcheck ./...
+    cd tools/tlgen && go vet ./... && staticcheck ./...
+    cd core && clang-tidy -p build src/*.cpp
 
 clean:
     rm -rf target core/build net/tl net/gen

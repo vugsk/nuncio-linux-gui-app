@@ -2,25 +2,47 @@
 #define NUNCIO_TGCRYPTO_H
 
 /*
- * Публичный C ABI крипто-ядра. Каркас (веха В0): пока пусто.
+ * Публичный C ABI крипто-ядра. Источник истины — эскиз в
+ * Архитектура/nuncio - Границы и C ABI.md; здесь объявляется только то,
+ * что уже реализовано.
  *
- * Настоящие объявления (tg_pq_factorize, tg_rsa_pad_encrypt,
- * tg_authgen_*, tg_env_encrypt/decrypt, tg_srp_check, tg_obfs_*, ...)
- * добавляются на веху В1 по эскизу в
- * Архитектура/nuncio - Границы и C ABI.md — эта заметка источник
- * истины, здесь их не дублировать заранее, чтобы не разойтись.
+ * Правила: видимы только tg_*-символы (-fvisibility=hidden), выходные
+ * tg_buf выдаёт ядро и освобождает tg_buf_free, исключения C++ не
+ * пересекают границу, ядро вызывает только Go.
  *
- * Правила ABI (см. ту же заметку): только tg_*-символы видимы
- * (-fvisibility=hidden в CMakeLists.txt), память, выданную ядром,
- * освобождает ядро (tg_buf_free), ядро вызывает только Go, никогда
- * Rust напрямую.
+ * Веха В0: tg_version и tg_buf_free (для проверки связки Rust -> Go -> ядро).
+ * Примитивы (конверт, IGE, RSA_PAD, DH, SRP, обфускация) — веха В1.
  */
+
+#include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Пока намеренно пусто. */
+#define TG_API __attribute__((visibility("default")))
+
+typedef struct {
+    uint8_t *ptr;
+    size_t len;
+} tg_buf;
+
+typedef enum {
+    TG_OK = 0,
+    TG_ERR_ARG,
+    TG_ERR_NOMEM,
+    TG_ERR_CRYPTO,
+    TG_ERR_MSG_KEY,
+    TG_ERR_DH,
+    TG_ERR_STATE
+} tg_status;
+
+/* Строка вида "tgcrypto 0.1.0"; статическая, освобождать не нужно. */
+TG_API const char *tg_version(void);
+
+/* Освобождает буфер, выданный ядром. Безопасна для {NULL, 0}. */
+TG_API void tg_buf_free(tg_buf b);
 
 #ifdef __cplusplus
 }

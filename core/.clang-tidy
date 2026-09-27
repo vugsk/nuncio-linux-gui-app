@@ -1,0 +1,13 @@
+# Статика ядра (Архитектура/nuncio - Крипто-ядро (C++).md, раздел 6).
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  performance-*,
+  portability-*,
+  -bugprone-easily-swappable-parameters,
+  -performance-enum-size
+# performance-enum-size отключена: tg_status — enum C ABI, его размер
+# должен совпадать с int у всех потребителей (Go/cgo).
+WarningsAsErrors: '*'

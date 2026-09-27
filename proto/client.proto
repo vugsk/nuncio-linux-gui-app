@@ -1,10 +1,11 @@
-// Стык Rust (bridge) <-> Go (net/gen): решение О-1/О-4 в
-// Архитектура/nuncio - Риски и открытые вопросы.md. Правится вручную,
-// генерируется в net/gen (protoc-gen-go) и в Rust (prost, bridge/build.rs).
+// Стык Rust (bridge) <-> Go (net/gen), см. Архитектура/nuncio - Границы и C ABI.md.
+// Правится вручную; генерируется в net/gen (protoc-gen-go) и в Rust (prost,
+// bridge/build.rs). Правила: номера полей не переиспользуются, только
+// добавление; в этом файле нет ничего из TL.
 //
-// Пока это заглушка каркаса (веха В0): одна команда и одно событие, только
-// чтобы конвейер генерации был реальным. Настоящие команды (вход, история,
-// отправка и т.д.) добавляются по мере веховой работы (см. План реализации).
+// Веха В0 (вертикаль-заглушка): StartRequest, Command с одной командой Ping и
+// Event с CommandResult/FatalError. Настоящие команды (вход, история, отправка)
+// добавляются по вехам, см. Архитектура/nuncio - План реализации.md.
 
 syntax = "proto3";
 
@@ -12,11 +13,61 @@ package nuncio.client.v0;
 
 option go_package = "nuncio/net/gen;gen";
 
-// Проверка живости моста (Rust -> Go -> Rust), временная.
+// Передаётся в nn_start один раз за процесс.
+message StartRequest {
+  // Должна совпасть с PROTO_VERSION на стороне Go, иначе nn_start вернёт ошибку.
+  uint32 proto_version = 1;
+}
+
+message Command {
+  uint64 id = 1;          // корреляция с CommandResult.cmd_id
+  uint64 account_id = 2;  // сейчас всегда 1
+  oneof body {
+    Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
+  }
+}
+
+message Event {
+  oneof body {
+    CommandResult result = 1;
+    FatalError fatal = 6;
+  }
+}
+
+message CommandResult {
+  uint64 cmd_id = 1;
+  Error error = 2;        // не задано = успех
+  oneof payload {
+    Pong pong = 100;
+  }
+}
+
+// Единая ошибка, см. правило 4 в заметке о стыках.
+message Error {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    NETWORK = 1;
+    RPC = 2;
+    FLOOD = 3;
+    AUTH = 4;
+    CANCELLED = 5;
+    INTERNAL = 6;
+  }
+  Kind kind = 1;
+  int32 code = 2;
+  string text = 3;
+  uint32 retry_after = 4;
+}
+
+message FatalError {
+  string text = 1;
+}
+
 message Ping {
   string message = 1;
 }
 
 message Pong {
-  string message = 1;
+  string message = 1;       // эхо Ping.message
+  string core_version = 2;  // tg_version() из ядра, получено через Go
 }

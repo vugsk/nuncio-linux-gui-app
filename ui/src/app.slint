@@ -1,14 +1,29 @@
-// Каркас (веха В0): пустое окно, только чтобы конвейер slint-build
-// был реальным и что-то компилировал. Настоящие экраны — по заметкам
-// в Дизайн/ (Дз-*, Вх-*, Сп-*, Чт-*, Св-*, Нс-*, Со-*), рендерер —
-// software (О-13), см. Архитектура/nuncio - Риски и открытые вопросы.md.
+// Веха В0: окно-заглушка, показывает результат вертикали Rust -> Go -> ядро.
+// Настоящие экраны — по заметкам в Дизайн/ (вехи В3–В9), рендерер —
+// software (О-13, Нс-8).
 export component App inherits Window {
-    title: "nuncio (каркас)";
-    width: 480px;
-    height: 320px;
+    in property <string> status: "Запуск…";
+    in property <bool> ok: false;
+    title: "nuncio";
+    preferred-width: 480px;
+    preferred-height: 320px;
     background: #17212b;
-    Text {
-        text: "nuncio: каркас репозитория (В0)";
-        color: #e6edf3;
+    VerticalLayout {
+        alignment: center;
+        spacing: 8px;
+        padding: 16px;
+        Text {
+            text: "nuncio";
+            color: #e6edf3;
+            font-size: 20px;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.status;
+            color: root.ok ? #6ab3f3 : #8a9aa8;
+            font-size: 14px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
     }
 }
