@@ -84,6 +84,44 @@ export struct PickerItem {
     selected: bool,
 }
 
+export struct SelRect {
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+}
+
+// Поле ввода — гибрид (Дз-17, composer.rs): невидимый TextInput — движок,
+// текст, каретку и выделение рисует наша раскладка.
+export global Composer {
+    in-out property <string> text;
+    in property <[RichLine]> lines;
+    in property <[SelRect]> selection;
+    in property <length> caret-x;
+    in property <length> caret-y;
+    in property <length> content-height: 20px;
+    in property <length> scroll-y;
+    // Rust просит TextInput выделить: применяется при смене номера.
+    in property <int> sel-seq;
+    in property <int> sel-anchor;
+    in property <int> sel-cursor;
+    // Стили на выделении — подсветка кнопок панели (Дз-15).
+    in property <bool> has-selection;
+    in property <[bool]> active: [false, false, false, false, false];
+    callback edited(string, int, int);
+    callback cursor-moved(int, int);
+    callback preedit(string);
+    callback key(string, bool, bool, bool) -> bool;
+    callback pointer(length, length, int); // 0 — нажатие, 1 — протягивание, 2 — двойной клик
+    callback width(length);
+    callback wheel(length);
+    callback format(int); // 0–4 стиль, 5 ссылка, 6 убрать
+    // Диалог ссылки.
+    in-out property <bool> link-open;
+    in-out property <string> link-url;
+    callback link-apply(string);
+}
+
 export global Chat {
     in property <[DialogItem]> dialogs;
     in property <bool> dialogs-loading;
@@ -104,14 +142,12 @@ export global Chat {
     in property <bool> open-has-avatar;
     in property <bool> history-loading;
     in property <bool> can-write: true;
-    in-out property <string> composer;
     in property <bool> sending;
     in property <string> error;
     // Счётчик изменений истории: при росте — прокрутка вниз, если были внизу.
     callback open(string);
     callback back();
     callback send();
-    callback composer-edited(string);
     callback scroll(float);
     callback view-height(float);
     callback row-height(int, float);
@@ -698,6 +734,182 @@ component MessageRow inherits VerticalLayout {
     }
 }
 
+// Кнопка панели форматирования.
+component FmtButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> on;
+    in property <bool> bold;
+    in property <bool> italic;
+    in property <bool> underline;
+    in property <bool> strike;
+    in property <bool> mono;
+    callback clicked();
+    width: max(32px, t.preferred-width + 16px);
+    height: 32px;
+    border-radius: 4px;
+    background: root.on ? Theme.accent : ta.has-hover ? Theme.row-bg : transparent;
+    ta := TouchArea { clicked => { root.clicked(); } }
+    t := Text {
+        text: root.label;
+        color: Theme.text;
+        font-size: 13px;
+        font-weight: root.bold ? 700 : 400;
+        font-italic: root.italic;
+        font-family: root.mono ? Chat.mono-family : "";
+    }
+    if root.underline: Rectangle { x: t.x; y: t.y + t.height - 5px; width: t.width; height: 1px; background: Theme.text; }
+    if root.strike: Rectangle { x: t.x; y: t.y + t.height / 2; width: t.width; height: 1px; background: Theme.text; }
+}
+
+component ComposerField inherits Rectangle {
+    in property <bool> enabled: true;
+    property <bool> blink: true;
+    property <length> menu-x;
+    property <length> menu-y;
+    // Вызовы Rust → TextInput (выделение) — по смене номера.
+    property <int> seq: Composer.sel-seq;
+    changed seq => { ti.set-selection-offsets(Composer.sel-anchor, Composer.sel-cursor); }
+    // Диалог ссылки закрыт — фокус обратно в поле.
+    property <bool> link-open: Composer.link-open;
+    changed link-open => {
+        if (!self.link-open) {
+            ti.focus();
+        }
+    }
+    init => { Composer.width(self.width); }
+    changed width => { Composer.width(self.width); }
+    height: min(Composer.content-height, 160px);
+    clip: true;
+    ti := TextInput {
+        x: 0;
+        y: -Composer.scroll-y;
+        width: parent.width;
+        height: max(parent.height, Composer.content-height);
+        text <=> Composer.text;
+        // Невидимый движок: текст, выделение и каретку рисует наш слой.
+        color: transparent;
+        selection-background-color: transparent;
+        selection-foreground-color: transparent;
+        text-cursor-width: 0px;
+        font-size: 13px;
+        wrap: word-wrap;
+        single-line: false;
+        enabled: root.enabled;
+        accessible-label: @tr("Message");
+        edited => { Composer.edited(self.text, self.cursor-position-byte-offset, self.anchor-position-byte-offset); }
+        cursor-position-changed(p) => {
+            root.blink = true;
+            Composer.cursor-moved(self.cursor-position-byte-offset, self.anchor-position-byte-offset);
+        }
+        changed preedit-text => { Composer.preedit(self.preedit-text); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape && Chat.compose-mode != 0) {
+                Chat.cancel-compose();
+                return accept;
+            }
+            if (Composer.key(e.text, e.modifiers.control, e.modifiers.shift, e.modifiers.alt)) {
+                return accept;
+            }
+            reject
+        }
+    }
+    Rectangle {
+        y: -Composer.scroll-y;
+        for r in Composer.selection: Rectangle {
+            x: r.x;
+            y: r.y;
+            width: r.w;
+            height: r.h;
+            background: #6ab3f350;
+        }
+        VerticalLayout {
+            alignment: start;
+            for line in Composer.lines: HorizontalLayout {
+                height: 20px;
+                alignment: start;
+                for seg in line.segs: HorizontalLayout {
+                    padding: seg.emoji ? 1px : 0px;
+                    if seg.emoji: Image { source: seg.image; width: 18px; height: 18px; }
+                    if !seg.emoji: RichText { seg: seg; }
+                }
+            }
+        }
+        if ti.has-focus && root.blink: Rectangle {
+            x: Composer.caret-x;
+            y: Composer.caret-y + 2px;
+            width: 1.5px;
+            height: 16px;
+            background: Theme.text;
+        }
+    }
+    if Composer.text == "" && ti.preedit-text == "": Text {
+        text: @tr("Write a message…");
+        color: Theme.text-muted;
+        font-size: 13px;
+        x: 0;
+        y: 0;
+        height: 20px;
+        vertical-alignment: center;
+    }
+    Timer {
+        interval: 530ms;
+        running: ti.has-focus;
+        triggered => { root.blink = !root.blink; }
+    }
+    // Мышь — по нашей раскладке (у строк с эмодзи геометрия TextInput другая).
+    TouchArea {
+        mouse-cursor: text;
+        enabled: root.enabled;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                ti.focus();
+                Composer.pointer(self.mouse-x, self.mouse-y + Composer.scroll-y, 0);
+            }
+            if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) {
+                ti.focus();
+                root.menu-x = self.mouse-x;
+                root.menu-y = self.mouse-y;
+                fmt.show();
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                Composer.pointer(self.mouse-x, self.mouse-y + Composer.scroll-y, 1);
+            }
+        }
+        double-clicked => { Composer.pointer(self.mouse-x, self.mouse-y + Composer.scroll-y, 2); }
+        scroll-event(e) => {
+            if (Composer.content-height > root.height) {
+                Composer.wheel(e.delta-y);
+                return accept;
+            }
+            reject
+        }
+    }
+    // Панель форматирования по правой кнопке (Дз-9, Дз-15).
+    fmt := PopupWindow {
+        x: max(0, min(root.menu-x - 150px, root.width - 330px));
+        y: root.menu-y - 52px;
+        Rectangle {
+            background: Theme.card-bg;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            HorizontalLayout {
+                padding: 6px;
+                spacing: 2px;
+                FmtButton { label: "Ж"; bold: true; on: Composer.active[0]; clicked => { Composer.format(0); } }
+                FmtButton { label: "К"; italic: true; on: Composer.active[1]; clicked => { Composer.format(1); } }
+                FmtButton { label: "П"; underline: true; on: Composer.active[2]; clicked => { Composer.format(2); } }
+                FmtButton { label: "З"; strike: true; on: Composer.active[3]; clicked => { Composer.format(3); } }
+                FmtButton { label: "<>"; mono: true; on: Composer.active[4]; clicked => { Composer.format(4); } }
+                FmtButton { label: @tr("link"); clicked => { Composer.format(5); } }
+                FmtButton { label: @tr("clear"); clicked => { Composer.format(6); } }
+            }
+        }
+    }
+}
+
 component ChatPane inherits Rectangle {
     in property <bool> narrow;
     background: Theme.window-bg;
@@ -914,9 +1126,9 @@ component ChatPane inherits Rectangle {
                 }
             }
         }
-        // Поле ввода (В4 — обычный TextInput; гибридное поле — В5, Дз-17).
+        // Поле ввода: гибрид (Дз-17).
         Rectangle {
-            height: max(48px, input.preferred-height + 24px);
+            height: max(48px, field.height + 24px);
             background: Theme.card-bg;
             HorizontalLayout {
                 padding: 8px;
@@ -924,39 +1136,10 @@ component ChatPane inherits Rectangle {
                 spacing: 8px;
                 Rectangle {
                     horizontal-stretch: 1;
-                    input := TextInput {
-                        width: 100%;
+                    field := ComposerField {
                         y: (parent.height - self.height) / 2;
-                        height: min(self.preferred-height, 160px);
-                        text <=> Chat.composer;
-                        color: Theme.text;
-                        font-size: 13px;
-                        wrap: word-wrap;
-                        single-line: false;
-                        enabled: Chat.can-write;
-                        accessible-label: @tr("Message");
-                        edited => { Chat.composer-edited(self.text); }
-                        key-pressed(e) => {
-                            // Enter — отправить, Shift+Enter — перенос строки.
-                            if (e.text == Key.Return && !e.modifiers.shift) {
-                                Chat.send();
-                                return accept;
-                            }
-                            if (e.text == Key.Escape && Chat.compose-mode != 0) {
-                                Chat.cancel-compose();
-                                return accept;
-                            }
-                            reject
-                        }
-                    }
-                    if Chat.composer == "": Text {
-                        text: @tr("Write a message…");
-                        color: Theme.text-muted;
-                        font-size: 13px;
-                        x: 0;
                         width: 100%;
-                        vertical-alignment: center;
-                        height: parent.height;
+                        enabled: Chat.can-write;
                     }
                 }
                 Rectangle {
@@ -964,13 +1147,13 @@ component ChatPane inherits Rectangle {
                     accessible-role: button;
                     accessible-label: @tr("Send");
                     send-touch := TouchArea {
-                        enabled: Chat.composer != "" && !Chat.sending;
+                        enabled: Composer.text != "" && !Chat.sending;
                         clicked => { Chat.send(); }
                     }
                     Path {
                         width: 20px;
                         height: 20px;
-                        fill: Chat.composer != "" && !Chat.sending ? Theme.link : Theme.text-muted;
+                        fill: Composer.text != "" && !Chat.sending ? Theme.link : Theme.text-muted;
                         viewbox-width: 20;
                         viewbox-height: 20;
                         commands: "M 1 18 L 19 10 L 1 2 L 1 8 L 13 10 L 1 12 Z";
@@ -1103,6 +1286,38 @@ export component MainScreen inherits Rectangle {
         border-width: 1px;
         border-color: Theme.card-border;
         toast-text := Text { text: Chat.toast; color: Theme.text; font-size: 12px; }
+    }
+    // Диалог ссылки поля ввода (Дз-15): адрес для выделенного текста.
+    if Composer.link-open: Modal {
+        width: 100%;
+        height: 100%;
+        Rectangle {
+            width: 380px;
+            height: link-layout.preferred-height;
+            background: Theme.card-bg;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            link-layout := VerticalLayout {
+                padding: 24px;
+                spacing: 14px;
+                Text { text: @tr("Link"); color: Theme.text; font-size: 14px; font-weight: 600; }
+                url-field := Field {
+                    field-width: 332px;
+                    text <=> Composer.link-url;
+                    placeholder: "https://";
+                    init => { self.focus-input(); }
+                    accepted => { Composer.link-apply(Composer.link-url); }
+                    escape => { Composer.link-open = false; }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 12px;
+                    Button { button-width: 120px; primary: false; text: @tr("Cancel"); clicked => { Composer.link-open = false; } }
+                    Button { button-width: 120px; text: @tr("Apply"); clicked => { Composer.link-apply(Composer.link-url); } }
+                }
+            }
+        }
     }
     if Chat.confirm-link != "": Modal {
         width: 100%;

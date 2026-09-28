@@ -319,7 +319,6 @@ struct RichCache {
     width: i32,
     lines: HashMap<String, ModelRc<RichLine>>,
     big: HashMap<String, ModelRc<Image>>,
-    emoji: HashMap<String, Image>,
 }
 
 /// Стиль по виду сущности (None — вид без оформления: упоминания, спойлеры и т. п.).
@@ -383,14 +382,54 @@ pub fn text_width(view: i32) -> f32 {
     (480.0f32).min(view as f32 * 0.75) - 20.0
 }
 
+thread_local! {
+    /// Картинки эмодзи (общие для истории и поля ввода).
+    static EMOJI_IMAGES: RefCell<HashMap<String, Image>> = RefCell::new(HashMap::new());
+}
+
+pub fn emoji_image(e: &str) -> Image {
+    EMOJI_IMAGES.with(|c| {
+        c.borrow_mut()
+            .entry(e.to_string())
+            .or_insert_with(|| {
+                richtext::emoji_png(e).and_then(crate::decode_png).map(Image::from_rgba8).unwrap_or_default()
+            })
+            .clone()
+    })
+}
+
+/// Строки раскладки — в модель Slint.
+pub fn rich_rows(lines: Vec<richtext::Line>, links: &[String]) -> ModelRc<RichLine> {
+    let rows: Vec<RichLine> = lines
+        .into_iter()
+        .map(|l| RichLine {
+            segs: ModelRc::from(Rc::new(VecModel::from(
+                l.segs
+                    .into_iter()
+                    .map(|s| {
+                        let st = s.style;
+                        RichSeg {
+                            image: if s.emoji { emoji_image(&s.text) } else { Image::default() },
+                            text: if s.emoji { "".into() } else { s.text.into() },
+                            emoji: s.emoji,
+                            bold: st.bold,
+                            italic: st.italic,
+                            underline: st.underline,
+                            strike: st.strike,
+                            mono: st.mono,
+                            link: usize::try_from(st.link).ok().and_then(|i| links.get(i)).cloned().unwrap_or_default().into(),
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            ))),
+        })
+        .collect();
+    ModelRc::from(Rc::new(VecModel::from(rows)))
+}
+
 impl RichCache {
     fn emoji(&mut self, e: &str) -> Image {
-        if let Some(i) = self.emoji.get(e) {
-            return i.clone();
-        }
-        let img = richtext::emoji_png(e).and_then(crate::decode_png).map(Image::from_rgba8).unwrap_or_default();
-        self.emoji.insert(e.to_string(), img.clone());
-        img
+        emoji_image(e)
     }
 
     /// Заполняет `rich`, `lines`, `big_emoji`: сообщение с эмодзи или
@@ -439,38 +478,8 @@ impl RichCache {
         it.lines = m;
     }
 
-    /// Строки раскладки — в модель Slint.
     pub fn rich_lines(&mut self, lines: Vec<richtext::Line>, links: &[String]) -> ModelRc<RichLine> {
-        let rows: Vec<RichLine> = lines
-            .into_iter()
-            .map(|l| RichLine {
-                segs: ModelRc::from(Rc::new(VecModel::from(
-                    l.segs
-                        .into_iter()
-                        .map(|s| {
-                            let st = s.style;
-                            RichSeg {
-                                image: if s.emoji { self.emoji(&s.text) } else { Image::default() },
-                                text: if s.emoji { "".into() } else { s.text.into() },
-                                emoji: s.emoji,
-                                bold: st.bold,
-                                italic: st.italic,
-                                underline: st.underline,
-                                strike: st.strike,
-                                mono: st.mono,
-                                link: usize::try_from(st.link)
-                                    .ok()
-                                    .and_then(|i| links.get(i))
-                                    .cloned()
-                                    .unwrap_or_default()
-                                    .into(),
-                            }
-                        })
-                        .collect::<Vec<_>>(),
-                ))),
-            })
-            .collect();
-        ModelRc::from(Rc::new(VecModel::from(rows)))
+        rich_rows(lines, links)
     }
 }
 
@@ -651,9 +660,7 @@ impl ChatRenderer {
         chat.set_toast(m.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default().into());
         chat.set_history_loading(m.history_loading);
         chat.set_sending(m.sending);
-        if chat.get_composer() != m.composer.as_str() && !m.sending {
-            chat.set_composer(m.composer.clone().into());
-        }
+        crate::composer::sync_model(app, m);
         chat.set_error(m.error.clone().unwrap_or_default().into());
     }
 

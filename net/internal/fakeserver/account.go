@@ -48,10 +48,11 @@ type Account struct {
 
 // Dump — все сообщения аккаунта (для сверки в тесте kill -9).
 type DumpMsg struct {
-	ID   int32  `json:"id"`
-	Peer int64  `json:"peer"`
-	Out  bool   `json:"out"`
-	Text string `json:"text"`
+	ID       int32    `json:"id"`
+	Peer     int64    `json:"peer"`
+	Out      bool     `json:"out"`
+	Text     string   `json:"text"`
+	Entities []string `json:"entities,omitempty"` // «имя смещение длина»
 }
 
 func (a *Account) Dump() []DumpMsg {
@@ -59,7 +60,22 @@ func (a *Account) Dump() []DumpMsg {
 	defer a.mu.Unlock()
 	out := make([]DumpMsg, 0, len(a.msgs))
 	for _, m := range a.msgs {
-		out = append(out, DumpMsg{ID: m.id, Peer: m.peer, Out: m.out, Text: m.text})
+		d := DumpMsg{ID: m.id, Peer: m.peer, Out: m.out, Text: m.text}
+		for _, e := range m.entities {
+			var off, n int32
+			switch v := e.(type) {
+			case *tl.MessageEntityBold:
+				off, n = v.Offset, v.Length
+			case *tl.MessageEntityItalic:
+				off, n = v.Offset, v.Length
+			case *tl.MessageEntityTextUrl:
+				off, n = v.Offset, v.Length
+			case *tl.MessageEntityCode:
+				off, n = v.Offset, v.Length
+			}
+			d.Entities = append(d.Entities, fmt.Sprintf("%s %d %d", e.TLName(), off, n))
+		}
+		out = append(out, d)
 	}
 	return out
 }
@@ -87,7 +103,7 @@ func (a *Account) seed() {
 
 func (m fakeMsg) tl() *tl.Message {
 	out := &tl.Message{Id: m.id, Out: m.out, PeerId: &tl.PeerUser{UserId: m.peer}, Date: m.date, Message: m.text,
-		Pinned: m.pinned}
+		Pinned: m.pinned, Entities: m.entities}
 	if m.edited != 0 {
 		e := m.edited
 		out.EditDate = &e
@@ -172,15 +188,16 @@ type Contact struct {
 }
 
 type fakeMsg struct {
-	id      int32
-	peer    int64
-	out     bool
-	text    string
-	date    int32
-	pinned  bool
-	deleted bool
-	edited  int32
-	fwdFrom int64
+	id       int32
+	peer     int64
+	out      bool
+	text     string
+	date     int32
+	pinned   bool
+	deleted  bool
+	edited   int32
+	fwdFrom  int64
+	entities []tl.MessageEntityClass
 }
 
 type qrToken struct {
@@ -484,7 +501,8 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 			return nil, &rpcErr{400, "RANDOM_ID_DUPLICATE"}
 		}
 		a.pts++
-		m := fakeMsg{id: int32(len(a.msgs) + 1), peer: peer, out: true, text: r.Message, date: int32(time.Now().Unix())}
+		m := fakeMsg{id: int32(len(a.msgs) + 1), peer: peer, out: true, text: r.Message, date: int32(time.Now().Unix()),
+			entities: r.Entities}
 		a.msgs = append(a.msgs, m)
 		a.randoms[r.RandomId] = m.id
 		return &tl.UpdateShortSentMessage{Out: true, Id: m.id, Pts: a.pts, PtsCount: 1, Date: m.date}, nil

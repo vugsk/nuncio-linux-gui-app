@@ -372,3 +372,15 @@ msgstr "Открыть ссылку?\n{}"
 
 msgid "Open"
 msgstr "Открыть"
+
+msgid "link"
+msgstr "ссылка"
+
+msgid "clear"
+msgstr "убрать"
+
+msgid "Link"
+msgstr "Ссылка"
+
+msgid "Apply"
+msgstr "Применить"

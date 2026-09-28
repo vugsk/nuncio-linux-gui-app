@@ -15,6 +15,7 @@ slint::include_modules!();
 
 pub mod avatar;
 pub mod chatview;
+pub mod composer;
 pub mod richtext;
 pub mod scroller;
 
@@ -383,11 +384,8 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
     }
     {
         let s = send.clone();
-        chat.on_send(move || s(Action::Chat(ChatIntent::Send(Vec::new()))));
-    }
-    {
-        let s = send.clone();
-        chat.on_composer_edited(move |t| s(Action::Chat(ChatIntent::ComposerEdited(t.to_string()))));
+        composer::bind(app, move |i| s(Action::Chat(i)));
+        chat.on_send(composer::send);
     }
     {
         let s = send.clone();

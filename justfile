@@ -80,6 +80,7 @@ e2e:
     tests/killtest.sh 5 300 40
     tests/offlinetest.sh 10 15
     tests/scrolltest.sh 3000
+    tests/composertest.sh
 
 # Проверки качества (раздел 4 заметки о сборке).
 lint:
