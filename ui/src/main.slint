@@ -318,21 +318,22 @@ component Meta inherits HorizontalLayout {
     }
 }
 
-component Bubble inherits HorizontalLayout {
+component Bubble inherits VerticalLayout {
     in property <MessageItem> item;
     in property <bool> hover;
-    alignment: item.out ? end : start;
     padding-left: 12px;
     padding-right: 12px;
-    spacing: 6px;
-    if root.item.out: VerticalLayout {
-        alignment: start;
-        padding-top: bubble-box.height - 18px;
-        Meta { item: root.item; hover: root.hover; }
-    }
-    VerticalLayout {
-        spacing: 3px;
-        bubble-box := Rectangle {
+    spacing: 3px;
+    // Строка: [время] пузырь [время] — время снаружи на уровне последней строки (Чт-5).
+    HorizontalLayout {
+        alignment: root.item.out ? end : start;
+        spacing: 6px;
+        if root.item.out: VerticalLayout {
+            alignment: end;
+            padding-bottom: 6px;
+            Meta { item: root.item; hover: root.hover; }
+        }
+        Rectangle {
             max-width: min(480px, root.width * 0.75);
             background: root.item.send-state == 3 ? #3a2530 : root.item.out ? Theme.accent : Theme.row-bg;
             border-radius: 10px;
@@ -369,33 +370,33 @@ component Bubble inherits HorizontalLayout {
                 }
             }
         }
-        if root.item.send-state == 1 || root.item.send-state == 2: Text {
-            text: @tr("sending…");
-            color: Theme.text-muted;
-            font-size: 10px;
-            horizontal-alignment: root.item.out ? right : left;
-        }
-        if root.item.send-state == 3: VerticalLayout {
-            spacing: 2px;
-            Text {
-                text: root.item.send-error;
-                color: Theme.error;
-                font-size: 10px;
-                horizontal-alignment: right;
-                wrap: word-wrap;
-            }
-            HorizontalLayout {
-                alignment: end;
-                spacing: 12px;
-                Link { text: @tr("Retry"); font-size: 11px; clicked => { Chat.retry-send(root.item.local-id); } }
-                Link { text: @tr("Delete"); font-size: 11px; clicked => { Chat.delete-unsent(root.item.local-id); } }
-            }
+        if !root.item.out: VerticalLayout {
+            alignment: end;
+            padding-bottom: 6px;
+            Meta { item: root.item; hover: root.hover; }
         }
     }
-    if !root.item.out: VerticalLayout {
-        alignment: start;
-        padding-top: bubble-box.height - 18px;
-        Meta { item: root.item; hover: root.hover; }
+    if root.item.send-state == 1 || root.item.send-state == 2: Text {
+        text: @tr("sending…");
+        color: Theme.text-muted;
+        font-size: 10px;
+        horizontal-alignment: root.item.out ? right : left;
+    }
+    if root.item.send-state == 3: VerticalLayout {
+        spacing: 2px;
+        Text {
+            text: root.item.send-error;
+            color: Theme.error;
+            font-size: 10px;
+            horizontal-alignment: right;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 12px;
+            Link { text: @tr("Retry"); font-size: 11px; clicked => { Chat.retry-send(root.item.local-id); } }
+            Link { text: @tr("Delete"); font-size: 11px; clicked => { Chat.delete-unsent(root.item.local-id); } }
+        }
     }
 }
 
