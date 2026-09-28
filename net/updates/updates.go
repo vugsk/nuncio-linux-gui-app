@@ -69,10 +69,10 @@ type Manager struct {
 	jobs    chan job
 	sentIDs map[int64]int32 // random_id -> id (updateMessageID)
 
-	chans     map[int64]int32 // помеченный id канала -> pts
-	hashes    map[int64]int64 // помеченный id канала -> access_hash
-	stash     []stashed       // обновления после разрыва, ждут недостающих
-	gapTimer  *time.Timer
+	chans    map[int64]int32 // помеченный id канала -> pts
+	hashes   map[int64]int64 // помеченный id канала -> access_hash
+	stash    []stashed       // обновления после разрыва, ждут недостающих
+	gapTimer *time.Timer
 }
 
 // New создаёт остановленный менеджер.

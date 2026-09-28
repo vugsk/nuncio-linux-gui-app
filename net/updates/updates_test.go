@@ -16,8 +16,8 @@ type fakeInv struct {
 	mu        sync.Mutex
 	diffs     []any
 	chanDiffs []any
-	calls []tlbin.Request
-	state *tl.UpdatesState
+	calls     []tlbin.Request
+	state     *tl.UpdatesState
 }
 
 func (f *fakeInv) Invoke(_ context.Context, req tlbin.Request) (any, error) {
