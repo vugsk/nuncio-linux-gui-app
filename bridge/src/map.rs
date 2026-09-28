@@ -1,8 +1,9 @@
 //! Отображение доменных типов в protobuf `client.proto` и обратно.
 
 use domain::model::{
-    AuthState, AuthStep, CodeInfo, Command, CommandResult, ConnState, Country, CountryCode, ErrorInfo, ErrorKind,
-    Event, Payload, ProxyKind, ProxySettings, StartupErrorKind, User,
+    AuthState, AuthStep, CodeInfo, Command, CommandResult, ConnState, Country, CountryCode, Dialog, DomainUpdate,
+    ErrorInfo, ErrorKind, Event, Message, Payload, Peer, PeerKind, PeerRef, ProxyKind, ProxySettings,
+    StartupErrorKind, UpdateState, UpdatesBatch, User,
 };
 
 use crate::proto::{self, command::Body as C, event::Body as E};
@@ -22,6 +23,81 @@ pub fn proxy_to(p: &ProxySettings) -> proto::ProxySettings {
     }
 }
 
+fn peer_ref_to(p: PeerRef) -> proto::PeerRef {
+    proto::PeerRef { id: p.id, access_hash: p.access_hash }
+}
+
+pub fn state_to(s: UpdateState) -> proto::UpdateState {
+    proto::UpdateState { pts: s.pts, qts: s.qts, seq: s.seq, date: s.date }
+}
+
+fn state_from(s: proto::UpdateState) -> UpdateState {
+    UpdateState { pts: s.pts, qts: s.qts, seq: s.seq, date: s.date }
+}
+
+fn peer_from(p: proto::Peer) -> Peer {
+    Peer {
+        id: p.id,
+        kind: PeerKind::of(p.id),
+        name: p.name,
+        username: p.username,
+        access_hash: p.access_hash,
+        photo_id: p.photo_id,
+        photo_dc: p.photo_dc,
+        is_self: p.is_self,
+        is_bot: p.is_bot,
+        broadcast: p.broadcast,
+        min: p.min,
+    }
+}
+
+fn message_from(m: proto::Message) -> Message {
+    Message {
+        peer_id: m.peer_id,
+        id: m.id,
+        date: m.date,
+        from_id: m.from_id,
+        out: m.out,
+        text: m.text,
+        reply_to: m.reply_to,
+        media: m.media,
+        service: m.service,
+        random_id: m.random_id,
+        edit_date: m.edit_date,
+    }
+}
+
+fn dialog_from(d: proto::Dialog) -> Dialog {
+    Dialog {
+        peer_id: d.peer_id,
+        top_message: d.top_message,
+        unread_count: d.unread_count,
+        pinned: d.pinned,
+        folder: d.folder,
+        read_inbox_max_id: d.read_inbox_max_id,
+        read_outbox_max_id: d.read_outbox_max_id,
+    }
+}
+
+fn batch_from(b: proto::UpdatesBatch) -> UpdatesBatch {
+    use proto::domain_update::Body as U;
+    let updates = b
+        .updates
+        .into_iter()
+        .filter_map(|u| {
+            Some(match u.body? {
+                U::NewMessage(m) => DomainUpdate::NewMessage(message_from(m)),
+                U::EditMessage(m) => DomainUpdate::EditMessage(message_from(m)),
+                U::DeleteMessages(d) => DomainUpdate::DeleteMessages { peer_id: d.peer_id, ids: d.ids },
+                U::ReadInbox(r) => DomainUpdate::ReadInbox { peer_id: r.peer_id, max_id: r.max_id, still_unread: r.still_unread },
+                U::ReadOutbox(r) => DomainUpdate::ReadOutbox { peer_id: r.peer_id, max_id: r.max_id },
+                U::Reset(_) => DomainUpdate::Reset,
+            })
+        })
+        .collect();
+    UpdatesBatch { updates, peers: b.peers.into_iter().map(peer_from).collect(), state: b.state.map(state_from) }
+}
+
 pub fn command_to(id: u64, cmd: Command) -> proto::Command {
     let body = match cmd {
         Command::Ping(message) => C::Ping(proto::Ping { message }),
@@ -37,6 +113,30 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
         Command::TestProxy(p) => C::TestProxy(proto::TestProxy { proxy: Some(proxy_to(&p)) }),
         Command::GetCountries { lang } => C::GetCountries(proto::GetCountries { lang_code: lang }),
         Command::RetryStartup => C::RetryStartup(proto::RetryStartup {}),
+        Command::LoadDialogs { limit, offset_date, offset_id, offset_peer } => C::LoadDialogs(proto::LoadDialogs {
+            limit,
+            offset_date,
+            offset_id,
+            offset_peer: offset_peer.map(peer_ref_to),
+        }),
+        Command::LoadHistory { peer, offset_id, limit } => C::LoadHistory(proto::LoadHistory {
+            peer: Some(peer_ref_to(peer)),
+            offset_id,
+            limit,
+            add_offset: 0,
+        }),
+        Command::SendMessage { peer, text, random_id } => C::SendMessage(proto::SendMessage {
+            peer: Some(peer_ref_to(peer)),
+            text,
+            random_id,
+            reply_to: 0,
+        }),
+        Command::MarkRead { peer, max_id } => C::MarkRead(proto::MarkRead { peer: Some(peer_ref_to(peer)), max_id }),
+        Command::DownloadAvatar { peer, photo_id, dc } => C::DownloadAvatar(proto::DownloadAvatar {
+            peer: Some(peer_ref_to(peer)),
+            photo_id,
+            dc,
+        }),
     };
     proto::Command { id, account_id: 1, body: Some(body) }
 }
@@ -104,6 +204,20 @@ pub fn event_from(ev: proto::Event) -> Option<Event> {
                 Some(P::Pong(p)) => Payload::Pong { message: p.message, core_version: p.core_version },
                 Some(P::Countries(c)) => Payload::Countries(c.countries.into_iter().map(country_from).collect()),
                 Some(P::ProxyCheck(p)) => Payload::ProxyCheck { rtt_ms: p.rtt_ms },
+                Some(P::Dialogs(d)) => Payload::Dialogs {
+                    dialogs: d.dialogs.into_iter().map(dialog_from).collect(),
+                    messages: d.messages.into_iter().map(message_from).collect(),
+                    peers: d.peers.into_iter().map(peer_from).collect(),
+                    total: d.total,
+                    complete: d.complete,
+                },
+                Some(P::History(h)) => Payload::History {
+                    messages: h.messages.into_iter().map(message_from).collect(),
+                    peers: h.peers.into_iter().map(peer_from).collect(),
+                    total: h.total,
+                },
+                Some(P::Sent(s)) => Payload::Sent(s.message.map(message_from).unwrap_or_default()),
+                Some(P::File(f)) => Payload::File(f.path),
             };
             Event::Result(CommandResult { cmd_id: r.cmd_id, error: r.error.map(error_from), payload })
         }
@@ -116,6 +230,7 @@ pub fn event_from(ev: proto::Event) -> Option<Event> {
             })
         }
         E::Auth(a) => Event::Auth(auth_from(a)),
+        E::Updates(b) => Event::Updates(batch_from(b)),
         E::Startup(s) => {
             use proto::startup_error::Kind as K;
             let kind = match K::try_from(s.kind).unwrap_or(K::Other) {
@@ -152,6 +267,11 @@ mod tests {
             Command::TestProxy(p.clone()),
             Command::GetCountries { lang: "ru".into() },
             Command::RetryStartup,
+            Command::LoadDialogs { limit: 100, offset_date: 1, offset_id: 2, offset_peer: Some(PeerRef { id: -5, access_hash: 0 }) },
+            Command::LoadHistory { peer: PeerRef { id: 5, access_hash: 6 }, offset_id: 0, limit: 50 },
+            Command::SendMessage { peer: PeerRef { id: 5, access_hash: 6 }, text: "т".into(), random_id: 7 },
+            Command::MarkRead { peer: PeerRef { id: 5, access_hash: 6 }, max_id: 9 },
+            Command::DownloadAvatar { peer: PeerRef { id: 5, access_hash: 6 }, photo_id: 1, dc: 4 },
         ] {
             let pc = command_to(9, cmd.clone());
             assert_eq!(pc.id, 9);
@@ -187,5 +307,23 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(event_from(proto::Event { body: None }), None);
+        let ev = proto::Event {
+            body: Some(E::Updates(proto::UpdatesBatch {
+                updates: vec![proto::DomainUpdate {
+                    body: Some(proto::domain_update::Body::NewMessage(proto::Message { peer_id: -1_000_000_000_005, id: 3,
+                        text: "т".into(), ..Default::default() })),
+                }],
+                peers: vec![proto::Peer { id: -1_000_000_000_005, name: "канал".into(), ..Default::default() }],
+                state: Some(proto::UpdateState { pts: 9, ..Default::default() }),
+            })),
+        };
+        match event_from(ev) {
+            Some(Event::Updates(b)) => {
+                assert_eq!(b.state.unwrap().pts, 9);
+                assert_eq!(b.peers[0].kind, PeerKind::Channel);
+                assert!(matches!(&b.updates[0], DomainUpdate::NewMessage(m) if m.id == 3));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

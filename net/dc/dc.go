@@ -63,6 +63,8 @@ type Options struct {
 	OnKey func(dc int, k *session.AuthKey)
 	// OnConn — состояние соединения с основным DC (полоса «Подключение…»).
 	OnConn func(ConnState)
+	// OnNewSession — сервер создал новую сессию: возможны пропущенные обновления.
+	OnNewSession func(dc int)
 	// DisablePing — для тестов.
 	DisablePing bool
 }
@@ -272,6 +274,11 @@ func (m *Manager) connect(ctx context.Context, dc int) (*conn, error) {
 	dcID := dc
 	s := session.New(session.Config{Conn: tc, Key: key.Key, Salt: key.Salt, TimeOffset: key.TimeOffset,
 		DisablePing: m.opt.DisablePing,
+		OnNewSession: func() {
+			if m.opt.OnNewSession != nil {
+				m.opt.OnNewSession(dcID)
+			}
+		},
 		OnUpdate: func(body []byte) {
 			if m.opt.OnUpdate != nil {
 				m.opt.OnUpdate(dcID, body)
@@ -350,6 +357,50 @@ func (m *Manager) invoke(ctx context.Context, dc int, req tlbin.Request, follow 
 			return nil, err
 		}
 	}
+}
+
+// InvokeOn выполняет запрос в указанном DC от имени вошедшего пользователя:
+// если ключ этого DC ещё не авторизован (401), авторизация переносится из
+// основного DC (auth.exportAuthorization / auth.importAuthorization) и запрос
+// повторяется; FILE_MIGRATE_X переводит запрос в указанный DC.
+func (m *Manager) InvokeOn(ctx context.Context, dc int, req tlbin.Request) (any, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		home := m.Home()
+		if dc == 0 || dc == home {
+			return m.Invoke(ctx, req)
+		}
+		v, err := m.InvokeDC(ctx, dc, req)
+		var re *session.RPCError
+		var me *rpc.MigrateError
+		switch {
+		case err == nil:
+			return v, nil
+		case errors.As(err, &me) && me.DC != dc:
+			dc = me.DC
+		case errors.As(err, &re) && re.Code == 401:
+			if err := m.transferAuth(ctx, dc); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("dc: запрос в DC %d не удался после переноса авторизации", dc)
+}
+
+func (m *Manager) transferAuth(ctx context.Context, dc int) error {
+	v, err := m.Invoke(ctx, &tl.AuthExportAuthorizationRequest{DcId: int32(dc)})
+	if err != nil {
+		return fmt.Errorf("dc: exportAuthorization: %w", err)
+	}
+	ex, ok := v.(*tl.AuthExportedAuthorization)
+	if !ok {
+		return fmt.Errorf("dc: неожиданный ответ %T", v)
+	}
+	if _, err := m.InvokeDC(ctx, dc, &tl.AuthImportAuthorizationRequest{Id: ex.Id, Bytes: ex.Bytes}); err != nil {
+		return fmt.Errorf("dc: importAuthorization: %w", err)
+	}
+	return nil
 }
 
 // Ping — проверка связи с DC без initConnection (ping — служебная функция MTProto).

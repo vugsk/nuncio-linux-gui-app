@@ -3,10 +3,13 @@
 //! Домен не знает, что за сетью стоит Go: он видит трейт `Backend`.
 
 pub mod backend;
+pub mod chat;
+pub mod chatstore;
 pub mod config;
 pub mod login;
 pub mod model;
 pub mod phone;
 pub mod store;
+pub mod timefmt;
 
 pub use backend::{Backend, BackendError, Next};

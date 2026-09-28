@@ -29,12 +29,14 @@ import (
 	"nuncio/net/rpc"
 	"nuncio/net/session"
 	"nuncio/net/tl"
+	"nuncio/net/tlbin"
 	"nuncio/net/transport"
+	"nuncio/net/updates"
 )
 
 // ProtoVersion — версия client.proto, которую понимает эта сборка.
 // Rust передаёт свою в StartRequest; несовпадение — ошибка старта.
-const ProtoVersion = 2
+const ProtoVersion = 3
 
 // QueueSize — предел очереди событий (обратное давление, правило 5).
 const QueueSize = 1024
@@ -80,6 +82,8 @@ type Service struct {
 	req     *pb.StartRequest
 	m       *dc.Manager
 	auth    *auth.Client
+	upd     *updates.Manager
+	resumed bool // первый READY после старта — из файла сессии
 	log     *log.Logger
 	logFile io.Closer
 	ready   bool // связка ключей открыта, сессия восстановлена
@@ -159,11 +163,25 @@ func (s *Service) initNetwork() {
 		Transport: transport.Options{Framing: transport.Intermediate, Obfuscate: true, Proxy: proxyOf(r.GetProxy())},
 		OnKey:     func(d int, k *session.AuthKey) { a.OnKey(d, k) },
 		OnUpdate: func(_ int, body []byte) {
-			if !a.HandleUpdate(body) {
-				s.log.Printf("обновление без обработчика: %d байт", len(body)) // В4: пакет updates
+			if a.HandleUpdate(body) {
+				return
+			}
+			u, err := tl.DecodeUpdatesClass(tlbin.NewDecoder(body))
+			if err != nil {
+				s.log.Printf("обновление не разобрано: %d байт", len(body))
+				return
+			}
+			s.upd.Push(u)
+		},
+		OnNewSession: func(d int) {
+			if d == s.m.Home() {
+				s.upd.Difference()
 			}
 		},
 		OnConn: func(st dc.ConnState) {
+			if st == dc.Connected {
+				s.upd.Difference() // после обрыва — догнать пропущенное
+			}
 			m := map[dc.ConnState]pb.ConnectionState_State{dc.Connecting: pb.ConnectionState_CONNECTING,
 				dc.Connected: pb.ConnectionState_CONNECTED, dc.WaitingNetwork: pb.ConnectionState_WAITING_NETWORK}
 			s.emit(&pb.Event{Body: &pb.Event_Connection{Connection: &pb.ConnectionState{State: m[st]}}})
@@ -176,6 +194,10 @@ func (s *Service) initNetwork() {
 			s.emit(resultError(0, err))
 		}})
 	s.auth = a
+	s.upd = updates.New(updates.Config{Inv: s.m, SelfID: a.UserID, Log: s.log.Printf,
+		Emit: func(b *pb.UpdatesBatch) {
+			s.emit(&pb.Event{Body: &pb.Event_Updates{Updates: b}})
+		}})
 }
 
 // startup открывает связку ключей и восстанавливает сессию (Со-4 при ошибке).
@@ -241,6 +263,25 @@ func (s *Service) emitAuth(st auth.State) {
 	}
 	// В журнал — только шаг и причина.
 	s.log.Printf("вход: шаг %v %s", ev.Step, st.Reason)
+	// Поток обновлений живёт, пока пользователь вошёл. Первый READY после
+	// старта — сессия из файла: продолжаем с состояния из базы Rust (О-5).
+	switch st.Step {
+	case auth.StepReady:
+		s.mu.Lock()
+		resumed := !s.resumed
+		s.resumed = true
+		s.mu.Unlock()
+		if resumed && s.req.GetUpdateState().GetPts() != 0 {
+			s.upd.Start(s.req.GetUpdateState())
+		} else {
+			s.upd.Start(nil)
+		}
+	case auth.StepLoggedOut:
+		s.mu.Lock()
+		s.resumed = true
+		s.mu.Unlock()
+		s.upd.Stop()
+	}
 	s.emit(&pb.Event{Body: &pb.Event_Auth{Auth: ev}})
 }
 
@@ -304,6 +345,9 @@ func (s *Service) Shutdown(timeout time.Duration) error {
 	close(s.done)
 	s.cancel()
 	s.mu.Unlock()
+	if s.upd != nil {
+		s.upd.Stop()
+	}
 	if s.m != nil {
 		s.m.Close()
 	}
@@ -408,6 +452,16 @@ func (s *Service) handle(c command) (ev *pb.Event) {
 		err = s.auth.SignUp(ctx, b.SignUp.GetFirstName(), b.SignUp.GetLastName())
 	case *pb.Command_LogOut:
 		err = s.auth.LogOut(ctx)
+	case *pb.Command_LoadDialogs:
+		return s.loadDialogs(ctx, c.id, b.LoadDialogs)
+	case *pb.Command_LoadHistory:
+		return s.loadHistory(ctx, c.id, b.LoadHistory)
+	case *pb.Command_SendMessage:
+		return s.sendMessage(ctx, c.id, b.SendMessage)
+	case *pb.Command_MarkRead:
+		return s.markRead(ctx, c.id, b.MarkRead)
+	case *pb.Command_DownloadAvatar:
+		return s.downloadAvatar(ctx, c.id, b.DownloadAvatar)
 	default:
 		return resultErrorKind(c.id, pb.Error_INTERNAL, "команда не поддерживается этой сборкой")
 	}

@@ -6,11 +6,15 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::rc::Rc;
 
+use domain::chat::ChatIntent;
 use domain::login::{Banner, CriticalKind, Intent, LoginError, LoginModel, Screen, Step};
 use domain::model::{ConnState, ProxyKind, ProxySettings};
 use slint::{ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 slint::include_modules!();
+
+pub mod avatar;
+pub mod chatview;
 
 mod flags {
     include!(concat!(env!("OUT_DIR"), "/flags.rs"));
@@ -20,6 +24,7 @@ mod flags {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Login(Intent),
+    Chat(ChatIntent),
     Quit,
     ResetData,
 }
@@ -359,6 +364,36 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
     {
         let i = i.clone();
         proxy.on_cancel(move || i(Intent::CancelProxy));
+    }
+
+    let chat = app.global::<Chat>();
+    {
+        let s = send.clone();
+        chat.on_open(move |id| {
+            if let Ok(id) = id.parse() {
+                s(Action::Chat(ChatIntent::OpenChat(id)));
+            }
+        });
+    }
+    {
+        let s = send.clone();
+        chat.on_back(move || s(Action::Chat(ChatIntent::CloseChat)));
+    }
+    {
+        let s = send.clone();
+        chat.on_send(move || s(Action::Chat(ChatIntent::Send)));
+    }
+    {
+        let s = send.clone();
+        chat.on_composer_edited(move |t| s(Action::Chat(ChatIntent::ComposerEdited(t.to_string()))));
+    }
+    {
+        let s = send.clone();
+        chat.on_load_older(move || s(Action::Chat(ChatIntent::LoadOlder)));
+    }
+    {
+        let i = i.clone();
+        chat.on_log_out(move || i(Intent::LogOut));
     }
 
     let shell = app.global::<Shell>();

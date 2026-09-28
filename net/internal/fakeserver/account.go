@@ -23,11 +23,12 @@ type Account struct {
 	Code       string
 	Password   string // пусто — без облачного пароля
 	Hint       string
-	Registered bool   // false — auth.signIn вернёт authorizationSignUpRequired
-	UserID     int64  // id пользователя
-	FirstName  string // для ответа users.getUsers
-	Terms      string // текст условий при регистрации
-	QRDC       int    // 0 — QR подтверждается в том же DC; иначе loginTokenMigrateTo на этот DC
+	Registered bool      // false — auth.signIn вернёт authorizationSignUpRequired
+	UserID     int64     // id пользователя
+	FirstName  string    // для ответа users.getUsers
+	Terms      string    // текст условий при регистрации
+	QRDC       int       // 0 — QR подтверждается в том же DC; иначе loginTokenMigrateTo на этот DC
+	Contacts   []Contact // собеседники-пользователи с историей (диалоги)
 
 	mu         sync.Mutex
 	authorized map[uint64]bool // auth_key_id -> вошли
@@ -37,6 +38,89 @@ type Account struct {
 	srp        *srpState
 	loggedOut  int
 	codesSent  int
+	pts        int32
+	msgs       []fakeMsg
+	seeded     bool
+}
+
+func (a *Account) seed() {
+	if a.seeded {
+		return
+	}
+	a.seeded = true
+	date := int32(time.Now().Unix()) - 10000
+	for _, c := range a.Contacts {
+		for _, t := range c.Messages {
+			a.pts++
+			date++
+			a.msgs = append(a.msgs, fakeMsg{id: int32(len(a.msgs) + 1), peer: c.ID, text: t, date: date})
+		}
+	}
+}
+
+func (m fakeMsg) tl() *tl.Message {
+	return &tl.Message{Id: m.id, Out: m.out, PeerId: &tl.PeerUser{UserId: m.peer}, Date: m.date, Message: m.text}
+}
+
+func (a *Account) contactUsers() []tl.UserClass {
+	out := []tl.UserClass{a.user()}
+	for _, c := range a.Contacts {
+		name := c.Name
+		h := c.AccessHash
+		out = append(out, &tl.User{Id: c.ID, FirstName: &name, AccessHash: &h})
+	}
+	return out
+}
+
+// PushMessage — входящее сообщение от контакта: сервер присылает
+// updateShortMessage (pts по порядку). skip — «потерять» его (разрыв pts).
+func (s *Server) PushMessage(from int64, text string, skip bool) int32 {
+	a := s.opt.Account
+	a.mu.Lock()
+	a.init()
+	a.seed()
+	a.pts++
+	m := fakeMsg{id: int32(len(a.msgs) + 1), peer: from, text: text, date: int32(time.Now().Unix())}
+	a.msgs = append(a.msgs, m)
+	pts := a.pts
+	keys := map[uint64]bool{}
+	for k := range a.authorized {
+		keys[k] = true
+	}
+	a.mu.Unlock()
+	if skip {
+		return m.id
+	}
+	upd, _ := tlbin.Marshal(&tl.UpdateShortMessage{Id: m.id, UserId: from, Message: text, Pts: pts, PtsCount: 1,
+		Date: m.date})
+	s.mu.Lock()
+	var conns []*conn
+	for c := range s.conns {
+		if keys[c.keyID] {
+			conns = append(conns, c)
+		}
+	}
+	s.mu.Unlock()
+	for _, c := range conns {
+		_ = c.sendMsgs(true, [][]byte{upd})
+	}
+	return m.id
+}
+
+// Contact — личный диалог поддельного аккаунта.
+type Contact struct {
+	ID         int64
+	Name       string
+	AccessHash int64
+	Messages   []string // от старых к новым; id сообщений общие по аккаунту
+}
+
+type fakeMsg struct {
+	id   int32
+	peer int64
+	out  bool
+	text string
+	date int32
 }
 
 type qrToken struct {
@@ -242,7 +326,8 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 		if !a.authorized[key] {
 			return nil, unauthorized
 		}
-		return &tl.UpdatesState{Pts: 1, Qts: 0, Date: int32(time.Now().Unix()), Seq: 1}, nil
+		a.seed()
+		return &tl.UpdatesState{Pts: a.pts, Qts: 0, Date: int32(time.Now().Unix()), Seq: 0}, nil
 	case *tl.AuthLogOutRequest:
 		if !a.authorized[key] {
 			return nil, unauthorized
@@ -250,6 +335,79 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 		delete(a.authorized, key)
 		a.loggedOut++
 		return &tl.AuthLoggedOut{}, nil
+	case *tl.UpdatesGetDifferenceRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		a.seed()
+		st := &tl.UpdatesState{Pts: a.pts, Date: int32(time.Now().Unix()), Seq: 0}
+		if r.Pts >= a.pts {
+			return &tl.UpdatesDifferenceEmpty{Date: st.Date}, nil
+		}
+		var news []tl.MessageClass
+		for _, m := range a.msgs {
+			if m.id > r.Pts { // каждое сообщение увеличивает pts на 1: pts сообщения = его id
+				news = append(news, m.tl())
+			}
+		}
+		return &tl.UpdatesDifference{NewMessages: news, NewEncryptedMessages: []tl.EncryptedMessageClass{},
+			OtherUpdates: []tl.UpdateClass{}, Chats: []tl.ChatClass{}, Users: a.contactUsers(), State: st}, nil
+	case *tl.MessagesGetDialogsRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		a.seed()
+		out := &tl.MessagesDialogs{Chats: []tl.ChatClass{}, Users: a.contactUsers()}
+		for _, c := range a.Contacts {
+			var top *fakeMsg
+			for i := range a.msgs {
+				if a.msgs[i].peer == c.ID {
+					top = &a.msgs[i]
+				}
+			}
+			if top == nil {
+				continue
+			}
+			out.Dialogs = append(out.Dialogs, &tl.Dialog{Peer: &tl.PeerUser{UserId: c.ID}, TopMessage: top.id,
+				UnreadCount: 1, NotifySettings: &tl.PeerNotifySettings{}})
+			out.Messages = append(out.Messages, top.tl())
+		}
+		return out, nil
+	case *tl.MessagesGetHistoryRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		a.seed()
+		p, ok := r.Peer.(*tl.InputPeerUser)
+		if !ok {
+			return nil, &rpcErr{400, "PEER_ID_INVALID"}
+		}
+		out := &tl.MessagesMessages{Topics: []tl.ForumTopicClass{}, Chats: []tl.ChatClass{}, Users: a.contactUsers()}
+		for i := len(a.msgs) - 1; i >= 0 && len(out.Messages) < int(r.Limit); i-- {
+			m := a.msgs[i]
+			if m.peer == p.UserId && (r.OffsetId == 0 || m.id < r.OffsetId) {
+				out.Messages = append(out.Messages, m.tl())
+			}
+		}
+		return out, nil
+	case *tl.MessagesSendMessageRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		a.seed()
+		var peer int64
+		switch p := r.Peer.(type) {
+		case *tl.InputPeerUser:
+			peer = p.UserId
+		case *tl.InputPeerSelf:
+			peer = a.UserID
+		default:
+			return nil, &rpcErr{400, "PEER_ID_INVALID"}
+		}
+		a.pts++
+		m := fakeMsg{id: int32(len(a.msgs) + 1), peer: peer, out: true, text: r.Message, date: int32(time.Now().Unix())}
+		a.msgs = append(a.msgs, m)
+		return &tl.UpdateShortSentMessage{Out: true, Id: m.id, Pts: a.pts, PtsCount: 1, Date: m.date}, nil
 	case *tl.HelpGetCountriesListRequest:
 		ru, en := "Россия", "Russia"
 		name := &ru

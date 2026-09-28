@@ -1,10 +1,11 @@
 // Корневое окно: старт, критические состояния (Со-4), вход, главное окно.
 // Рендерер — software (О-13); рамка окна системная (Дз-5).
 import { Theme } from "theme.slint";
-import { Button, Link, Modal } from "widgets.slint";
+import { Button, Link, Modal, Confirm } from "widgets.slint";
+import { Chat, DialogItem, MessageItem, MainScreen } from "main.slint";
 import { Login, Proxy, CountryRow, LoginScreen } from "login.slint";
 
-export { Theme, Login, Proxy, CountryRow }
+export { Theme, Login, Proxy, CountryRow, Chat, DialogItem, MessageItem }
 
 export global Shell {
     // 0 старт, 1 критическое состояние, 2 вход, 3 главное окно
@@ -55,30 +56,6 @@ component StartingScreen inherits Rectangle {
             color: Theme.text-muted;
             font-size: Theme.tiny-size;
             horizontal-alignment: center;
-        }
-    }
-}
-
-component Confirm inherits Rectangle {
-    in property <string> text;
-    in property <string> ok-text;
-    callback ok();
-    callback cancel();
-    width: 380px;
-    height: layout.preferred-height;
-    background: Theme.card-bg;
-    border-radius: Theme.radius;
-    border-width: 1px;
-    border-color: Theme.card-border;
-    layout := VerticalLayout {
-        padding: 24px;
-        spacing: 18px;
-        Text { text: root.text; color: Theme.text; font-size: 13px; wrap: word-wrap; horizontal-alignment: center; }
-        HorizontalLayout {
-            alignment: center;
-            spacing: 12px;
-            Button { button-width: 150px; primary: false; text: @tr("Cancel"); clicked => { root.cancel(); } }
-            Button { button-width: 150px; text: root.ok-text; clicked => { root.ok(); } }
         }
     }
 }
@@ -163,48 +140,6 @@ component CriticalScreen inherits Rectangle {
     }
 }
 
-// Главное окно появится на вехе В4; пока — кто вошёл и выход.
-component MainPlaceholder inherits Rectangle {
-    in-out property <bool> confirm-logout;
-    background: Theme.window-bg;
-    VerticalLayout {
-        alignment: center;
-        spacing: 14px;
-        Text {
-            text: @tr("Logged in as {}", Shell.user-name);
-            color: Theme.text;
-            font-size: Theme.title-size;
-            horizontal-alignment: center;
-        }
-        Text {
-            text: @tr("Chats will appear in the next version.");
-            color: Theme.text-muted;
-            font-size: Theme.small-size;
-            horizontal-alignment: center;
-        }
-        HorizontalLayout {
-            alignment: center;
-            Button {
-                button-width: 200px;
-                primary: false;
-                text: Shell.busy ? @tr("Logging out…") : @tr("Log out");
-                enabled: !Shell.busy;
-                clicked => { root.confirm-logout = true; }
-            }
-        }
-    }
-    if root.confirm-logout: Modal {
-        width: 100%;
-        height: 100%;
-        Confirm {
-            text: @tr("Log out? The session will be ended and all local data (messages, cache, keys) deleted.");
-            ok-text: @tr("Log out");
-            ok => { root.confirm-logout = false; Shell.log-out(); }
-            cancel => { root.confirm-logout = false; }
-        }
-    }
-}
-
 export component App inherits Window {
     title: "nuncio";
     preferred-width: 1100px;
@@ -220,7 +155,7 @@ export component App inherits Window {
             if Shell.screen == 0: StartingScreen { width: 100%; height: 100%; }
             if Shell.screen == 1: CriticalScreen { width: 100%; height: 100%; }
             if Shell.screen == 2: LoginScreen { width: 100%; height: 100%; }
-            if Shell.screen == 3: MainPlaceholder { width: 100%; height: 100%; }
+            if Shell.screen == 3: MainScreen { width: 100%; height: 100%; }
         }
     }
 }

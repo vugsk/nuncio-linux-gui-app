@@ -1,0 +1,531 @@
+// Главное окно вертикали (В4): список диалогов и чат в две колонки
+// (Дизайн - Каркас и навигация, раздел 2; Дизайн - Список диалогов; Дизайн - Чат).
+// Упрощённо по плану В4: пузыри без вложений и форматирования, обычный
+// TextInput, стандартная прокрутка. Узкое окно (меньше 780 px, Дз-6′) — одна колонка.
+import { ListView, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Button, Link, Modal, Confirm } from "widgets.slint";
+
+export struct DialogItem {
+    id: string,        // помеченный id собеседника (i64 строкой)
+    name: string,
+    initials: string,
+    color: color,
+    avatar: image,
+    has-avatar: bool,
+    prefix: string,    // «Вы:» перед превью
+    preview: string,
+    preview-accent: bool, // служебное или вложение — другим цветом
+    time: string,
+    unread: int,
+    pinned: bool,
+    selected: bool,
+    out-state: int,    // своё последнее: 0 нет, 1 отправлено, 2 прочитано
+}
+
+export struct MessageItem {
+    date-label: string, // непусто — перед сообщением разделитель даты
+    text: string,
+    time: string,
+    out: bool,
+    service: bool,
+    sender: string,     // имя над первым в серии (группы)
+    sender-color: color,
+    media: string,      // «Фото», «Файл» и т. п. (вложения — В7)
+    edited: bool,
+    read: bool,         // своё прочитано собеседником
+    first-in-series: bool,
+}
+
+export global Chat {
+    in property <[DialogItem]> dialogs;
+    in property <bool> dialogs-loading;
+    in property <[MessageItem]> messages;
+    in property <bool> has-open;
+    in property <string> open-name;
+    in property <string> open-status;
+    in property <string> open-initials;
+    in property <color> open-color;
+    in property <image> open-avatar;
+    in property <bool> open-has-avatar;
+    in property <bool> history-loading;
+    in property <bool> can-write: true;
+    in-out property <string> composer;
+    in property <bool> sending;
+    in property <string> error;
+    // Счётчик изменений истории: при росте — прокрутка вниз, если были внизу.
+    in property <int> history-version;
+    callback open(string);
+    callback back();
+    callback send();
+    callback composer-edited(string);
+    callback load-older();
+    in-out property <bool> confirm-logout;
+    callback log-out();
+}
+
+component Avatar inherits Rectangle {
+    in property <length> size: 48px;
+    in property <string> initials;
+    in property <color> tint;
+    in property <image> source;
+    in property <bool> has-image;
+    width: size;
+    height: size;
+    // Круглая заливка работает и в software-рендерере; картинка уже круглая (маска в Rust).
+    if !root.has-image: Rectangle {
+        border-radius: root.size / 2;
+        background: root.tint;
+        Text {
+            text: root.initials;
+            color: Theme.text;
+            font-size: root.size * 0.36;
+            font-weight: 600;
+        }
+    }
+    if root.has-image: Image {
+        width: root.size;
+        height: root.size;
+        source: root.source;
+    }
+}
+
+component DialogRow inherits Rectangle {
+    in property <DialogItem> item;
+    callback clicked();
+    height: 64px;
+    background: item.selected ? Theme.row-selected : touch.has-hover ? Theme.row-bg : transparent;
+    accessible-role: list-item;
+    accessible-label: item.name;
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 10px;
+        spacing: 10px;
+        Avatar {
+            y: 8px;
+            initials: root.item.initials;
+            tint: root.item.color;
+            source: root.item.avatar;
+            has-image: root.item.has-avatar;
+        }
+        VerticalLayout {
+            padding-top: 10px;
+            padding-bottom: 10px;
+            spacing: 4px;
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: root.item.name;
+                    color: Theme.text;
+                    font-size: 14px;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                if root.item.out-state != 0: Text {
+                    text: root.item.out-state == 2 ? "✓✓" : "✓";
+                    color: root.item.selected ? Theme.text : Theme.link;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.item.time;
+                    color: root.item.selected ? Theme.text : Theme.text-muted;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                HorizontalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    if root.item.prefix != "": Text {
+                        text: root.item.prefix;
+                        color: root.item.selected ? Theme.text : Theme.text;
+                        font-size: 12px;
+                    }
+                    Text {
+                        text: root.item.preview;
+                        color: root.item.selected ? Theme.text : root.item.preview-accent ? Theme.link : Theme.text-muted;
+                        font-size: 12px;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                }
+                if root.item.unread > 0: Rectangle {
+                    min-width: 22px;
+                    height: 20px;
+                    border-radius: 10px;
+                    background: root.item.selected ? Theme.text : Theme.success;
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        Text {
+                            text: root.item.unread > 999 ? "999+" : root.item.unread;
+                            color: root.item.selected ? Theme.row-selected : #0e1621;
+                            font-size: 11px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                if root.item.unread == 0 && root.item.pinned: Path {
+                    width: 12px;
+                    height: 12px;
+                    y: 4px;
+                    stroke: Theme.text-muted;
+                    stroke-width: 1.5px;
+                    viewbox-width: 12;
+                    viewbox-height: 12;
+                    commands: "M 4 1 L 8 1 L 7 5 L 10 7 L 2 7 L 5 5 Z M 6 7 L 6 11";
+                }
+            }
+        }
+    }
+}
+
+component DialogList inherits Rectangle {
+    in-out property <bool> menu-open;
+    background: Theme.window-bg;
+    VerticalLayout {
+        // Шапка списка: меню, фильтр папок (В6), поиск (В6), новый чат (В5).
+        HorizontalLayout {
+            height: 52px;
+            padding: 8px;
+            spacing: 8px;
+            Rectangle {
+                width: 44px;
+                border-radius: Theme.radius;
+                background: menu-touch.has-hover ? Theme.row-selected : Theme.row-bg;
+                border-width: 1px;
+                border-color: Theme.card-border;
+                accessible-role: button;
+                accessible-label: @tr("Menu");
+                menu-touch := TouchArea { clicked => { root.menu-open = !root.menu-open; } }
+                Path {
+                    width: 16px;
+                    height: 12px;
+                    stroke: Theme.text;
+                    stroke-width: 1.5px;
+                    viewbox-width: 16;
+                    viewbox-height: 12;
+                    commands: "M 0 1 L 16 1 M 0 6 L 16 6 M 0 11 L 16 11";
+                }
+            }
+            Text {
+                text: @tr("All chats");
+                color: Theme.text;
+                font-size: 14px;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+        if Chat.dialogs.length == 0: Rectangle {
+            vertical-stretch: 1;
+            Text {
+                text: Chat.dialogs-loading ? @tr("Loading…") : @tr("No chats yet");
+                color: Theme.text-muted;
+                font-size: 13px;
+            }
+        }
+        if Chat.dialogs.length > 0: ListView {
+            vertical-stretch: 1;
+            for d in Chat.dialogs: DialogRow {
+                item: d;
+                clicked => { Chat.open(d.id); }
+            }
+        }
+    }
+    if root.menu-open: Rectangle {
+        x: 8px;
+        y: 56px;
+        width: 220px;
+        height: menu.preferred-height;
+        background: Theme.card-bg;
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.card-border;
+        menu := VerticalLayout {
+            padding: 6px;
+            Rectangle {
+                height: 36px;
+                border-radius: 4px;
+                background: out-touch.has-hover ? Theme.row-bg : transparent;
+                out-touch := TouchArea { clicked => { root.menu-open = false; Chat.confirm-logout = true; } }
+                Text {
+                    x: 10px;
+                    text: @tr("Log out");
+                    color: Theme.error;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    height: parent.height;
+                }
+            }
+        }
+    }
+}
+
+component Bubble inherits HorizontalLayout {
+    in property <MessageItem> item;
+    alignment: item.out ? end : start;
+    padding-left: 12px;
+    padding-right: 12px;
+    Rectangle {
+        max-width: min(480px, root.width * 0.75);
+        background: root.item.out ? Theme.accent : Theme.row-bg;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: root.item.out ? Theme.accent-border : Theme.card-border;
+        VerticalLayout {
+            padding: 8px;
+            padding-left: 10px;
+            padding-right: 10px;
+            spacing: 2px;
+            if root.item.sender != "" && root.item.first-in-series: Text {
+                text: root.item.sender;
+                color: root.item.sender-color;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            if root.item.media != "": Text {
+                text: root.item.media;
+                color: Theme.link;
+                font-size: 13px;
+                font-italic: true;
+            }
+            if root.item.text != "": Text {
+                text: root.item.text;
+                color: Theme.text;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 4px;
+                if root.item.edited: Text { text: @tr("edited"); color: Theme.text-muted; font-size: 10px; }
+                Text { text: root.item.time; color: #9fb0c0; font-size: 10px; }
+                if root.item.out: Text {
+                    text: root.item.read ? "✓✓" : "✓";
+                    color: #9fb0c0;
+                    font-size: 10px;
+                }
+            }
+        }
+    }
+}
+
+component MessageRow inherits VerticalLayout {
+    in property <MessageItem> item;
+    padding-top: item.first-in-series ? 6px : 2px;
+    padding-bottom: 2px;
+    spacing: 6px;
+    if root.item.date-label != "": HorizontalLayout {
+        alignment: center;
+        padding-top: 6px;
+        Rectangle {
+            height: 22px;
+            width: date-text.preferred-width + 20px;
+            background: Theme.row-bg;
+            border-radius: 11px;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            date-text := Text { text: root.item.date-label; color: Theme.text; font-size: 11px; }
+        }
+    }
+    if root.item.service: HorizontalLayout {
+        alignment: center;
+        Rectangle {
+            height: 24px;
+            width: min(service-text.preferred-width + 20px, 420px);
+            background: Theme.row-bg;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            service-text := Text {
+                text: root.item.text;
+                color: Theme.text;
+                font-size: 11px;
+                overflow: elide;
+                width: parent.width - 16px;
+                horizontal-alignment: center;
+            }
+        }
+    }
+    if !root.item.service: Bubble { item: root.item; }
+}
+
+component ChatPane inherits Rectangle {
+    in property <bool> narrow;
+    // Были ли внизу истории перед изменением (тогда после — снова вниз).
+    property <bool> at-bottom: true;
+    property <int> seen-version;
+    background: Theme.window-bg;
+    if !Chat.has-open: Text {
+        text: @tr("Select a chat");
+        color: Theme.text-muted;
+        font-size: 13px;
+    }
+    if Chat.has-open: VerticalLayout {
+        // Шапка чата.
+        Rectangle {
+            height: 52px;
+            background: Theme.card-bg;
+            border-width: 0px;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 12px;
+                spacing: 10px;
+                if root.narrow: Rectangle {
+                    width: 36px;
+                    accessible-role: button;
+                    accessible-label: @tr("Back");
+                    TouchArea { clicked => { Chat.back(); } }
+                    Path {
+                        width: 10px;
+                        height: 16px;
+                        stroke: Theme.text;
+                        stroke-width: 2px;
+                        viewbox-width: 10;
+                        viewbox-height: 16;
+                        commands: "M 9 1 L 2 8 L 9 15";
+                    }
+                }
+                Avatar {
+                    y: 6px;
+                    size: 40px;
+                    initials: Chat.open-initials;
+                    tint: Chat.open-color;
+                    source: Chat.open-avatar;
+                    has-image: Chat.open-has-avatar;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text { text: Chat.open-name; color: Theme.text; font-size: 14px; font-weight: 600; overflow: elide; }
+                    if Chat.open-status != "": Text { text: Chat.open-status; color: Theme.text-muted; font-size: 11px; }
+                }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            list := ListView {
+                for m in Chat.messages: MessageRow { item: m; }
+                changed content-y => {
+                    root.at-bottom = self.content-y <= self.visible-height - self.content-height + 40px;
+                    // Подгрузка вверх заранее, за несколько строк до края (П-2).
+                    if (self.content-y > -400px && !Chat.history-loading) {
+                        Chat.load-older();
+                    }
+                }
+                changed content-height => {
+                    if (root.at-bottom) {
+                        self.content-y = min(0px, self.visible-height - self.content-height);
+                    }
+                }
+            }
+            if Chat.history-loading && Chat.messages.length == 0: Text {
+                text: @tr("Loading…");
+                color: Theme.text-muted;
+                font-size: 12px;
+            }
+        }
+        if Chat.error != "": Text {
+            text: Chat.error;
+            color: Theme.error;
+            font-size: 11px;
+            horizontal-alignment: center;
+        }
+        // Поле ввода (В4 — обычный TextInput; гибридное поле — В5, Дз-17).
+        Rectangle {
+            height: max(48px, input.preferred-height + 24px);
+            background: Theme.card-bg;
+            HorizontalLayout {
+                padding: 8px;
+                padding-left: 14px;
+                spacing: 8px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    input := TextInput {
+                        width: 100%;
+                        y: (parent.height - self.height) / 2;
+                        height: min(self.preferred-height, 160px);
+                        text <=> Chat.composer;
+                        color: Theme.text;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                        single-line: false;
+                        enabled: Chat.can-write;
+                        accessible-label: @tr("Message");
+                        edited => { Chat.composer-edited(self.text); }
+                        key-pressed(e) => {
+                            // Enter — отправить, Shift+Enter — перенос строки.
+                            if (e.text == Key.Return && !e.modifiers.shift) {
+                                Chat.send();
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+                    if Chat.composer == "": Text {
+                        text: @tr("Write a message…");
+                        color: Theme.text-muted;
+                        font-size: 13px;
+                        x: 0;
+                        width: 100%;
+                        vertical-alignment: center;
+                        height: parent.height;
+                    }
+                }
+                Rectangle {
+                    width: 36px;
+                    accessible-role: button;
+                    accessible-label: @tr("Send");
+                    send-touch := TouchArea {
+                        enabled: Chat.composer != "" && !Chat.sending;
+                        clicked => { Chat.send(); }
+                    }
+                    Path {
+                        width: 20px;
+                        height: 20px;
+                        fill: Chat.composer != "" && !Chat.sending ? Theme.link : Theme.text-muted;
+                        viewbox-width: 20;
+                        viewbox-height: 20;
+                        commands: "M 1 18 L 19 10 L 1 2 L 1 8 L 13 10 L 1 12 Z";
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component MainScreen inherits Rectangle {
+    property <bool> narrow: root.width < 780px;
+    background: Theme.window-bg;
+    HorizontalLayout {
+        if !root.narrow || !Chat.has-open: DialogList {
+            width: root.narrow ? root.width : 360px;
+        }
+        if !root.narrow: Rectangle { width: 1px; background: Theme.card-border; }
+        if !root.narrow || Chat.has-open: ChatPane {
+            narrow: root.narrow;
+            horizontal-stretch: 1;
+        }
+    }
+    // Нс-6: выход с подтверждением — удаляются сессия, ключ, база и кэш.
+    if Chat.confirm-logout: Modal {
+        width: 100%;
+        height: 100%;
+        Confirm {
+            text: @tr("Log out? The session will be ended and all local data (messages, cache, keys) deleted.");
+            ok-text: @tr("Log out");
+            ok => { Chat.confirm-logout = false; Chat.log-out(); }
+            cancel => { Chat.confirm-logout = false; }
+        }
+    }
+}

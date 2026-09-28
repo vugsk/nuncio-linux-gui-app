@@ -205,11 +205,90 @@ fn states() -> Vec<(&'static str, LoginModel)> {
     v
 }
 
+fn chat_model(open: Option<i64>) -> domain::chat::ChatModel {
+    use domain::chatstore::DialogRow;
+    use domain::model::{Dialog, Message, Peer, PeerKind};
+    let now = 1_790_000_000;
+    let row = |id: i64, name: &str, text: &str, out: bool, unread: i32, pinned: bool, ago: i64, media: &str| DialogRow {
+        dialog: Dialog { peer_id: id, top_message: 10, unread_count: unread, pinned, read_outbox_max_id: 9,
+            ..Default::default() },
+        peer: Peer { id, kind: PeerKind::of(id), name: name.into(), is_self: id == 1, ..Default::default() },
+        last: Some(Message { peer_id: id, id: 10, date: now - ago, out, text: text.into(), media: media.into(),
+            ..Default::default() }),
+        top_date: now - ago,
+        avatar_path: String::new(),
+    };
+    let mut m = domain::chat::ChatModel::new(1, "ru", now);
+    m.set_rows(vec![
+        row(1, "Я", "заметка про сборку", true, 0, true, 60, ""),
+        row(100, "Мария", "ок, договорились", true, 0, false, 600, ""),
+        row(-200, "Рабочая группа", "релиз готов, можно проверять", false, 3, false, 1200, ""),
+        row(300, "Дима", "", false, 0, false, 90_000, "photo"),
+        row(-1_000_000_000_400, "Канал новостей", "Обновление 1.2: исправления", false, 12, false, 200_000, ""),
+        row(500, "Анна", "Длинное сообщение, которое не помещается в одну строку списка и обрезается многоточием", false, 1, false, 900_000, ""),
+    ]);
+    if let Some(id) = open {
+        m.intent(domain::chat::ChatIntent::OpenChat(id));
+        let msg = |mid: i32, from: i64, out: bool, ago: i64, text: &str| Message {
+            peer_id: id, id: mid, from_id: from, out, date: now - ago, text: text.into(), ..Default::default()
+        };
+        let h = vec![
+            msg(1, 7, false, 90_000, "вчерашнее сообщение"),
+            Message { service: "ChatAddUser".into(), ..msg(2, 7, false, 3000, "") },
+            msg(3, 7, false, 1300, "релиз готов, можно проверять"),
+            msg(4, 7, false, 1290, "ссылка на сборку ниже"),
+            msg(5, 8, false, 1250, "https://example.com/build/1234\nи короткое пояснение"),
+            msg(6, 1, true, 1200, "Собираю сейчас, ссылка ниже"),
+            Message { edit_date: 5, ..msg(7, 1, true, 1100, "Готово, проверяйте") },
+            Message { media: "photo".into(), ..msg(8, 8, false, 600, "Вид с балкона") },
+        ];
+        let senders = std::collections::HashMap::from([(7, "Пётр".to_string()), (8, "Мария".to_string())]);
+        m.set_history(id, h, senders);
+    }
+    m
+}
+
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| "snapshots".into());
     std::fs::create_dir_all(&dir).unwrap();
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(Offscreen(window.clone()))).unwrap();
+    // Главное окно: широкое и узкое.
+    let mut main_states: Vec<(&str, Option<i64>, u32)> =
+        vec![("21-main-list", None, W), ("22-main-group", Some(-200), W), ("23-main-narrow-chat", Some(-200), 700)];
+    main_states.push(("24-main-narrow-list", None, 700));
+    for (name, open, width) in main_states {
+        let app = ui::App::new().unwrap();
+        ui::apply_language("ru");
+        window.set_size(PhysicalSize::new(width, H));
+        app.show().unwrap();
+        let mut login = LoginModel::new("ru", "RU", ProxySettings::default(), 0);
+        login.event(Event::Auth(AuthState { step: AuthStep::Ready, user: Some(User { id: 1, ..Default::default() }),
+            ..Default::default() }));
+        ui::Renderer::default().render(&app, &login);
+        let chat = chat_model(open);
+        ui::chatview::ChatRenderer::default().render(&app, &chat, &Default::default());
+        for _ in 0..3 {
+            slint::platform::update_timers_and_animations();
+            let mut buf = vec![PremultipliedRgbaColor::default(); (width * H) as usize];
+            window.request_redraw();
+            window.draw_if_needed(|renderer| {
+                renderer.render(&mut buf, width as usize);
+            });
+            if name.is_empty() {
+                continue;
+            }
+            let rgba: Vec<u8> = buf.iter().flat_map(|p| [p.red, p.green, p.blue, 255]).collect();
+            let file = std::fs::File::create(format!("{dir}/{name}.png")).unwrap();
+            let mut enc = png::Encoder::new(std::io::BufWriter::new(file), width, H);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.write_header().unwrap().write_image_data(&rgba).unwrap();
+        }
+        app.hide().unwrap();
+        println!("{dir}/{name}.png");
+    }
+
     for (name, model) in states() {
         let app = ui::App::new().unwrap();
         ui::apply_language(&model.lang);

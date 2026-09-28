@@ -25,6 +25,116 @@ pub enum ProxyKind {
     MtProxy,
 }
 
+/// Ссылка на собеседника для запросов. `id` «помеченный», как в Bot API:
+/// пользователь +id, группа -id, канал -(1000000000000 + id).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct PeerRef {
+    pub id: i64,
+    pub access_hash: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PeerKind {
+    #[default]
+    User,
+    Chat,
+    Channel,
+}
+
+/// Сдвиг помеченных id каналов.
+pub const CHANNEL_SHIFT: i64 = 1_000_000_000_000;
+
+impl PeerKind {
+    pub fn of(id: i64) -> Self {
+        if id > 0 {
+            Self::User
+        } else if id < -CHANNEL_SHIFT {
+            Self::Channel
+        } else {
+            Self::Chat
+        }
+    }
+}
+
+/// Собеседник: пользователь, группа или канал.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Peer {
+    pub id: i64,
+    pub kind: PeerKind,
+    pub name: String,
+    pub username: String,
+    pub access_hash: i64,
+    pub photo_id: i64,
+    pub photo_dc: i32,
+    pub is_self: bool,
+    pub is_bot: bool,
+    pub broadcast: bool,
+    /// Неполные сведения: `access_hash` не годится для запросов.
+    pub min: bool,
+}
+
+impl Peer {
+    pub fn peer_ref(&self) -> PeerRef {
+        PeerRef { id: self.id, access_hash: self.access_hash }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Message {
+    pub peer_id: i64,
+    pub id: i32,
+    pub date: i64,
+    pub from_id: i64,
+    pub out: bool,
+    pub text: String,
+    pub reply_to: i32,
+    /// Вид вложения (`photo`, `document`, ...); пусто — только текст.
+    pub media: String,
+    /// Вид служебного действия; пусто — обычное сообщение.
+    pub service: String,
+    pub random_id: i64,
+    pub edit_date: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Dialog {
+    pub peer_id: i64,
+    pub top_message: i32,
+    pub unread_count: i32,
+    pub pinned: bool,
+    pub folder: i32,
+    pub read_inbox_max_id: i32,
+    pub read_outbox_max_id: i32,
+}
+
+/// Состояние обновлений (О-5): пишется одной транзакцией с событиями.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UpdateState {
+    pub pts: i32,
+    pub qts: i32,
+    pub seq: i32,
+    pub date: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DomainUpdate {
+    NewMessage(Message),
+    EditMessage(Message),
+    /// `peer_id` 0 — личные и группы (id сообщений общие для аккаунта).
+    DeleteMessages { peer_id: i64, ids: Vec<i32> },
+    ReadInbox { peer_id: i64, max_id: i32, still_unread: i32 },
+    ReadOutbox { peer_id: i64, max_id: i32 },
+    /// Разница слишком велика: перечитать диалоги.
+    Reset,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpdatesBatch {
+    pub updates: Vec<DomainUpdate>,
+    pub peers: Vec<Peer>,
+    pub state: Option<UpdateState>,
+}
+
 /// Команда сетевому слою.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -41,6 +151,11 @@ pub enum Command {
     TestProxy(ProxySettings),
     GetCountries { lang: String },
     RetryStartup,
+    LoadDialogs { limit: i32, offset_date: i64, offset_id: i32, offset_peer: Option<PeerRef> },
+    LoadHistory { peer: PeerRef, offset_id: i32, limit: i32 },
+    SendMessage { peer: PeerRef, text: String, random_id: i64 },
+    MarkRead { peer: PeerRef, max_id: i32 },
+    DownloadAvatar { peer: PeerRef, photo_id: i64, dc: i32 },
 }
 
 /// Шаг входа.
@@ -150,6 +265,10 @@ pub enum Payload {
     Pong { message: String, core_version: String },
     Countries(Vec<Country>),
     ProxyCheck { rtt_ms: u32 },
+    Dialogs { dialogs: Vec<Dialog>, messages: Vec<Message>, peers: Vec<Peer>, total: i32, complete: bool },
+    History { messages: Vec<Message>, peers: Vec<Peer>, total: i32 },
+    Sent(Message),
+    File(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +284,7 @@ pub enum Event {
     Result(CommandResult),
     Connection(ConnState),
     Auth(AuthState),
+    Updates(UpdatesBatch),
     Startup { kind: StartupErrorKind, text: String },
     Fatal(String),
 }

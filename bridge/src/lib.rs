@@ -18,12 +18,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-use domain::model::{Command, Event, ProxySettings};
+use domain::model::{Command, Event, ProxySettings, UpdateState};
 use domain::{Backend, BackendError, Next};
 use prost::Message;
 
 /// Версия client.proto, которую понимает эта сборка (сверяется с Go).
-pub const PROTO_VERSION: u32 = 2;
+pub const PROTO_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeError {
@@ -106,6 +106,9 @@ pub struct StartParams {
     pub test_servers: bool,
     pub proxy: ProxySettings,
     pub keyring_app: String,
+    pub cache_dir: String,
+    /// Состояние обновлений из базы (О-5); `None` — новый вход.
+    pub update_state: Option<UpdateState>,
 }
 
 static STARTED: AtomicBool = AtomicBool::new(false);
@@ -135,6 +138,8 @@ impl GoBackend {
             proxy: Some(map::proxy_to(&p.proxy)),
             log_dir: p.log_dir.clone(),
             keyring_app: p.keyring_app.clone(),
+            update_state: p.update_state.map(map::state_to),
+            cache_dir: p.cache_dir.clone(),
         }
         .encode_to_vec();
         // SAFETY: указатель и длина описывают живой срез на время вызова; Go копирует вход.

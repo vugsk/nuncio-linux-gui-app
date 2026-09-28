@@ -29,3 +29,16 @@ updateShortMessage
 updateShortChatMessage
 updateShortSentMessage
 updatesTooLong
+
+# В4: диалоги, история, отправка текста, обновления, маленькие аватары
+messages.getDialogs
+messages.getHistory
+messages.sendMessage
+messages.readHistory
+channels.readHistory
+updates.getDifference
+updates.getChannelDifference
+upload.getFile
+auth.exportAuthorization
+auth.importAuthorization
+users.getFullUser

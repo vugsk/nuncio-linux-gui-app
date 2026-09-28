@@ -4,7 +4,8 @@
 // добавление; в этом файле нет ничего из TL.
 //
 // Команды и события добавляются по вехам (Архитектура/nuncio - План реализации.md):
-// В0 — Ping; В3 — вход, прокси, список стран, состояние соединения.
+// В0 — Ping; В3 — вход, прокси, список стран, состояние соединения;
+// В4 — диалоги, история, отправка текста, обновления, аватары.
 
 syntax = "proto3";
 
@@ -28,6 +29,102 @@ message StartRequest {
   ProxySettings proxy = 11;
   string log_dir = 12;           // ~/.local/state/nuncio: журнал Go (без секретов)
   string keyring_app = 13;       // имя записи в связке ключей; пусто = "nuncio"
+  // Состояние обновлений из базы Rust (О-5); пусто — Go возьмёт updates.getState.
+  UpdateState update_state = 14;
+  string cache_dir = 15;         // ~/.cache/nuncio: аватары и медиа (пишет Go)
+}
+
+// Состояние обновлений (pts/qts/seq/date); Rust пишет его одной транзакцией с событиями.
+message UpdateState {
+  int32 pts = 1;
+  int32 qts = 2;
+  int32 seq = 3;
+  int64 date = 4;
+}
+
+// Ссылка на собеседника для запросов. id «помеченный», как в Bot API:
+// пользователь +id, группа -id, канал -(1000000000000 + id).
+message PeerRef {
+  int64 id = 1;
+  int64 access_hash = 2;
+}
+
+message Peer {
+  enum Kind {
+    USER = 0;
+    CHAT = 1;
+    CHANNEL = 2;
+  }
+  int64 id = 1;
+  Kind kind = 2;
+  string name = 3;
+  string username = 4;
+  int64 access_hash = 5;
+  int64 photo_id = 6;           // 0 — нет фото
+  int32 photo_dc = 7;
+  bool is_self = 8;
+  bool is_bot = 9;
+  bool broadcast = 10;          // канал (не группа)
+  bool min = 11;                // неполные сведения: access_hash не годится для запросов
+}
+
+message Message {
+  int64 peer_id = 1;
+  int32 id = 2;
+  int64 date = 3;
+  int64 from_id = 4;
+  bool out = 5;
+  string text = 6;
+  int32 reply_to = 7;
+  string media = 8;             // вид вложения: photo, document, ... (пусто — только текст)
+  string service = 9;           // служебное сообщение: вид действия (пусто — обычное)
+  int64 random_id = 10;         // для своих отправленных
+  int64 edit_date = 11;
+}
+
+message Dialog {
+  int64 peer_id = 1;
+  int32 top_message = 2;
+  int32 unread_count = 3;
+  bool pinned = 4;
+  int32 folder = 5;
+  int32 read_inbox_max_id = 6;
+  int32 read_outbox_max_id = 7;
+}
+
+message DomainUpdate {
+  oneof body {
+    Message new_message = 1;
+    Message edit_message = 2;
+    DeleteMessages delete_messages = 3;
+    ReadInbox read_inbox = 4;
+    ReadOutbox read_outbox = 5;
+    ResetDialogs reset = 6;      // разница слишком велика: перечитать диалоги
+  }
+}
+
+message DeleteMessages {
+  int64 peer_id = 1;             // 0 — личные и группы (id сообщений общие для аккаунта)
+  repeated int32 ids = 2;
+}
+
+message ReadInbox {
+  int64 peer_id = 1;
+  int32 max_id = 2;
+  int32 still_unread = 3;
+}
+
+message ReadOutbox {
+  int64 peer_id = 1;
+  int32 max_id = 2;
+}
+
+message ResetDialogs {}
+
+message UpdatesBatch {
+  repeated DomainUpdate updates = 1;
+  repeated Peer peers = 2;
+  UpdateState state = 3;         // новое состояние: писать в той же транзакции
 }
 
 message ProxySettings {
@@ -59,6 +156,11 @@ message Command {
     TestProxy test_proxy = 61;
     GetCountries get_countries = 62;
     RetryStartup retry_startup = 63;
+    LoadDialogs load_dialogs = 20;
+    LoadHistory load_history = 21;
+    SendMessage send_message = 30;
+    MarkRead mark_read = 34;
+    DownloadAvatar download_avatar = 53;
     Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
   }
 }
@@ -76,11 +178,44 @@ message TestProxy { ProxySettings proxy = 1; }  // проверка без со�
 message GetCountries { string lang_code = 1; }
 message RetryStartup {}                          // «Повторить» на критическом экране (Со-4)
 
+message LoadDialogs {
+  int32 limit = 1;
+  int64 offset_date = 2;         // страница после последнего полученного диалога
+  int32 offset_id = 3;
+  PeerRef offset_peer = 4;
+}
+
+message LoadHistory {
+  PeerRef peer = 1;
+  int32 offset_id = 2;           // 0 — с последнего сообщения
+  int32 limit = 3;
+  int32 add_offset = 4;
+}
+
+message SendMessage {
+  PeerRef peer = 1;
+  string text = 2;
+  int64 random_id = 3;           // идемпотентность повтора (О-9)
+  int32 reply_to = 4;
+}
+
+message MarkRead {
+  PeerRef peer = 1;
+  int32 max_id = 2;
+}
+
+message DownloadAvatar {
+  PeerRef peer = 1;
+  int64 photo_id = 2;
+  int32 dc = 3;
+}
+
 message Event {
   oneof body {
     CommandResult result = 1;
     ConnectionState connection = 2;
     AuthState auth = 3;
+    UpdatesBatch updates = 4;
     FatalError fatal = 6;
     StartupError startup = 7;
   }
@@ -152,7 +287,33 @@ message CommandResult {
     Pong pong = 100;
     Countries countries = 101;
     ProxyCheck proxy_check = 102;
+    Dialogs dialogs = 103;
+    History history = 104;
+    Sent sent = 105;
+    FilePath file = 106;
   }
+}
+
+message Dialogs {
+  repeated Dialog dialogs = 1;
+  repeated Message messages = 2;  // последние сообщения диалогов
+  repeated Peer peers = 3;
+  int32 total = 4;
+  bool complete = 5;              // больше страниц нет
+}
+
+message History {
+  repeated Message messages = 1;  // от новых к старым
+  repeated Peer peers = 2;
+  int32 total = 3;
+}
+
+message Sent {
+  Message message = 1;
+}
+
+message FilePath {
+  string path = 1;
 }
 
 message Countries {

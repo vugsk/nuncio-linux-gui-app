@@ -16,6 +16,7 @@ slint = { version = "1", default-features = false, features = [
     "software-renderer-systemfonts",
     "compat-1-2",
 ] }
+zune-jpeg = "0.5.15"
 
 [build-dependencies]
 harfrust = "0.13.3"

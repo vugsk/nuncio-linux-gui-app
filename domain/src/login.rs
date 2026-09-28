@@ -484,6 +484,7 @@ impl LoginModel {
                 self.screen = Some(Screen::Critical(Critical { kind: CriticalKind::NetworkFailed, detail: text }));
             }
             Event::Auth(a) => self.auth(a, &mut out),
+            Event::Updates(_) => {} // обновления чатов — модель чата
             Event::Result(r) => self.result(r),
         }
         out

@@ -192,3 +192,28 @@ export component Modal inherits Rectangle {
     TouchArea { }
     @children
 }
+
+// Подтверждение действия (выход, сброс данных).
+export component Confirm inherits Rectangle {
+    in property <string> text;
+    in property <string> ok-text;
+    callback ok();
+    callback cancel();
+    width: 380px;
+    height: layout.preferred-height;
+    background: Theme.card-bg;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.card-border;
+    layout := VerticalLayout {
+        padding: 24px;
+        spacing: 18px;
+        Text { text: root.text; color: Theme.text; font-size: 13px; wrap: word-wrap; horizontal-alignment: center; }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 12px;
+            Button { button-width: 150px; primary: false; text: @tr("Cancel"); clicked => { root.cancel(); } }
+            Button { button-width: 150px; text: root.ok-text; clicked => { root.ok(); } }
+        }
+    }
+}

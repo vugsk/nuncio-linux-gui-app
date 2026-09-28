@@ -276,3 +276,27 @@ msgstr "nuncio хранит ключ сеанса только в системн
 
 msgid "show"
 msgstr "показать"
+
+msgid "All chats"
+msgstr "Все чаты"
+
+msgid "edited"
+msgstr "изм."
+
+msgid "Menu"
+msgstr "Меню"
+
+msgid "Message"
+msgstr "Сообщение"
+
+msgid "No chats yet"
+msgstr "Пока нет чатов"
+
+msgid "Select a chat"
+msgstr "Выберите чат"
+
+msgid "Send"
+msgstr "Отправить"
+
+msgid "Write a message…"
+msgstr "Написать сообщение…"

@@ -68,6 +68,21 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE drafts (peer_id INTEGER PRIMARY KEY, text TEXT NOT NULL);
     CREATE VIRTUAL TABLE messages_fts USING fts5(text, content='', tokenize='unicode61');
     "#,
+    // 2 (В4): поля для вертикали — фото и признаки собеседника, прочитанность
+    // диалога, направление и вид сообщения, индексы для списка и истории.
+    r#"
+    ALTER TABLE peers ADD COLUMN photo_id INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE peers ADD COLUMN photo_dc INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE peers ADD COLUMN flags INTEGER NOT NULL DEFAULT 0;  -- 1 self, 2 bot, 4 broadcast
+    ALTER TABLE dialogs ADD COLUMN read_inbox_max INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE dialogs ADD COLUMN read_outbox_max INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE dialogs ADD COLUMN top_date INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE messages ADD COLUMN out INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE messages ADD COLUMN service TEXT NOT NULL DEFAULT '';
+    ALTER TABLE messages ADD COLUMN edit_date INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE messages ADD COLUMN random_id INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX dialogs_order ON dialogs (folder, pinned DESC, top_date DESC);
+    "#,
 ];
 
 /// Текущая версия схемы.
@@ -198,6 +213,10 @@ impl Store {
     /// Прямой доступ для use-case'ов домена в потоке БД.
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    pub(crate) fn conn_mut(&mut self) -> &mut Connection {
+        &mut self.conn
     }
 }
 
