@@ -194,7 +194,9 @@ func TestMessageActionsOverProto(t *testing.T) {
 	}
 	// Закрепление и список закреплённых.
 	res(&pb.Command{Body: &pb.Command_PinMessage{PinMessage: &pb.PinMessage{Peer: anna, Id: 2}}})
-	b = h.next(func(e *pb.Event) bool { return e.GetUpdates().GetUpdates() != nil && len(e.GetUpdates().GetUpdates()) > 0 }).GetUpdates()
+	b = h.next(func(e *pb.Event) bool {
+		return e.GetUpdates().GetUpdates() != nil && len(e.GetUpdates().GetUpdates()) > 0
+	}).GetUpdates()
 	if p := b.GetUpdates()[0].GetPinned(); p.GetPeerId() != 100 || !p.GetPinned() || p.GetIds()[0] != 2 {
 		t.Fatalf("закрепление: %v", b)
 	}

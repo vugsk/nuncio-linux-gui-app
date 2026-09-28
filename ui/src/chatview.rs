@@ -12,7 +12,8 @@ use domain::model::{Message, Peer, PeerKind};
 use domain::timefmt;
 use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
-use crate::{avatar, App, Chat, DialogItem, MessageItem, PickerItem};
+use crate::richtext::{self, Metrics, Seg};
+use crate::{avatar, App, Chat, DialogItem, MessageItem, PickerItem, RichLine, RichSeg};
 
 /// Подписи на языке интерфейса (в Rust: собираются из данных, не из разметки).
 pub fn media_label(kind: &str, ru: bool) -> &'static str {
@@ -155,6 +156,90 @@ pub struct ChatRenderer {
     version: i32,
     picker: Option<Rc<VecModel<PickerItem>>>,
     picker_bound: bool,
+    rich: RichCache,
+}
+
+/// Раскладка текстов с эмодзи и картинки эмодзи. Готовые модели строк
+/// переиспользуются: пока текст и ширина те же, строка списка не меняется.
+#[derive(Default)]
+struct RichCache {
+    metrics: Option<Option<Metrics>>,
+    width: i32,
+    lines: HashMap<String, ModelRc<RichLine>>,
+    big: HashMap<String, ModelRc<Image>>,
+    emoji: HashMap<String, Image>,
+}
+
+/// Ширина текста в пузыре по ширине ленты: пузырь не шире min(480, 75 %),
+/// внутри по 10 px полей (см. Bubble в main.slint).
+pub fn text_width(view: i32) -> f32 {
+    (480.0f32).min(view as f32 * 0.75) - 20.0
+}
+
+impl RichCache {
+    fn emoji(&mut self, e: &str) -> Image {
+        if let Some(i) = self.emoji.get(e) {
+            return i.clone();
+        }
+        let img = richtext::emoji_png(e).and_then(crate::decode_png).map(Image::from_rgba8).unwrap_or_default();
+        self.emoji.insert(e.to_string(), img.clone());
+        img
+    }
+
+    /// Заполняет `rich`, `lines`, `big_emoji` у обычного сообщения с эмодзи.
+    fn enrich(&mut self, it: &mut MessageItem, view: i32) {
+        if it.service || it.text.is_empty() || !richtext::has_emoji(&it.text) {
+            return;
+        }
+        let text = it.text.to_string();
+        if let Some(es) = richtext::only_emoji(&text) {
+            if let Some(m) = self.big.get(&text) {
+                it.big_emoji = m.clone();
+                return;
+            }
+            let imgs: Vec<Image> = es.iter().map(|e| self.emoji(e)).collect();
+            let m = ModelRc::from(Rc::new(VecModel::from(imgs)));
+            self.big.insert(text, m.clone());
+            it.big_emoji = m;
+            return;
+        }
+        if view <= 0 {
+            return; // ширина ещё неизвестна: пока обычным текстом
+        }
+        if self.width != view {
+            self.width = view;
+            self.lines.clear();
+        }
+        if self.lines.len() > 4000 {
+            self.lines.clear(); // окно истории ограничено; кэш не растёт без края
+        }
+        if let Some(m) = self.lines.get(&text) {
+            it.rich = true;
+            it.lines = m.clone();
+            return;
+        }
+        let Some(metrics) = self.metrics.get_or_insert_with(|| Metrics::system(13.0)) else {
+            return; // нет системного шрифта: обычным текстом
+        };
+        let lines = richtext::layout(&text, text_width(view), metrics);
+        let rows: Vec<RichLine> = lines
+            .into_iter()
+            .map(|l| RichLine {
+                segs: ModelRc::from(Rc::new(VecModel::from(
+                    l.into_iter()
+                        .map(|s| match s {
+                            Seg::Text(t) => RichSeg { text: t.into(), image: Image::default(), emoji: false },
+                            Seg::Emoji(e) => RichSeg { text: "".into(), image: self.emoji(&e), emoji: true },
+                        })
+                        .collect::<Vec<_>>(),
+                ))),
+            })
+            .collect();
+        let m = ModelRc::from(Rc::new(VecModel::from(rows)));
+        self.lines.insert(text, m.clone());
+        it.rich = true;
+        it.lines = m;
+    }
 }
 
 impl ChatRenderer {
@@ -253,7 +338,10 @@ impl ChatRenderer {
         let read_out = m.open_row().map(|r| r.dialog.read_outbox_max_id).unwrap_or(0);
         let cx = HistoryCtx { senders: &m.senders, quotes: &m.quotes, group, read_out, now: m.now, lang: &m.lang,
             peer: m.open_peer() };
-        let items = message_items(&m.history, &cx);
+        let mut items = message_items(&m.history, &cx);
+        for it in &mut items {
+            self.rich.enrich(it, m.view_width);
+        }
         sync(&msgs, items);
 
         // Ответ или правка.
@@ -395,6 +483,7 @@ pub fn message_items(history: &[Message], cx: &HistoryCtx) -> Vec<MessageItem> {
             can_delete: msg.id > 0 && (msg.out || !group || cx.peer.is_some_and(|p| p.kind == PeerKind::Chat)),
             pinned: msg.pinned,
             has_link: cx.peer.and_then(|p| domain::chat::message_link(p, msg.id)).is_some(),
+            ..Default::default()
         });
         prev = Some(msg);
     }
@@ -426,6 +515,29 @@ mod tests {
         assert!(it[3].read, "прочитано собеседником");
         assert!(!it[0].date_label.is_empty() && it[1].date_label.is_empty() && !it[4].date_label.is_empty());
         assert!(it[4].first_in_series, "новый день — новая серия");
+    }
+
+    #[test]
+    fn rich_text_is_cached_per_width() {
+        let mut c = RichCache::default();
+        let item = |t: &str| MessageItem { text: t.into(), ..Default::default() };
+        let mut a = item("привет 👋 мир");
+        c.enrich(&mut a, 700);
+        assert!(a.rich && a.lines.row_count() == 1);
+        let mut b = item("привет 👋 мир");
+        c.enrich(&mut b, 700);
+        assert!(a == b, "тот же текст и ширина — та же модель строк (строка списка не меняется)");
+        let mut narrow = item("привет 👋 мир ".repeat(8).trim());
+        c.enrich(&mut narrow, 200);
+        assert!(narrow.lines.row_count() > 1, "узкая лента — перенос");
+        let mut big = item("🔥 🔥");
+        c.enrich(&mut big, 700);
+        assert!(!big.rich && big.big_emoji.row_count() == 2);
+        let mut plain = item("без эмодзи 1 #");
+        c.enrich(&mut plain, 700);
+        assert!(!plain.rich && plain.big_emoji.row_count() == 0);
+        assert_eq!(text_width(1000), 460.0);
+        assert_eq!(text_width(400), 280.0);
     }
 
     #[test]

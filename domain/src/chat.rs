@@ -121,6 +121,8 @@ pub enum ChatIntent {
     /// Полоса закреплённого (Чт-14): следующее закреплённое.
     NextPinned,
     DismissToast,
+    /// Ширина ленты истории, px: по ней раскладывается текст с эмодзи (О-14).
+    ViewWidth(i32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +170,8 @@ pub struct ChatModel {
     pub self_id: i64,
     pub now: i64,
     pub lang: String,
+    /// Ширина ленты истории, px (0 — ещё неизвестна).
+    pub view_width: i32,
     next_id: u64,
     pending: HashMap<u64, Pending>,
     pages: u32,
@@ -513,6 +517,7 @@ impl ChatModel {
                 }
             }
             ChatIntent::DismissToast => self.toast = None,
+            ChatIntent::ViewWidth(w) => self.view_width = w.max(0),
             ChatIntent::LoadOlder => {
                 let Some(peer_id) = self.open else { return out };
                 if self.history_loading || self.history_complete {

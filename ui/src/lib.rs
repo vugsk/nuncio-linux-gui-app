@@ -15,6 +15,7 @@ slint::include_modules!();
 
 pub mod avatar;
 pub mod chatview;
+pub mod richtext;
 
 mod flags {
     include!(concat!(env!("OUT_DIR"), "/flags.rs"));
@@ -39,7 +40,7 @@ pub fn flag_count() -> usize {
     flags::FLAGS.len()
 }
 
-fn decode_png(data: &[u8]) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+pub(crate) fn decode_png(data: &[u8]) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     let mut dec = png::Decoder::new(Cursor::new(data));
     dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = dec.read_info().ok()?;
@@ -422,6 +423,11 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
     }
     chat_plain!(on_cancel_compose, ChatIntent::CancelCompose);
     chat_plain!(on_next_pinned, ChatIntent::NextPinned);
+    {
+        let s = send.clone();
+        let chat = app.global::<Chat>();
+        chat.on_view_width(move |w| s(Action::Chat(ChatIntent::ViewWidth(w as i32))));
+    }
     chat_plain!(on_new_chat, ChatIntent::NewChat);
     chat_plain!(on_picker_confirm, ChatIntent::PickerConfirm);
     chat_plain!(on_picker_close, ChatIntent::PickerClose);

@@ -9,6 +9,7 @@ use std::io::Cursor;
 use std::path::PathBuf;
 
 const FLAG_BOX: u32 = 48; // 2× для 24 px в интерфейсе
+const EMOJI_BOX: u32 = 40; // 2× для 20 px в строке текста
 
 fn main() {
     let config = slint_build::CompilerConfiguration::new()
@@ -50,8 +51,56 @@ fn main() {
     }
     table.push_str("];\n");
     assert!(!unknown.is_empty(), "не найден глиф «неизвестный флаг»");
+    emoji_pack(&shaper, &strikes, &out);
     assert!((200..400).contains(&n), "из шрифта извлечено {n} флагов (ожидалось около 250)");
     std::fs::write(out.join("flags.rs"), table).unwrap();
+}
+
+/// Ключ поиска эмодзи: без вариационного селектора U+FE0F.
+fn emoji_key(s: &str) -> String {
+    s.chars().filter(|&c| c != '\u{FE0F}').collect()
+}
+
+/// Полный набор эмодзи (О-14): все последовательности из `emojis` с оттенками кожи;
+/// картинка — растровый глиф шрифта, 40 px (20 px в интерфейсе ×2). Пакет — PNG подряд,
+/// таблица — (ключ, смещение, длина), отсортирована по ключу.
+fn emoji_pack(shaper: &harfrust::Shaper, strikes: &skrifa::bitmap::BitmapStrikes, out: &std::path::Path) {
+    let mut all: Vec<&str> = Vec::new();
+    for e in emojis::iter() {
+        all.push(e.as_str());
+        if let Some(tones) = e.skin_tones() {
+            all.extend(tones.map(|t| t.as_str()));
+        }
+    }
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for s in all {
+        let key = emoji_key(s);
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let mut buf = harfrust::UnicodeBuffer::new();
+        buf.push_str(s);
+        buf.guess_segment_properties();
+        let shaped = shaper.shape(buf, harfrust::ShapeOptions::new());
+        let infos = shaped.glyph_infos();
+        if infos.len() != 1 || infos[0].glyph_id == 0 {
+            continue; // шрифт не собрал последовательность в один глиф
+        }
+        let Some(png) = glyph_png(strikes, infos[0].glyph_id, EMOJI_BOX) else { continue };
+        entries.push((key, png));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut pack = Vec::new();
+    let mut index = String::from("pub static EMOJI: &[(&str, u32, u32)] = &[\n");
+    for (k, png) in &entries {
+        writeln!(index, "    ({:?}, {}, {}),", k, pack.len(), png.len()).unwrap();
+        pack.extend_from_slice(png);
+    }
+    index.push_str("];\npub static EMOJI_PACK: &[u8] = include_bytes!(\"emoji.pack\");\n");
+    assert!(entries.len() > 3000, "эмодзи в наборе: {}", entries.len());
+    std::fs::write(out.join("emoji.pack"), pack).unwrap();
+    std::fs::write(out.join("emoji.rs"), index).unwrap();
 }
 
 /// Глиф флага: последовательность региональных индикаторов сливается в один глиф.
@@ -69,10 +118,14 @@ fn flag_glyph(shaper: &harfrust::Shaper, iso: &str) -> Option<u32> {
 }
 
 fn flag_png(strikes: &skrifa::bitmap::BitmapStrikes, gid: u32) -> Option<Vec<u8>> {
+    glyph_png(strikes, gid, FLAG_BOX)
+}
+
+fn glyph_png(strikes: &skrifa::bitmap::BitmapStrikes, gid: u32, side: u32) -> Option<Vec<u8>> {
     let glyph = strikes.glyph_for_size(skrifa::instance::Size::unscaled(), skrifa::GlyphId::new(gid))?;
     let skrifa::bitmap::BitmapData::Png(data) = glyph.data else { return None };
     let (w, h, rgba) = decode_rgba(data)?;
-    let (tw, th, small) = downscale(w, h, &rgba, FLAG_BOX);
+    let (tw, th, small) = downscale(w, h, &rgba, side);
     let mut png = Vec::new();
     {
         let mut enc = png::Encoder::new(&mut png, tw, th);

@@ -23,6 +23,17 @@ export struct DialogItem {
     out-state: int,    // своё последнее: 0 нет, 1 отправлено, 2 прочитано
 }
 
+// Текст с эмодзи-картинками (О-14): строки из сегментов, разложенные в Rust.
+export struct RichSeg {
+    text: string,
+    image: image,
+    emoji: bool,
+}
+
+export struct RichLine {
+    segs: [RichSeg],
+}
+
 export struct MessageItem {
     date-label: string, // непусто — перед сообщением разделитель даты
     text: string,
@@ -49,6 +60,9 @@ export struct MessageItem {
     can-delete: bool,
     pinned: bool,
     has-link: bool,
+    rich: bool,           // текст с эмодзи: рисовать `lines`, а не `text`
+    lines: [RichLine],
+    big-emoji: [image],   // 1–3 эмодзи без текста — крупно без пузыря (Чт-12)
 }
 
 export struct PickerItem {
@@ -105,6 +119,7 @@ export global Chat {
     in property <string> pinned-text;
     in property <string> pinned-counter;
     callback next-pinned();
+    callback view-width(float);
     // Диалог выбора (Дз-16).
     in property <bool> picker-open;
     in property <bool> picker-forward;
@@ -411,10 +426,11 @@ component Bubble inherits VerticalLayout {
             Meta { item: root.item; hover: root.hover; }
         }
         Rectangle {
+            property <bool> big: root.item.big-emoji.length > 0 && root.item.send-state != 3;
             max-width: min(480px, root.width * 0.75);
-            background: root.item.send-state == 3 ? #3a2530 : root.item.out ? Theme.accent : Theme.row-bg;
+            background: self.big ? transparent : root.item.send-state == 3 ? #3a2530 : root.item.out ? Theme.accent : Theme.row-bg;
             border-radius: 10px;
-            border-width: 1px;
+            border-width: self.big ? 0px : 1px;
             border-color: root.item.send-state == 3 ? Theme.error : root.item.out ? Theme.accent-border : Theme.card-border;
             VerticalLayout {
                 padding: 8px;
@@ -446,11 +462,33 @@ component Bubble inherits VerticalLayout {
                     font-size: 13px;
                     font-italic: true;
                 }
-                if root.item.text != "": Text {
+                if root.item.big-emoji.length > 0: HorizontalLayout {
+                    alignment: root.item.out ? end : start;
+                    spacing: 4px;
+                    for e in root.item.big-emoji: Image { source: e; width: 48px; height: 48px; }
+                }
+                if root.item.text != "" && !root.item.rich && root.item.big-emoji.length == 0: Text {
                     text: root.item.text;
                     color: Theme.text;
                     font-size: 13px;
                     wrap: word-wrap;
+                }
+                if root.item.rich: VerticalLayout {
+                    for line in root.item.lines: HorizontalLayout {
+                        height: 20px;
+                        alignment: start;
+                        for seg in line.segs: HorizontalLayout {
+                            // Эмодзи 18 px в ячейке 20 px (спайк О-14).
+                            padding: seg.emoji ? 1px : 0px;
+                            if seg.emoji: Image { source: seg.image; width: 18px; height: 18px; }
+                            if !seg.emoji: Text {
+                                text: seg.text;
+                                color: Theme.text;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
                 }
                 if root.item.edited: Text {
                     text: @tr("edited");
@@ -663,6 +701,8 @@ component ChatPane inherits Rectangle {
             vertical-stretch: 1;
             list := ListView {
                 for m in Chat.messages: MessageRow { item: m; }
+                init => { Chat.view-width(self.visible-width / 1px); }
+                changed visible-width => { Chat.view-width(self.visible-width / 1px); }
                 changed content-y => {
                     root.at-bottom = self.content-y <= self.visible-height - self.content-height + 40px;
                     // Подгрузка вверх заранее, за несколько строк до края (П-2).

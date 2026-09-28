@@ -268,6 +268,7 @@ fn main() {
     main_states.push(("25-main-reply", Some(-200), W));
     main_states.push(("26-main-forward", Some(-200), W));
     main_states.push(("27-main-delete", Some(-200), W));
+    main_states.push(("28-main-emoji", Some(100), W));
     for (name, open, width) in main_states {
         let app = ui::App::new().unwrap();
         ui::apply_language("ru");
@@ -291,6 +292,25 @@ fn main() {
             }
             "27-main-delete" => {
                 chat.intent(domain::chat::ChatIntent::AskDelete(vec![6]));
+            }
+            "28-main-emoji" => {
+                // Текст с эмодзи (О-14) и крупные эмодзи (Чт-12). Ширину ленты в
+                // приложении сообщает ListView; здесь — 1100 − 360 − 1.
+                chat.intent(domain::chat::ChatIntent::ViewWidth(739));
+                let now = chat.now;
+                let msg = |mid: i32, out: bool, text: &str| domain::model::Message {
+                    peer_id: 100, id: mid, from_id: if out { 1 } else { 100 }, out, date: now - 600 + i64::from(mid) * 30,
+                    text: text.into(), ..Default::default()
+                };
+                chat.set_history(100, vec![
+                    msg(1, false, "Привет! 👋 Как дела?"),
+                    msg(2, true, "Отлично 😀 собрал релиз 🎉🎉 и уже проверил на двух машинах 👍🏽"),
+                    msg(3, false, "🔥"),
+                    msg(4, true, "❤️👍🏽😂"),
+                    msg(5, false, "Флаги тоже: 🇷🇺 🇩🇪 🇯🇵 и семья 👨‍👩‍👧‍👦 и радуга 🏳️‍🌈, а ещё длинная строка, чтобы проверить перенос по словам вместе с картинками 🚀🚀🚀 до конца пузыря"),
+                    msg(6, true, "Строка 1 ✈️\nСтрока 2 без эмодзи\n1️⃣ 2️⃣ 3️⃣"),
+                    msg(7, false, "обычное сообщение без эмодзи: 1 # *"),
+                ], Default::default());
             }
             _ => {}
         }
