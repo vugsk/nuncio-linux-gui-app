@@ -214,6 +214,14 @@ func Message(m tl.MessageClass) *pb.Message {
 		if v.EditDate != nil {
 			out.EditDate = int64(*v.EditDate)
 		}
+		if f, ok := v.FwdFrom.(*tl.MessageFwdHeader); ok {
+			out.FwdFromId = PeerID(f.FromId)
+			out.FwdFromName = str(f.FromName)
+			if out.FwdFromId == 0 && out.FwdFromName == "" {
+				out.FwdFromName = str(f.PostAuthor)
+			}
+		}
+		out.Pinned = v.Pinned
 		return out
 	case *tl.MessageService:
 		out := &pb.Message{PeerId: PeerID(v.PeerId), Id: v.Id, Date: int64(v.Date), Out: v.Out,

@@ -150,6 +150,25 @@ impl Domain {
                         }
                     }
                     ChatEffect::Db(DbOp::ReloadRows) => rows = true,
+                    ChatEffect::Clipboard(text) => {
+                        // Буфер обмена (Чт-9); на Wayland — через data-control.
+                        match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+                            Ok(()) => {}
+                            Err(e) => log::warn!("буфер обмена: {e}"),
+                        }
+                    }
+                    ChatEffect::Db(DbOp::SearchPeers { query }) => {
+                        let found = self.db.as_ref().and_then(|db| db.call(move |s| s.search_peers(&query, 50)));
+                        if let (Some(Ok(peers)), Some(chat)) = (found, self.chat.as_mut()) {
+                            chat.set_picker_results(peers);
+                        }
+                    }
+                    ChatEffect::Db(DbOp::ReloadPinned { peer_id }) => {
+                        let pins = self.db.as_ref().and_then(|db| db.call(move |s| s.pinned(peer_id)));
+                        if let (Some(Ok(p)), Some(chat)) = (pins, self.chat.as_mut()) {
+                            chat.set_pinned(peer_id, p);
+                        }
+                    }
                     ChatEffect::Db(DbOp::PumpOutbox) => {
                         let now = now();
                         let ready = self.db.as_ref().and_then(|db| {
@@ -214,19 +233,36 @@ impl Domain {
                         // Имена отправителей для групп (серии, Чт-2).
                         let mut senders = HashMap::new();
                         for m in &msgs {
-                            if m.from_id != 0 && !senders.contains_key(&m.from_id) {
-                                if let Some(p) = s.peer(m.from_id)? {
-                                    senders.insert(m.from_id, p.name);
+                            for id in [m.from_id, m.fwd_from_id] {
+                                if id != 0 && !senders.contains_key(&id) {
+                                    if let Some(p) = s.peer(id)?.filter(|p| !p.name.is_empty()) {
+                                        senders.insert(id, p.name);
+                                    }
                                 }
                             }
                         }
-                        Ok::<_, domain::store::StoreError>((msgs, senders))
+                        // Цитаты ответов (Чт-3): автор и первая строка исходного из базы.
+                        let mut quotes = HashMap::new();
+                        for m in &msgs {
+                            if m.reply_to > 0 && !quotes.contains_key(&m.reply_to) {
+                                if let Some(src) = s.message(peer_id, m.reply_to)? {
+                                    let author = if src.out {
+                                        String::new() // «Вы» подставит интерфейс
+                                    } else {
+                                        s.peer(src.from_id)?.map(|p| p.name).unwrap_or_default()
+                                    };
+                                    quotes.insert(m.reply_to, (author, domain::chat::snippet(&src)));
+                                }
+                            }
+                        }
+                        Ok::<_, domain::store::StoreError>((msgs, senders, quotes))
                     })
                 });
                 match loaded {
-                    Some(Ok((msgs, senders))) => {
+                    Some(Ok((msgs, senders, quotes))) => {
                         if let Some(chat) = self.chat.as_mut() {
                             chat.set_history(peer_id, msgs, senders);
+                            queue.extend(chat.set_quotes(peer_id, quotes));
                         }
                     }
                     Some(Err(e)) => log::error!("история: {e}"),
@@ -253,7 +289,8 @@ impl Domain {
             DbOp::OutboxFail { local_id, error } => s.outbox_fail(local_id, &error),
             DbOp::OutboxRetry { local_id } => s.outbox_retry(local_id, now),
             DbOp::OutboxDelete { local_id } => s.outbox_delete(local_id),
-            DbOp::PumpOutbox => Ok(()),
+            DbOp::PumpOutbox | DbOp::SearchPeers { .. } | DbOp::ReloadPinned { .. } => Ok(()),
+            DbOp::SavePeers(peers) => s.save_peers(&peers),
             DbOp::SaveDialogs { dialogs, messages, peers } => s.save_dialogs(&dialogs, &messages, &peers),
             DbOp::SaveHistory { messages, peers } => s.save_history(&messages, &peers),
             DbOp::ApplyBatch(b) => s.apply_batch(&b).map(|_| ()),

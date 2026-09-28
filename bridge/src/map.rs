@@ -66,6 +66,9 @@ fn message_from(m: proto::Message) -> Message {
         edit_date: m.edit_date,
         send_state: 0,
         send_error: String::new(),
+        fwd_from_id: m.fwd_from_id,
+        fwd_from_name: m.fwd_from_name,
+        pinned: m.pinned,
     }
 }
 
@@ -95,6 +98,7 @@ fn batch_from(b: proto::UpdatesBatch) -> UpdatesBatch {
                 U::ReadOutbox(r) => DomainUpdate::ReadOutbox { peer_id: r.peer_id, max_id: r.max_id },
                 U::Reset(_) => DomainUpdate::Reset,
                 U::ResetChannel(r) => DomainUpdate::ResetChannel { peer_id: r.peer_id },
+                U::Pinned(p) => DomainUpdate::Pinned { peer_id: p.peer_id, ids: p.ids, pinned: p.pinned },
             })
         })
         .collect();
@@ -145,6 +149,33 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
             photo_id,
             dc,
         }),
+        Command::SendMessageReply { peer, text, random_id, reply_to } => C::SendMessage(proto::SendMessage {
+            peer: Some(peer_ref_to(peer)),
+            text,
+            random_id,
+            reply_to,
+        }),
+        Command::EditMessage { peer, id, text } => {
+            C::EditMessage(proto::EditMessage { peer: Some(peer_ref_to(peer)), id, text })
+        }
+        Command::DeleteMessages { peer, ids, revoke } => {
+            C::DeleteMessages(proto::DeleteMessagesCmd { peer: Some(peer_ref_to(peer)), ids, revoke })
+        }
+        Command::Forward { from, ids, targets } => C::Forward(proto::ForwardMessages {
+            from_peer: Some(peer_ref_to(from)),
+            ids,
+            targets: targets
+                .into_iter()
+                .map(|(p, r)| proto::ForwardTarget { peer: Some(peer_ref_to(p)), random_ids: r })
+                .collect(),
+        }),
+        Command::PinMessage { peer, id, unpin } => {
+            C::PinMessage(proto::PinMessage { peer: Some(peer_ref_to(peer)), id, unpin, silent: false })
+        }
+        Command::LoadPinned { peer } => C::LoadPinned(proto::LoadPinned { peer: Some(peer_ref_to(peer)), limit: 20 }),
+        Command::LoadMessages { peer, ids } => C::LoadMessages(proto::LoadMessages { peer: Some(peer_ref_to(peer)), ids }),
+        Command::GetContacts => C::GetContacts(proto::GetContacts {}),
+        Command::SearchPeers { query } => C::SearchPeers(proto::SearchPeers { query, limit: 20 }),
     };
     proto::Command { id, account_id: 1, body: Some(body) }
 }
@@ -226,6 +257,7 @@ pub fn event_from(ev: proto::Event) -> Option<Event> {
                 },
                 Some(P::Sent(s)) => Payload::Sent(s.message.map(message_from).unwrap_or_default()),
                 Some(P::File(f)) => Payload::File(f.path),
+                Some(P::Peers(p)) => Payload::Peers(p.peers.into_iter().map(peer_from).collect()),
             };
             Event::Result(CommandResult { cmd_id: r.cmd_id, error: r.error.map(error_from), payload })
         }

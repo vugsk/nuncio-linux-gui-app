@@ -23,7 +23,7 @@ use domain::{Backend, BackendError, Next};
 use prost::Message;
 
 /// Версия client.proto, которую понимает эта сборка (сверяется с Go).
-pub const PROTO_VERSION: u32 = 4;
+pub const PROTO_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeError {

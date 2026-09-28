@@ -244,8 +244,14 @@ fn chat_model(open: Option<i64>) -> domain::chat::ChatModel {
             Message { send_state: 1, ..msg(-1, 1, true, 30, "тест очереди отправки") },
             Message { send_state: 3, send_error: "expired".into(), ..msg(-2, 1, true, 20, "не ушло, нет связи") },
         ];
+        let mut h = h;
+        h.push(Message { reply_to: 3, ..msg(9, 1, true, 15, "Посмотрю после обеда") });
+        h.push(Message { fwd_from_id: 8, ..msg(10, 7, false, 10, "Документ на согласовании до пятницы") });
         let senders = std::collections::HashMap::from([(7, "Пётр".to_string()), (8, "Мария".to_string())]);
         m.set_history(id, h, senders);
+        m.set_quotes(id, std::collections::HashMap::from([(3, ("Пётр".to_string(), "релиз готов, можно проверять".to_string()))]));
+        m.set_pinned(id, vec![Message { pinned: true, ..msg(4, 7, false, 1290, "ссылка на сборку ниже") },
+            Message { pinned: true, ..msg(1, 7, false, 90_000, "вчерашнее сообщение") }]);
     }
     m
 }
@@ -259,6 +265,9 @@ fn main() {
     let mut main_states: Vec<(&str, Option<i64>, u32)> =
         vec![("21-main-list", None, W), ("22-main-group", Some(-200), W), ("23-main-narrow-chat", Some(-200), 700)];
     main_states.push(("24-main-narrow-list", None, 700));
+    main_states.push(("25-main-reply", Some(-200), W));
+    main_states.push(("26-main-forward", Some(-200), W));
+    main_states.push(("27-main-delete", Some(-200), W));
     for (name, open, width) in main_states {
         let app = ui::App::new().unwrap();
         ui::apply_language("ru");
@@ -268,7 +277,23 @@ fn main() {
         login.event(Event::Auth(AuthState { step: AuthStep::Ready, user: Some(User { id: 1, ..Default::default() }),
             ..Default::default() }));
         ui::Renderer::default().render(&app, &login);
-        let chat = chat_model(open);
+        let mut chat = chat_model(open);
+        match name {
+            "25-main-reply" => {
+                chat.intent(domain::chat::ChatIntent::Reply(3));
+                chat.intent(domain::chat::ChatIntent::CopyText(3));
+            }
+            "26-main-forward" => {
+                chat.intent(domain::chat::ChatIntent::Forward(vec![3]));
+                chat.set_picker_results(chat.rows.iter().map(|r| r.peer.clone()).collect());
+                chat.intent(domain::chat::ChatIntent::PickerToggle(100));
+                chat.intent(domain::chat::ChatIntent::PickerToggle(300));
+            }
+            "27-main-delete" => {
+                chat.intent(domain::chat::ChatIntent::AskDelete(vec![6]));
+            }
+            _ => {}
+        }
         ui::chatview::ChatRenderer::default().render(&app, &chat, &Default::default());
         for _ in 0..3 {
             slint::platform::update_timers_and_animations();

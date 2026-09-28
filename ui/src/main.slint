@@ -4,7 +4,7 @@
 // TextInput, стандартная прокрутка. Узкое окно (меньше 780 px, Дз-6′) — одна колонка.
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Button, Link, Modal, Confirm } from "widgets.slint";
+import { Button, Link, Modal, Confirm, Field, CheckBox } from "widgets.slint";
 
 export struct DialogItem {
     id: string,        // помеченный id собеседника (i64 строкой)
@@ -40,6 +40,24 @@ export struct MessageItem {
     local-id: string,
     send-error: string, // причина «не отправлено» (уже на языке интерфейса)
     last-read: bool,    // последнее своё и прочитано — «прочитано» видно всегда (Чт-6)
+    id: string,
+    reply-author: string, // цитата ответа (Чт-3): непусто — показать
+    reply-text: string,
+    reply-color: color,
+    fwd-name: string,     // «Переслано от …»
+    can-edit: bool,
+    can-delete: bool,
+    pinned: bool,
+    has-link: bool,
+}
+
+export struct PickerItem {
+    id: string,
+    name: string,
+    initials: string,
+    color: color,
+    subtitle: string,
+    selected: bool,
 }
 
 export global Chat {
@@ -69,6 +87,45 @@ export global Chat {
     callback delete-unsent(string);
     in-out property <bool> confirm-logout;
     callback log-out();
+    // Контекстное меню сообщения (Чт-9).
+    callback reply(string);
+    callback edit(string);
+    callback forward(string);
+    callback ask-delete(string);
+    callback pin(string);
+    callback unpin(string);
+    callback copy-text(string);
+    callback copy-link(string);
+    // Панель ответа или правки над полем.
+    in property <int> compose-mode; // 0 обычный, 1 ответ, 2 правка
+    in property <string> compose-title;
+    in property <string> compose-text;
+    callback cancel-compose();
+    // Полоса закреплённого (Чт-14).
+    in property <string> pinned-text;
+    in property <string> pinned-counter;
+    callback next-pinned();
+    // Диалог выбора (Дз-16).
+    in property <bool> picker-open;
+    in property <bool> picker-forward;
+    in property <[PickerItem]> picker-items;
+    in property <int> picker-selected;
+    in-out property <string> picker-query;
+    callback new-chat();
+    callback picker-query-edited(string);
+    callback picker-toggle(string);
+    callback picker-confirm();
+    callback picker-close();
+    // Удаление.
+    in property <bool> delete-open;
+    in property <bool> delete-can-revoke;
+    in property <bool> delete-revoke;
+    in property <int> delete-count;
+    callback toggle-revoke();
+    callback confirm-delete();
+    callback cancel-delete();
+    // Всплывающее сообщение (Со-3).
+    in property <string> toast;
 }
 
 component Avatar inherits Rectangle {
@@ -232,6 +289,26 @@ component DialogList inherits Rectangle {
                 vertical-alignment: center;
                 horizontal-stretch: 1;
             }
+            // «Новый чат» (Дз-11).
+            Rectangle {
+                width: 44px;
+                border-radius: Theme.radius;
+                background: new-touch.has-hover ? Theme.accent-hover : Theme.accent;
+                border-width: 1px;
+                border-color: Theme.accent-border;
+                accessible-role: button;
+                accessible-label: @tr("New chat");
+                new-touch := TouchArea { clicked => { Chat.new-chat(); } }
+                Path {
+                    width: 16px;
+                    height: 16px;
+                    stroke: Theme.text;
+                    stroke-width: 1.8px;
+                    viewbox-width: 16;
+                    viewbox-height: 16;
+                    commands: "M 8 2 L 8 14 M 2 8 L 14 8";
+                }
+            }
         }
         if Chat.dialogs.length == 0: Rectangle {
             vertical-stretch: 1;
@@ -350,6 +427,19 @@ component Bubble inherits VerticalLayout {
                     font-size: 12px;
                     font-weight: 600;
                 }
+                if root.item.fwd-name != "": Text {
+                    text: @tr("Forwarded from {}", root.item.fwd-name);
+                    color: Theme.link;
+                    font-size: 11px;
+                }
+                if root.item.reply-author != "" || root.item.reply-text != "": HorizontalLayout {
+                    spacing: 6px;
+                    Rectangle { width: 3px; background: root.item.reply-color; border-radius: 1px; }
+                    VerticalLayout {
+                        Text { text: root.item.reply-author; color: root.item.reply-color; font-size: 11px; font-weight: 600; overflow: elide; }
+                        Text { text: root.item.reply-text; color: #c9d6e2; font-size: 11px; overflow: elide; }
+                    }
+                }
                 if root.item.media != "": Text {
                     text: root.item.media;
                     color: Theme.link;
@@ -400,8 +490,30 @@ component Bubble inherits VerticalLayout {
     }
 }
 
+component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> danger;
+    callback clicked();
+    height: 32px;
+    border-radius: 4px;
+    background: t.has-hover ? Theme.row-bg : transparent;
+    accessible-role: button;
+    accessible-label: text;
+    t := TouchArea { clicked => { root.clicked(); } }
+    Text {
+        x: 10px;
+        height: parent.height;
+        text: root.text;
+        color: root.danger ? Theme.error : Theme.text;
+        font-size: 13px;
+        vertical-alignment: center;
+    }
+}
+
 component MessageRow inherits VerticalLayout {
     in property <MessageItem> item;
+    property <length> menu-x;
+    property <length> menu-y;
     padding-top: item.first-in-series ? 6px : 2px;
     padding-bottom: 2px;
     spacing: 6px;
@@ -439,8 +551,40 @@ component MessageRow inherits VerticalLayout {
     }
     if !root.item.service: Rectangle {
         height: bubble.preferred-height;
-        hover-area := TouchArea { }
+        hover-area := TouchArea {
+            pointer-event(e) => {
+                if (e.button == PointerEventButton.right && e.kind == PointerEventKind.up && root.item.id != "") {
+                    root.menu-x = self.mouse-x;
+                    root.menu-y = self.mouse-y;
+                    menu.show();
+                }
+            }
+        }
         bubble := Bubble { width: 100%; item: root.item; hover: hover-area.has-hover; }
+        menu := PopupWindow {
+            x: min(root.menu-x, root.width - 230px);
+            y: root.menu-y;
+            width: 220px;
+            Rectangle {
+                background: Theme.card-bg;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.card-border;
+                VerticalLayout {
+                    padding: 6px;
+                    if root.item.text != "": MenuItem { text: @tr("Copy text"); clicked => { Chat.copy-text(root.item.id); } }
+                    MenuItem { text: @tr("Reply"); clicked => { Chat.reply(root.item.id); } }
+                    MenuItem { text: @tr("Forward"); clicked => { Chat.forward(root.item.id); } }
+                    if root.item.can-edit: MenuItem { text: @tr("Edit"); clicked => { Chat.edit(root.item.id); } }
+                    MenuItem {
+                        text: root.item.pinned ? @tr("Unpin") : @tr("Pin");
+                        clicked => { if (root.item.pinned) { Chat.unpin(root.item.id); } else { Chat.pin(root.item.id); } }
+                    }
+                    if root.item.has-link: MenuItem { text: @tr("Copy link"); clicked => { Chat.copy-link(root.item.id); } }
+                    if root.item.can-delete: MenuItem { text: @tr("Delete"); danger: true; clicked => { Chat.ask-delete(root.item.id); } }
+                }
+            }
+        }
     }
 }
 
@@ -496,6 +640,25 @@ component ChatPane inherits Rectangle {
                 }
             }
         }
+        // Полоса закреплённого (Чт-14): клик — следующее закреплённое.
+        if Chat.pinned-text != "": Rectangle {
+            height: 40px;
+            background: Theme.card-bg;
+            border-width: 0px;
+            TouchArea { clicked => { Chat.next-pinned(); } }
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                spacing: 8px;
+                Rectangle { width: 3px; height: 26px; y: 7px; background: Theme.link; border-radius: 1px; }
+                VerticalLayout {
+                    alignment: center;
+                    Text { text: @tr("Pinned message") + " " + Chat.pinned-counter; color: Theme.link; font-size: 11px; }
+                    Text { text: Chat.pinned-text; color: Theme.text; font-size: 12px; overflow: elide; }
+                }
+            }
+        }
+        Rectangle { height: 1px; background: Theme.card-border; }
         Rectangle {
             vertical-stretch: 1;
             list := ListView {
@@ -525,6 +688,43 @@ component ChatPane inherits Rectangle {
             font-size: 11px;
             horizontal-alignment: center;
         }
+        // Ответ или правка: одна панель над полем ввода (Дз, раздел 2).
+        if Chat.compose-mode != 0: Rectangle {
+            height: 44px;
+            background: Theme.card-bg;
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 10px;
+                spacing: 10px;
+                Rectangle { width: 3px; height: 30px; y: 7px; background: Theme.link; border-radius: 1px; }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: Chat.compose-mode == 2 ? @tr("Editing") : @tr("Reply to {}", Chat.compose-title);
+                        color: Theme.link;
+                        font-size: 11px;
+                        font-weight: 600;
+                    }
+                    Text { text: Chat.compose-text; color: Theme.text; font-size: 12px; overflow: elide; }
+                }
+                Rectangle {
+                    width: 28px;
+                    accessible-role: button;
+                    accessible-label: @tr("Cancel");
+                    TouchArea { clicked => { Chat.cancel-compose(); } }
+                    Path {
+                        width: 12px;
+                        height: 12px;
+                        stroke: Theme.text-muted;
+                        stroke-width: 1.5px;
+                        viewbox-width: 12;
+                        viewbox-height: 12;
+                        commands: "M 1 1 L 11 11 M 11 1 L 1 11";
+                    }
+                }
+            }
+        }
         // Поле ввода (В4 — обычный TextInput; гибридное поле — В5, Дз-17).
         Rectangle {
             height: max(48px, input.preferred-height + 24px);
@@ -551,6 +751,10 @@ component ChatPane inherits Rectangle {
                             // Enter — отправить, Shift+Enter — перенос строки.
                             if (e.text == Key.Return && !e.modifiers.shift) {
                                 Chat.send();
+                                return accept;
+                            }
+                            if (e.text == Key.Escape && Chat.compose-mode != 0) {
+                                Chat.cancel-compose();
                                 return accept;
                             }
                             reject
@@ -600,6 +804,116 @@ export component MainScreen inherits Rectangle {
             narrow: root.narrow;
             horizontal-stretch: 1;
         }
+    }
+    // Диалог выбора (Дз-16): поиск, недавние и контакты; для пересылки — несколько адресатов.
+    if Chat.picker-open: Modal {
+        width: 100%;
+        height: 100%;
+        Rectangle {
+            width: min(420px, root.width - 32px);
+            height: min(560px, root.height - 32px);
+            background: Theme.card-bg;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+                Text {
+                    text: Chat.picker-forward ? @tr("Forward to…") : @tr("New chat");
+                    color: Theme.text;
+                    font-size: 16px;
+                    font-weight: 600;
+                }
+                Field {
+                    field-width: parent.width - 32px;
+                    placeholder: @tr("Search");
+                    text <=> Chat.picker-query;
+                    edited(t) => { Chat.picker-query-edited(t); }
+                    escape => { Chat.picker-close(); }
+                    init => { self.focus-input(); }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for p in Chat.picker-items: Rectangle {
+                        height: 52px;
+                        border-radius: 6px;
+                        background: p.selected ? Theme.row-selected : pt.has-hover ? Theme.row-bg : transparent;
+                        pt := TouchArea { clicked => { Chat.picker-toggle(p.id); } }
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 10px;
+                            spacing: 10px;
+                            Avatar { y: 6px; size: 40px; initials: p.initials; tint: p.color; }
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Text { text: p.name; color: Theme.text; font-size: 13px; overflow: elide; }
+                                if p.subtitle != "": Text { text: p.subtitle; color: Theme.text-muted; font-size: 11px; overflow: elide; }
+                            }
+                            if Chat.picker-forward: CheckBox { y: 15px; checked: p.selected; toggled => { Chat.picker-toggle(p.id); } }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 10px;
+                    Button { button-width: 120px; primary: false; text: @tr("Cancel"); clicked => { Chat.picker-close(); } }
+                    Button {
+                        button-width: 160px;
+                        text: Chat.picker-forward ? @tr("Forward ({})", Chat.picker-selected) : @tr("Write");
+                        enabled: Chat.picker-selected > 0;
+                        clicked => { Chat.picker-confirm(); }
+                    }
+                }
+            }
+        }
+    }
+    if Chat.delete-open: Modal {
+        width: 100%;
+        height: 100%;
+        Rectangle {
+            width: 380px;
+            height: del-layout.preferred-height;
+            background: Theme.card-bg;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            del-layout := VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+                Text {
+                    text: Chat.delete-count > 1 ? @tr("Delete {} messages?", Chat.delete-count) : @tr("Delete message?");
+                    color: Theme.text;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                }
+                if Chat.delete-can-revoke: HorizontalLayout {
+                    alignment: center;
+                    spacing: 10px;
+                    CheckBox { checked: Chat.delete-revoke; toggled => { Chat.toggle-revoke(); } }
+                    Text { text: @tr("Also delete for the other side"); color: Theme.text; font-size: 12px; vertical-alignment: center; }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 12px;
+                    Button { button-width: 150px; primary: false; text: @tr("Cancel"); clicked => { Chat.cancel-delete(); } }
+                    Button { button-width: 150px; text: @tr("Delete"); clicked => { Chat.confirm-delete(); } }
+                }
+            }
+        }
+    }
+    // Всплывающее сообщение внизу по центру (Со-3), не перехватывает ввод.
+    if Chat.toast != "": Rectangle {
+        y: root.height - 150px;
+        x: (root.width - self.width) / 2;
+        width: toast-text.preferred-width + 32px;
+        height: 36px;
+        background: Theme.strip-bg;
+        border-radius: 18px;
+        border-width: 1px;
+        border-color: Theme.card-border;
+        toast-text := Text { text: Chat.toast; color: Theme.text; font-size: 12px; }
     }
     // Нс-6: выход с подтверждением — удаляются сессия, ключ, база и кэш.
     if Chat.confirm-logout: Modal {

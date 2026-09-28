@@ -450,7 +450,18 @@ func (m *Manager) update(b *batch, u tl.UpdateClass, check bool) {
 			b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_ReadOutbox{ReadOutbox: &pb.ReadOutbox{
 				PeerId: conv.PeerID(v.Peer), MaxId: v.MaxId}}})
 		}
-	case *tl.UpdateReadMessagesContents, *tl.UpdateWebPage, *tl.UpdatePinnedMessages, *tl.UpdateFolderPeers:
+	case *tl.UpdatePinnedMessages:
+		if pts(v.Pts, v.PtsCount) {
+			b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_Pinned{Pinned: &pb.Pinned{PeerId: conv.PeerID(v.Peer),
+				Ids: v.Messages, Pinned: v.Pinned}}})
+		}
+	case *tl.UpdatePinnedChannelMessages:
+		ch := conv.ChannelID(v.ChannelId)
+		if m.channelPts(b, ch, v.Pts, v.PtsCount, check) {
+			b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_Pinned{Pinned: &pb.Pinned{PeerId: ch, Ids: v.Messages,
+				Pinned: v.Pinned}}})
+		}
+	case *tl.UpdateReadMessagesContents, *tl.UpdateWebPage, *tl.UpdateFolderPeers:
 		// Содержательно — В5–В7; pts учитывается, чтобы не было ложных разрывов.
 		if check {
 			var p, c int32
@@ -458,8 +469,6 @@ func (m *Manager) update(b *batch, u tl.UpdateClass, check bool) {
 			case *tl.UpdateReadMessagesContents:
 				p, c = x.Pts, x.PtsCount
 			case *tl.UpdateWebPage:
-				p, c = x.Pts, x.PtsCount
-			case *tl.UpdatePinnedMessages:
 				p, c = x.Pts, x.PtsCount
 			case *tl.UpdateFolderPeers:
 				p, c = x.Pts, x.PtsCount

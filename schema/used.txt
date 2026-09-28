@@ -42,3 +42,16 @@ upload.getFile
 auth.exportAuthorization
 auth.importAuthorization
 users.getFullUser
+
+# В5: ответ, пересылка, правка, удаление, закрепление, контакты и поиск людей
+messages.forwardMessages
+messages.editMessage
+messages.deleteMessages
+channels.deleteMessages
+messages.updatePinnedMessage
+messages.search
+messages.getMessages
+channels.getMessages
+contacts.getContacts
+contacts.search
+inputMessagesFilterPinned

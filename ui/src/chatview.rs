@@ -6,13 +6,13 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use domain::chat::ChatModel;
+use domain::chat::{ChatModel, Compose, PickerPurpose};
 use domain::chatstore::DialogRow;
 use domain::model::{Message, Peer, PeerKind};
 use domain::timefmt;
 use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
-use crate::{avatar, App, Chat, DialogItem, MessageItem};
+use crate::{avatar, App, Chat, DialogItem, MessageItem, PickerItem};
 
 /// Подписи на языке интерфейса (в Rust: собираются из данных, не из разметки).
 pub fn media_label(kind: &str, ru: bool) -> &'static str {
@@ -153,6 +153,8 @@ pub struct ChatRenderer {
     images: HashMap<String, Image>,
     open: Option<i64>,
     version: i32,
+    picker: Option<Rc<VecModel<PickerItem>>>,
+    picker_bound: bool,
 }
 
 impl ChatRenderer {
@@ -216,22 +218,23 @@ impl ChatRenderer {
 
         // Открытый чат.
         chat.set_has_open(m.open.is_some());
-        if let Some(row) = m.open_row() {
-            let name = peer_name(&row.peer, ru);
+        if let Some(peer) = m.open_peer() {
+            let avatar_path = m.open_row().map(|r| r.avatar_path.clone()).unwrap_or_default();
+            let name = peer_name(peer, ru);
             chat.set_open_name(name.clone().into());
-            chat.set_open_initials(if row.peer.is_self { "★".into() } else { avatar::initials(&name).into() });
-            chat.set_open_color(rgb(avatar::color_for(row.peer.id)));
-            let img = self.image(&row.avatar_path, avatars.get(&row.avatar_path));
-            chat.set_open_has_avatar(img.is_some() && !row.peer.is_self);
+            chat.set_open_initials(if peer.is_self { "★".into() } else { avatar::initials(&name).into() });
+            chat.set_open_color(rgb(avatar::color_for(peer.id)));
+            let img = self.image(&avatar_path, avatars.get(&avatar_path));
+            chat.set_open_has_avatar(img.is_some() && !peer.is_self);
             chat.set_open_avatar(img.unwrap_or_default());
-            let status = match (row.peer.kind, row.peer.broadcast, row.peer.is_bot) {
+            let status = match (peer.kind, peer.broadcast, peer.is_bot) {
                 (PeerKind::User, _, true) => if ru { "бот" } else { "bot" },
                 (PeerKind::Channel, true, _) => if ru { "канал" } else { "channel" },
                 (PeerKind::Chat | PeerKind::Channel, _, _) => if ru { "группа" } else { "group" },
                 _ => "",
             };
             chat.set_open_status(status.into());
-            chat.set_can_write(!(row.peer.kind == PeerKind::Channel && row.peer.broadcast));
+            chat.set_can_write(!(peer.kind == PeerKind::Channel && peer.broadcast));
         }
         let msgs = match &self.messages {
             Some(x) => x.clone(),
@@ -248,8 +251,72 @@ impl ChatRenderer {
         }
         let group = m.open.is_some_and(|id| PeerKind::of(id) != PeerKind::User);
         let read_out = m.open_row().map(|r| r.dialog.read_outbox_max_id).unwrap_or(0);
-        let items = message_items(&m.history, &m.senders, group, read_out, m.now, &m.lang);
+        let cx = HistoryCtx { senders: &m.senders, quotes: &m.quotes, group, read_out, now: m.now, lang: &m.lang,
+            peer: m.open_peer() };
+        let items = message_items(&m.history, &cx);
         sync(&msgs, items);
+
+        // Ответ или правка.
+        match &m.compose {
+            Compose::Plain => chat.set_compose_mode(0),
+            Compose::Reply { author, snippet, .. } => {
+                chat.set_compose_mode(1);
+                chat.set_compose_title(author.clone().into());
+                chat.set_compose_text(snippet.clone().into());
+            }
+            Compose::Edit { original, .. } => {
+                chat.set_compose_mode(2);
+                chat.set_compose_text(original.lines().next().unwrap_or("").to_string().into());
+            }
+        }
+        // Закреплённое (Чт-14).
+        match m.pinned.get(m.pinned_index) {
+            Some(p) => {
+                let text = if p.text.is_empty() { media_label(&p.media, ru).to_string() } else { p.text.replace('\n', " ") };
+                chat.set_pinned_text(text.into());
+                chat.set_pinned_counter(if m.pinned.len() > 1 {
+                    format!("{} / {}", m.pinned_index + 1, m.pinned.len()).into()
+                } else {
+                    "".into()
+                });
+            }
+            None => chat.set_pinned_text("".into()),
+        }
+        // Диалог выбора.
+        chat.set_picker_open(m.picker.is_some());
+        if let Some(p) = &m.picker {
+            chat.set_picker_forward(matches!(p.purpose, PickerPurpose::Forward { .. }));
+            chat.set_picker_selected(p.selected.len() as i32);
+            let items: Vec<PickerItem> = p
+                .results
+                .iter()
+                .map(|x| {
+                    let name = peer_name(x, ru);
+                    PickerItem {
+                        id: x.id.to_string().into(),
+                        initials: if x.is_self { "★".into() } else { avatar::initials(&name).into() },
+                        name: name.into(),
+                        color: rgb(avatar::color_for(x.id)),
+                        subtitle: if x.username.is_empty() { "".into() } else { format!("@{}", x.username).into() },
+                        selected: p.selected.contains(&x.id),
+                    }
+                })
+                .collect();
+            let model = self.picker.get_or_insert_with(|| Rc::new(VecModel::default())).clone();
+            if chat.get_picker_items().row_count() == 0 || !self.picker_bound {
+                chat.set_picker_items(ModelRc::from(model.clone()));
+                self.picker_bound = true;
+            }
+            sync(&model, items);
+        }
+        // Удаление.
+        chat.set_delete_open(m.delete_ask.is_some());
+        if let Some(d) = &m.delete_ask {
+            chat.set_delete_can_revoke(d.can_revoke);
+            chat.set_delete_revoke(d.revoke);
+            chat.set_delete_count(d.ids.len() as i32);
+        }
+        chat.set_toast(m.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default().into());
         chat.set_history_loading(m.history_loading);
         chat.set_sending(m.sending);
         if chat.get_composer() != m.composer.as_str() && !m.sending {
@@ -262,14 +329,20 @@ impl ChatRenderer {
 }
 
 /// Строки истории: разделители дат, серии одного автора, подписи.
-pub fn message_items(
-    history: &[Message],
-    senders: &HashMap<i64, String>,
-    group: bool,
-    read_out: i32,
-    now: i64,
-    lang: &str,
-) -> Vec<MessageItem> {
+/// Что нужно строкам истории кроме самих сообщений.
+pub struct HistoryCtx<'a> {
+    pub senders: &'a HashMap<i64, String>,
+    pub quotes: &'a HashMap<i32, (String, String)>,
+    pub group: bool,
+    pub read_out: i32,
+    pub now: i64,
+    pub lang: &'a str,
+    /// Собеседник открытого чата: для ссылок и прав.
+    pub peer: Option<&'a Peer>,
+}
+
+pub fn message_items(history: &[Message], cx: &HistoryCtx) -> Vec<MessageItem> {
+    let (senders, group, read_out, now, lang) = (cx.senders, cx.group, cx.read_out, cx.now, cx.lang);
     let ru = lang == "ru";
     let mut out = Vec::with_capacity(history.len());
     let mut prev: Option<&Message> = None;
@@ -301,6 +374,27 @@ pub fn message_items(
             local_id: if msg.id < 0 { (-i64::from(msg.id)).to_string().into() } else { "".into() },
             send_error: send_error_label(&msg.send_error, ru).into(),
             last_read: Some(msg.id) == last_out && msg.id <= read_out,
+            id: if msg.id > 0 { msg.id.to_string().into() } else { "".into() },
+            reply_author: match cx.quotes.get(&msg.reply_to) {
+                Some((a, _)) if a.is_empty() => if ru { "Вы" } else { "You" }.into(),
+                Some((a, _)) => a.clone().into(),
+                None if msg.reply_to > 0 => if ru { "Ответ" } else { "Reply" }.into(),
+                None => "".into(),
+            },
+            reply_text: cx.quotes.get(&msg.reply_to).map(|q| q.1.clone()).unwrap_or_default().into(),
+            reply_color: Color::from_rgb_u8(0x6a, 0xb3, 0xf3),
+            fwd_name: if msg.fwd_from_id != 0 {
+                senders.get(&msg.fwd_from_id).cloned().unwrap_or_else(|| {
+                    if ru { "скрытого пользователя".into() } else { "hidden user".into() }
+                })
+            } else {
+                msg.fwd_from_name.clone()
+            }
+            .into(),
+            can_edit: msg.out && msg.id > 0 && !service && msg.media.is_empty(),
+            can_delete: msg.id > 0 && (msg.out || !group || cx.peer.is_some_and(|p| p.kind == PeerKind::Chat)),
+            pinned: msg.pinned,
+            has_link: cx.peer.and_then(|p| domain::chat::message_link(p, msg.id)).is_some(),
         });
         prev = Some(msg);
     }
@@ -322,7 +416,10 @@ mod tests {
         let h = vec![msg(1, 7, base, false), msg(2, 7, base + 10, false), msg(3, 8, base + 20, false),
             msg(4, 1, base + 30, true), msg(5, 7, base + day, false)];
         let senders = HashMap::from([(7, "Пётр".to_string()), (8, "Анна".to_string())]);
-        let it = message_items(&h, &senders, true, 4, base + day, "ru");
+        let quotes = HashMap::new();
+        let cx = HistoryCtx { senders: &senders, quotes: &quotes, group: true, read_out: 4, now: base + day, lang: "ru",
+            peer: None };
+        let it = message_items(&h, &cx);
         assert!(it[0].first_in_series && !it[1].first_in_series && it[2].first_in_series);
         assert_eq!(it[0].sender, "Пётр");
         assert_eq!(it[3].sender, "", "своё без имени");

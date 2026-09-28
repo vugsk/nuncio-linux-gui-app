@@ -98,6 +98,10 @@ pub struct Message {
     pub send_state: i32,
     /// Причина ошибки отправки (`expired` — истёк срок, О-12).
     pub send_error: String,
+    /// «Переслано от» (Чт-3): помеченный id или имя, если id скрыт.
+    pub fwd_from_id: i64,
+    pub fwd_from_name: String,
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -132,6 +136,8 @@ pub enum DomainUpdate {
     Reset,
     /// Разница канала слишком велика: его история устарела.
     ResetChannel { peer_id: i64 },
+    /// Закреплено или откреплено (Чт-14).
+    Pinned { peer_id: i64, ids: Vec<i32>, pinned: bool },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -164,6 +170,16 @@ pub enum Command {
     SendMessage { peer: PeerRef, text: String, random_id: i64 },
     MarkRead { peer: PeerRef, max_id: i32 },
     DownloadAvatar { peer: PeerRef, photo_id: i64, dc: i32 },
+    SendMessageReply { peer: PeerRef, text: String, random_id: i64, reply_to: i32 },
+    EditMessage { peer: PeerRef, id: i32, text: String },
+    DeleteMessages { peer: PeerRef, ids: Vec<i32>, revoke: bool },
+    /// Пересылка нескольким адресатам (Дз-16): random_id на каждое сообщение и адресата.
+    Forward { from: PeerRef, ids: Vec<i32>, targets: Vec<(PeerRef, Vec<i64>)> },
+    PinMessage { peer: PeerRef, id: i32, unpin: bool },
+    LoadPinned { peer: PeerRef },
+    LoadMessages { peer: PeerRef, ids: Vec<i32> },
+    GetContacts,
+    SearchPeers { query: String },
 }
 
 /// Шаг входа.
@@ -277,6 +293,7 @@ pub enum Payload {
     History { messages: Vec<Message>, peers: Vec<Peer>, total: i32 },
     Sent(Message),
     File(String),
+    Peers(Vec<Peer>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

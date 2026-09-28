@@ -87,6 +87,9 @@ message Message {
   string service = 9;           // служебное сообщение: вид действия (пусто — обычное)
   int64 random_id = 10;         // для своих отправленных
   int64 edit_date = 11;
+  int64 fwd_from_id = 12;        // «Переслано от» (Чт-3): помеченный id или 0
+  string fwd_from_name = 13;     // имя, если id скрыт настройками приватности
+  bool pinned = 14;
 }
 
 message Dialog {
@@ -109,7 +112,15 @@ message DomainUpdate {
     ReadOutbox read_outbox = 5;
     ResetDialogs reset = 6;      // разница слишком велика: перечитать диалоги
     ResetChannel reset_channel = 7;  // разница канала слишком велика: перечитать его историю
+    Pinned pinned = 8;
   }
+}
+
+// Закреплено или откреплено (Чт-14), в том числе на другом устройстве.
+message Pinned {
+  int64 peer_id = 1;
+  repeated int32 ids = 2;
+  bool pinned = 3;
 }
 
 message ResetChannel {
@@ -175,6 +186,14 @@ message Command {
     SendMessage send_message = 30;
     MarkRead mark_read = 34;
     DownloadAvatar download_avatar = 53;
+    EditMessage edit_message = 31;
+    DeleteMessagesCmd delete_messages = 32;
+    ForwardMessages forward = 33;
+    PinMessage pin_message = 37;
+    LoadPinned load_pinned = 38;
+    LoadMessages load_messages = 39;
+    GetContacts get_contacts = 41;
+    SearchPeers search_peers = 42;
     Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
   }
 }
@@ -211,6 +230,58 @@ message SendMessage {
   string text = 2;
   int64 random_id = 3;           // идемпотентность повтора (О-9)
   int32 reply_to = 4;
+}
+
+message EditMessage {
+  PeerRef peer = 1;
+  int32 id = 2;
+  string text = 3;
+}
+
+// Удаление: в группах и личных чатах revoke — «удалить и у собеседника».
+message DeleteMessagesCmd {
+  PeerRef peer = 1;
+  repeated int32 ids = 2;
+  bool revoke = 3;
+}
+
+// Пересылка нескольким адресатам (Дз-16): random_id на каждое сообщение и адресата.
+message ForwardMessages {
+  PeerRef from_peer = 1;
+  repeated int32 ids = 2;
+  repeated ForwardTarget targets = 3;
+}
+
+message ForwardTarget {
+  PeerRef peer = 1;
+  repeated int64 random_ids = 2;
+}
+
+message PinMessage {
+  PeerRef peer = 1;
+  int32 id = 2;
+  bool unpin = 3;
+  bool silent = 4;
+}
+
+// Закреплённые сообщения чата (Чт-14): последние сверху.
+message LoadPinned {
+  PeerRef peer = 1;
+  int32 limit = 2;
+}
+
+// Отдельные сообщения по id (цитаты ответов, переход к закреплённому).
+message LoadMessages {
+  PeerRef peer = 1;
+  repeated int32 ids = 2;
+}
+
+message GetContacts {}
+
+// Поиск людей и чатов по имени и username (диалог выбора, Дз-16).
+message SearchPeers {
+  string query = 1;
+  int32 limit = 2;
 }
 
 message MarkRead {
@@ -305,7 +376,12 @@ message CommandResult {
     History history = 104;
     Sent sent = 105;
     FilePath file = 106;
+    PeerList peers = 107;
   }
+}
+
+message PeerList {
+  repeated Peer peers = 1;
 }
 
 message Dialogs {

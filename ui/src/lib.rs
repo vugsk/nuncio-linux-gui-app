@@ -395,6 +395,51 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
         let i = i.clone();
         chat.on_log_out(move || i(Intent::LogOut));
     }
+    macro_rules! chat_id {
+        ($setter:ident, $intent:expr) => {{
+            let s = send.clone();
+            chat.$setter(move |id| {
+                if let Ok(id) = id.parse::<i32>() {
+                    #[allow(clippy::redundant_closure_call)]
+                    s(Action::Chat(($intent)(id)));
+                }
+            });
+        }};
+    }
+    chat_id!(on_reply, ChatIntent::Reply);
+    chat_id!(on_edit, ChatIntent::Edit);
+    chat_id!(on_forward, |id| ChatIntent::Forward(vec![id]));
+    chat_id!(on_ask_delete, |id| ChatIntent::AskDelete(vec![id]));
+    chat_id!(on_pin, ChatIntent::Pin);
+    chat_id!(on_unpin, ChatIntent::Unpin);
+    chat_id!(on_copy_text, ChatIntent::CopyText);
+    chat_id!(on_copy_link, ChatIntent::CopyLink);
+    macro_rules! chat_plain {
+        ($setter:ident, $intent:expr) => {{
+            let s = send.clone();
+            chat.$setter(move || s(Action::Chat($intent)));
+        }};
+    }
+    chat_plain!(on_cancel_compose, ChatIntent::CancelCompose);
+    chat_plain!(on_next_pinned, ChatIntent::NextPinned);
+    chat_plain!(on_new_chat, ChatIntent::NewChat);
+    chat_plain!(on_picker_confirm, ChatIntent::PickerConfirm);
+    chat_plain!(on_picker_close, ChatIntent::PickerClose);
+    chat_plain!(on_toggle_revoke, ChatIntent::ToggleRevoke);
+    chat_plain!(on_confirm_delete, ChatIntent::ConfirmDelete);
+    chat_plain!(on_cancel_delete, ChatIntent::CancelDelete);
+    {
+        let s = send.clone();
+        chat.on_picker_query_edited(move |q| s(Action::Chat(ChatIntent::PickerQuery(q.to_string()))));
+    }
+    {
+        let s = send.clone();
+        chat.on_picker_toggle(move |id| {
+            if let Ok(id) = id.parse() {
+                s(Action::Chat(ChatIntent::PickerToggle(id)));
+            }
+        });
+    }
     {
         let s = send.clone();
         chat.on_retry_send(move |id| {

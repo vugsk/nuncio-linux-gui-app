@@ -306,3 +306,57 @@ msgstr "отправляется…"
 
 msgid "Delete"
 msgstr "Удалить"
+
+msgid "Also delete for the other side"
+msgstr "Удалить и у собеседника"
+
+msgid "Copy link"
+msgstr "Копировать ссылку"
+
+msgid "Copy text"
+msgstr "Копировать текст"
+
+msgid "Delete message?"
+msgstr "Удалить сообщение?"
+
+msgid "Delete {} messages?"
+msgstr "Удалить сообщения ({})?"
+
+msgid "Edit"
+msgstr "Изменить"
+
+msgid "Editing"
+msgstr "Изменение"
+
+msgid "Forward"
+msgstr "Переслать"
+
+msgid "Forward ({})"
+msgstr "Переслать ({})"
+
+msgid "Forwarded from {}"
+msgstr "Переслано от {}"
+
+msgid "Forward to…"
+msgstr "Переслать…"
+
+msgid "New chat"
+msgstr "Новый чат"
+
+msgid "Pin"
+msgstr "Закрепить"
+
+msgid "Pinned message"
+msgstr "Закреплённое сообщение"
+
+msgid "Reply"
+msgstr "Ответить"
+
+msgid "Reply to {}"
+msgstr "Ответ {}"
+
+msgid "Unpin"
+msgstr "Открепить"
+
+msgid "Write"
+msgstr "Написать"

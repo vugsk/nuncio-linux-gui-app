@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,7 +80,35 @@ func (a *Account) seed() {
 }
 
 func (m fakeMsg) tl() *tl.Message {
-	return &tl.Message{Id: m.id, Out: m.out, PeerId: &tl.PeerUser{UserId: m.peer}, Date: m.date, Message: m.text}
+	out := &tl.Message{Id: m.id, Out: m.out, PeerId: &tl.PeerUser{UserId: m.peer}, Date: m.date, Message: m.text,
+		Pinned: m.pinned}
+	if m.edited != 0 {
+		e := m.edited
+		out.EditDate = &e
+	}
+	if m.fwdFrom != 0 {
+		out.FwdFrom = &tl.MessageFwdHeader{FromId: &tl.PeerUser{UserId: m.fwdFrom}, Date: m.date}
+	}
+	return out
+}
+
+func (a *Account) find(id int32) *fakeMsg {
+	for i := range a.msgs {
+		if a.msgs[i].id == id && !a.msgs[i].deleted {
+			return &a.msgs[i]
+		}
+	}
+	return nil
+}
+
+func inputUser(p tl.InputPeerClass, self int64) (int64, bool) {
+	switch v := p.(type) {
+	case *tl.InputPeerUser:
+		return v.UserId, true
+	case *tl.InputPeerSelf:
+		return self, true
+	}
+	return 0, false
 }
 
 func (a *Account) contactUsers() []tl.UserClass {
@@ -136,11 +165,15 @@ type Contact struct {
 }
 
 type fakeMsg struct {
-	id   int32
-	peer int64
-	out  bool
-	text string
-	date int32
+	id      int32
+	peer    int64
+	out     bool
+	text    string
+	date    int32
+	pinned  bool
+	deleted bool
+	edited  int32
+	fwdFrom int64
 }
 
 type qrToken struct {
@@ -436,6 +469,118 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 		a.msgs = append(a.msgs, m)
 		a.randoms[r.RandomId] = m.id
 		return &tl.UpdateShortSentMessage{Out: true, Id: m.id, Pts: a.pts, PtsCount: 1, Date: m.date}, nil
+	case *tl.MessagesEditMessageRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		m := a.find(r.Id)
+		if m == nil || !m.out || r.Message == nil {
+			return nil, &rpcErr{400, "MESSAGE_ID_INVALID"}
+		}
+		m.text, m.edited = *r.Message, int32(time.Now().Unix())
+		a.pts++
+		return &tl.Updates{Updates: []tl.UpdateClass{&tl.UpdateEditMessage{Message: m.tl(), Pts: a.pts, PtsCount: 1}},
+			Users: a.contactUsers(), Chats: []tl.ChatClass{}, Date: int32(time.Now().Unix())}, nil
+	case *tl.MessagesDeleteMessagesRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		for _, id := range r.Id {
+			if m := a.find(id); m != nil {
+				m.deleted = true
+			}
+		}
+		a.pts++
+		return &tl.MessagesAffectedMessages{Pts: a.pts, PtsCount: 1}, nil
+	case *tl.MessagesForwardMessagesRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		to, ok := inputUser(r.ToPeer, a.UserID)
+		if !ok || len(r.RandomId) != len(r.Id) {
+			return nil, &rpcErr{400, "PEER_ID_INVALID"}
+		}
+		out := &tl.Updates{Users: a.contactUsers(), Chats: []tl.ChatClass{}, Date: int32(time.Now().Unix())}
+		for i, id := range r.Id {
+			src := a.find(id)
+			if src == nil {
+				return nil, &rpcErr{400, "MESSAGE_ID_INVALID"}
+			}
+			if a.randoms == nil {
+				a.randoms = map[int64]int32{}
+			}
+			if _, dup := a.randoms[r.RandomId[i]]; dup {
+				return nil, &rpcErr{400, "RANDOM_ID_DUPLICATE"}
+			}
+			a.pts++
+			m := fakeMsg{id: int32(len(a.msgs) + 1), peer: to, out: true, text: src.text, date: int32(time.Now().Unix()),
+				fwdFrom: src.peer}
+			a.msgs = append(a.msgs, m)
+			a.randoms[r.RandomId[i]] = m.id
+			out.Updates = append(out.Updates, &tl.UpdateMessageID{Id: m.id, RandomId: r.RandomId[i]},
+				&tl.UpdateNewMessage{Message: m.tl(), Pts: a.pts, PtsCount: 1})
+		}
+		return out, nil
+	case *tl.MessagesUpdatePinnedMessageRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		m := a.find(r.Id)
+		if m == nil {
+			return nil, &rpcErr{400, "MESSAGE_ID_INVALID"}
+		}
+		m.pinned = !r.Unpin
+		a.pts++
+		return &tl.Updates{Updates: []tl.UpdateClass{&tl.UpdatePinnedMessages{Pinned: m.pinned,
+			Peer: &tl.PeerUser{UserId: m.peer}, Messages: []int32{m.id}, Pts: a.pts, PtsCount: 1}},
+			Users: []tl.UserClass{}, Chats: []tl.ChatClass{}, Date: int32(time.Now().Unix())}, nil
+	case *tl.MessagesSearchRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		peer, _ := inputUser(r.Peer, a.UserID)
+		out := &tl.MessagesMessages{Topics: []tl.ForumTopicClass{}, Chats: []tl.ChatClass{}, Users: a.contactUsers()}
+		for i := len(a.msgs) - 1; i >= 0; i-- {
+			m := a.msgs[i]
+			if m.peer == peer && m.pinned && !m.deleted {
+				out.Messages = append(out.Messages, m.tl())
+			}
+		}
+		return out, nil
+	case *tl.MessagesGetMessagesRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		out := &tl.MessagesMessages{Topics: []tl.ForumTopicClass{}, Chats: []tl.ChatClass{}, Users: a.contactUsers()}
+		for _, im := range r.Id {
+			if x, ok := im.(*tl.InputMessageID); ok {
+				if m := a.find(x.Id); m != nil {
+					out.Messages = append(out.Messages, m.tl())
+				}
+			}
+		}
+		return out, nil
+	case *tl.ContactsGetContactsRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		return &tl.ContactsContacts{Contacts: []tl.ContactClass{}, Users: a.contactUsers()[1:]}, nil
+	case *tl.ContactsSearchRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		out := &tl.ContactsFound{MyResults: []tl.PeerClass{}, Results: []tl.PeerClass{}, Chats: []tl.ChatClass{}}
+		for _, c := range a.Contacts {
+			if strings.Contains(strings.ToLower(c.Name), strings.ToLower(r.Q)) {
+				name, h := c.Name, c.AccessHash
+				out.Users = append(out.Users, &tl.User{Id: c.ID, FirstName: &name, AccessHash: &h})
+				out.Results = append(out.Results, &tl.PeerUser{UserId: c.ID})
+			}
+		}
+		if out.Users == nil {
+			out.Users = []tl.UserClass{}
+		}
+		return out, nil
 	case *tl.HelpGetCountriesListRequest:
 		ru, en := "Россия", "Russia"
 		name := &ru

@@ -90,6 +90,12 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE outbox ADD COLUMN next_try INTEGER NOT NULL DEFAULT 0;
     CREATE INDEX outbox_peer ON outbox (peer_id, local_id);
     "#,
+    // 4 (В5): «переслано от» и закрепление (Чт-3, Чт-14).
+    r#"
+    ALTER TABLE messages ADD COLUMN fwd_from_id INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE messages ADD COLUMN fwd_from_name TEXT NOT NULL DEFAULT '';
+    ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 /// Текущая версия схемы.

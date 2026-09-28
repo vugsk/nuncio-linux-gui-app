@@ -151,3 +151,74 @@ func TestReconnectAfterOutage(t *testing.T) {
 		t.Fatalf("pts %d", st.GetPts())
 	}
 }
+
+func TestMessageActionsOverProto(t *testing.T) {
+	acc := chatAccount()
+	h := newHarness(t, acc)
+	login(t, h)
+	anna := &pb.PeerRef{Id: 100, AccessHash: 11}
+	boris := &pb.PeerRef{Id: 200, AccessHash: 22}
+	res := func(c *pb.Command) *pb.CommandResult {
+		t.Helper()
+		r := h.result(h.send(c))
+		if r.GetError() != nil {
+			t.Fatalf("%T: %v", c.GetBody(), r.GetError())
+		}
+		return r
+	}
+	// Ответ: reply_to уходит на сервер и возвращается в сообщении.
+	sent := res(&pb.Command{Body: &pb.Command_SendMessage{SendMessage: &pb.SendMessage{Peer: anna, Text: "ответ",
+		RandomId: 1, ReplyTo: 1}}}).GetSent().GetMessage()
+	if sent.GetReplyTo() != 1 {
+		t.Fatalf("ответ: %v", sent)
+	}
+	newMessages(t, h, 1)
+	// Правка — обновлением с новым pts.
+	res(&pb.Command{Body: &pb.Command_EditMessage{EditMessage: &pb.EditMessage{Peer: anna, Id: sent.GetId(), Text: "исправлено"}}})
+	b := h.next(func(e *pb.Event) bool { return len(e.GetUpdates().GetUpdates()) > 0 }).GetUpdates()
+	if em := b.GetUpdates()[0].GetEditMessage(); em.GetText() != "исправлено" || em.GetEditDate() == 0 {
+		t.Fatalf("правка: %v", b)
+	}
+	// Пересылка двум адресатам.
+	res(&pb.Command{Body: &pb.Command_Forward{Forward: &pb.ForwardMessages{FromPeer: anna, Ids: []int32{1},
+		Targets: []*pb.ForwardTarget{{Peer: boris, RandomIds: []int64{7}}, {Peer: &pb.PeerRef{Id: 5}, RandomIds: []int64{8}}}}}})
+	got, _ := newMessages(t, h, 2)
+	if got[0].GetFwdFromId() != 100 || got[0].GetPeerId() != 200 || got[1].GetPeerId() != 5 {
+		t.Fatalf("пересылка: %v", got)
+	}
+	// Повтор пересылки с теми же random_id — дубль отвергнут.
+	r := h.result(h.send(&pb.Command{Body: &pb.Command_Forward{Forward: &pb.ForwardMessages{FromPeer: anna, Ids: []int32{1},
+		Targets: []*pb.ForwardTarget{{Peer: boris, RandomIds: []int64{7}}}}}}))
+	if r.GetError().GetText() != "RANDOM_ID_DUPLICATE" {
+		t.Fatalf("повтор пересылки: %v", r)
+	}
+	// Закрепление и список закреплённых.
+	res(&pb.Command{Body: &pb.Command_PinMessage{PinMessage: &pb.PinMessage{Peer: anna, Id: 2}}})
+	b = h.next(func(e *pb.Event) bool { return e.GetUpdates().GetUpdates() != nil && len(e.GetUpdates().GetUpdates()) > 0 }).GetUpdates()
+	if p := b.GetUpdates()[0].GetPinned(); p.GetPeerId() != 100 || !p.GetPinned() || p.GetIds()[0] != 2 {
+		t.Fatalf("закрепление: %v", b)
+	}
+	pins := res(&pb.Command{Body: &pb.Command_LoadPinned{LoadPinned: &pb.LoadPinned{Peer: anna}}}).GetHistory().GetMessages()
+	if len(pins) != 1 || pins[0].GetId() != 2 || !pins[0].GetPinned() {
+		t.Fatalf("закреплённые: %v", pins)
+	}
+	// Отдельные сообщения по id (цитата ответа).
+	one := res(&pb.Command{Body: &pb.Command_LoadMessages{LoadMessages: &pb.LoadMessages{Peer: anna, Ids: []int32{1}}}}).GetHistory()
+	if len(one.GetMessages()) != 1 || one.GetMessages()[0].GetText() != "привет" {
+		t.Fatalf("по id: %v", one)
+	}
+	// Удаление — обновлением с pts.
+	res(&pb.Command{Body: &pb.Command_DeleteMessages{DeleteMessages: &pb.DeleteMessagesCmd{Peer: anna, Ids: []int32{sent.GetId()}, Revoke: true}}})
+	b = h.next(func(e *pb.Event) bool { return len(e.GetUpdates().GetUpdates()) > 0 }).GetUpdates()
+	if d := b.GetUpdates()[0].GetDeleteMessages(); len(d.GetIds()) != 1 || d.GetIds()[0] != sent.GetId() {
+		t.Fatalf("удаление: %v", b)
+	}
+	// Контакты и поиск людей.
+	if n := len(res(&pb.Command{Body: &pb.Command_GetContacts{GetContacts: &pb.GetContacts{}}}).GetPeers().GetPeers()); n != 2 {
+		t.Fatalf("контактов %d", n)
+	}
+	found := res(&pb.Command{Body: &pb.Command_SearchPeers{SearchPeers: &pb.SearchPeers{Query: "бор"}}}).GetPeers().GetPeers()
+	if len(found) != 1 || found[0].GetName() != "Борис" {
+		t.Fatalf("поиск: %v", found)
+	}
+}

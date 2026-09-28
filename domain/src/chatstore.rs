@@ -52,13 +52,14 @@ fn upsert_peer(tx: &Transaction, p: &Peer) -> rusqlite::Result<()> {
 fn insert_message(tx: &Transaction, m: &Message) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT INTO messages (peer_id, id, date, sender_id, text, reply_to, send_state, media_ref, out, service,
-                               edit_date, random_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11)
+                               edit_date, random_id, fwd_from_id, fwd_from_name, pinned)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(peer_id, id) DO UPDATE SET text = excluded.text, media_ref = excluded.media_ref,
-           edit_date = excluded.edit_date, service = excluded.service,
+           edit_date = excluded.edit_date, service = excluded.service, pinned = excluded.pinned,
+           fwd_from_id = excluded.fwd_from_id, fwd_from_name = excluded.fwd_from_name,
            random_id = CASE WHEN excluded.random_id != 0 THEN excluded.random_id ELSE messages.random_id END",
         params![m.peer_id, m.id, m.date, m.from_id, m.text, m.reply_to, m.media, m.out, m.service, m.edit_date,
-            m.random_id],
+            m.random_id, m.fwd_from_id, m.fwd_from_name, m.pinned],
     )?;
     Ok(())
 }
@@ -104,8 +105,8 @@ fn peer_from_row(r: &Row, o: usize) -> rusqlite::Result<Peer> {
     })
 }
 
-const MSG_COLS: &str =
-    "peer_id, id, date, sender_id, text, reply_to, media_ref, out, service, edit_date, random_id, send_state";
+const MSG_COLS: &str = "peer_id, id, date, sender_id, text, reply_to, media_ref, out, service, edit_date, random_id, \
+                        send_state, fwd_from_id, fwd_from_name, pinned";
 
 fn message_from_row(r: &Row, o: usize) -> rusqlite::Result<Message> {
     Ok(Message {
@@ -122,6 +123,9 @@ fn message_from_row(r: &Row, o: usize) -> rusqlite::Result<Message> {
         random_id: r.get(o + 10)?,
         send_state: r.get(o + 11)?,
         send_error: String::new(),
+        fwd_from_id: r.get(o + 12)?,
+        fwd_from_name: r.get(o + 13)?,
+        pinned: r.get(o + 14)?,
     })
 }
 
@@ -176,6 +180,13 @@ impl Store {
                     touched.push(*peer_id);
                 }
                 DomainUpdate::Reset => {}
+                DomainUpdate::Pinned { peer_id, ids, pinned } => {
+                    for id in ids {
+                        tx.execute("UPDATE messages SET pinned = ?3 WHERE peer_id = ?1 AND id = ?2",
+                            params![peer_id, id, pinned])?;
+                    }
+                    touched.push(*peer_id);
+                }
                 DomainUpdate::ResetChannel { peer_id } => {
                     tx.execute("DELETE FROM messages WHERE peer_id = ?1", params![peer_id])?;
                     touched.push(*peer_id);
@@ -296,7 +307,7 @@ impl Store {
         let mut v: Vec<Message> = st
             .query_map(params![peer_id, before.unwrap_or(i32::MAX), limit as i64], |r| {
                 let mut m = message_from_row(r, 0)?;
-                m.send_error = r.get(12)?;
+                m.send_error = r.get(15)?;
                 Ok(m)
             })?
             .collect::<Result<_, _>>()?;
@@ -322,6 +333,47 @@ impl Store {
                 Ok(UpdateState { pts: r.get(0)?, qts: r.get(1)?, seq: r.get(2)?, date: r.get(3)? })
             })
             .optional()?)
+    }
+
+    /// Закреплённые сообщения чата (новые первыми) — полоса Чт-14.
+    pub fn pinned(&self, peer_id: i64) -> Result<Vec<Message>, StoreError> {
+        let mut st = self.conn().prepare_cached(&format!(
+            "SELECT {MSG_COLS} FROM messages WHERE peer_id = ?1 AND pinned = 1 ORDER BY id DESC LIMIT 50"
+        ))?;
+        let v = st.query_map(params![peer_id], |r| message_from_row(r, 0))?.collect::<Result<_, _>>()?;
+        Ok(v)
+    }
+
+    /// Одно сообщение (цитата ответа).
+    pub fn message(&self, peer_id: i64, id: i32) -> Result<Option<Message>, StoreError> {
+        Ok(self
+            .conn()
+            .query_row(&format!("SELECT {MSG_COLS} FROM messages WHERE peer_id = ?1 AND id = ?2"), params![peer_id, id],
+                |r| message_from_row(r, 0))
+            .optional()?)
+    }
+
+    /// Собеседники для диалога выбора (Дз-16): поиск по имени и username.
+    pub fn search_peers(&self, query: &str, limit: usize) -> Result<Vec<Peer>, StoreError> {
+        let q = format!("%{}%", query.to_lowercase());
+        let mut st = self.conn().prepare_cached(
+            "SELECT p.id, p.name, p.username, p.access_hash, p.photo_id, p.photo_dc, p.photo_ref, p.flags
+             FROM peers p LEFT JOIN dialogs d ON d.peer_id = p.id
+             WHERE p.name != '' AND (lower(p.name) LIKE ?1 OR lower(p.username) LIKE ?1)
+             ORDER BY d.top_date IS NULL, d.top_date DESC LIMIT ?2",
+        )?;
+        let v = st.query_map(params![q, limit as i64], |r| peer_from_row(r, 0))?.collect::<Result<_, _>>()?;
+        Ok(v)
+    }
+
+    /// Сохранить собеседников без сообщений (контакты, поиск).
+    pub fn save_peers(&mut self, peers: &[Peer]) -> Result<(), StoreError> {
+        let tx = self.conn_mut().transaction()?;
+        for p in peers {
+            upsert_peer(&tx, p)?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// pts каналов для StartRequest.
