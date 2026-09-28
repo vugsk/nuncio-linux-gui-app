@@ -244,8 +244,8 @@ msgstr "Попробуйте ещё раз. Если не помогает, по
 msgid "Two-step verification is enabled. Enter your password"
 msgstr "Включена двухэтапная проверка. Введите пароль"
 
-msgid "Unlock the keyring when the system asks for its password, then press Retry."
-msgstr "Разблокируйте связку ключей, когда система спросит пароль, и нажмите «Повторить»."
+msgid "Unlock the keyring when the system asks for its password, then press Retry. If no password window appears, install a keyring prompter (the gcr package)."
+msgstr "Разблокируйте связку ключей, когда система спросит пароль, и нажмите «Повторить». Если окно ввода пароля не появляется, установите программу запроса пароля (пакет gcr)."
 
 msgid "Username"
 msgstr "Логин"

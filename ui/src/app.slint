@@ -116,7 +116,7 @@ component CriticalScreen inherits Rectangle {
                     }
                     Text {
                         text: Shell.critical-kind == 0 ? @tr("nuncio keeps the session key only in the system keyring. Start GNOME Keyring, KWallet or KeePassXC with Secret Service integration and press Retry.")
-                            : Shell.critical-kind == 1 ? @tr("Unlock the keyring when the system asks for its password, then press Retry.")
+                            : Shell.critical-kind == 1 ? @tr("Unlock the keyring when the system asks for its password, then press Retry. If no password window appears, install a keyring prompter (the gcr package).")
                             : Shell.critical-kind == 2 ? @tr("Create ~/.config/nuncio/api.env with the lines API_ID=… and API_HASH=… (get them at my.telegram.org) and restart the app.")
                             : Shell.critical-kind == 3 ? @tr("The app cannot read its local data. You can retry, quit, or reset the local data (messages will be downloaded again).")
                             : @tr("Try again. If it keeps failing, see the log in ~/.local/state/nuncio.");

@@ -282,7 +282,11 @@ fn domain_loop(mut d: Domain, rx: mpsc::Receiver<Msg>) {
 
 fn main() {
     let paths = Paths::system();
+    let dirs_err = paths.create_private().err();
     logger::init(&paths.state);
+    if let Some(e) = dirs_err {
+        log::warn!("каталоги приложения: {e}");
+    }
     log::info!("запуск nuncio {}", env!("CARGO_PKG_VERSION"));
 
     let (cfg, cfg_err) = Config::load(&paths.config);

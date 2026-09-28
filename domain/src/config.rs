@@ -41,6 +41,19 @@ impl Paths {
         Self::from_env(|k| std::env::var(k).ok())
     }
 
+    /// Создаёт каталоги приложения с правами 0700 (там сессия, база, журналы).
+    pub fn create_private(&self) -> std::io::Result<()> {
+        for d in [&self.config, &self.data, &self.cache, &self.state] {
+            std::fs::create_dir_all(d)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn database(&self) -> PathBuf {
         self.data.join("nuncio.db")
     }
@@ -179,6 +192,17 @@ mod tests {
         assert_eq!(p.state, PathBuf::from("/home/u/.local/state/nuncio"));
         let p = Paths::from_env(env(&[("HOME", "/home/u"), ("NUNCIO_HOME", "/tmp/n")]));
         assert_eq!(p.database(), PathBuf::from("/tmp/n/data/nuncio.db"));
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap().to_string();
+        let p = Paths::from_env(move |k| (k == "NUNCIO_HOME").then(|| root.clone()));
+        p.create_private().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for d in [&p.config, &p.data, &p.cache, &p.state] {
+                assert_eq!(std::fs::metadata(d).unwrap().permissions().mode() & 0o777, 0o700, "{}", d.display());
+            }
+        }
     }
 
     #[test]
