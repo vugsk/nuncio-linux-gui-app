@@ -96,6 +96,16 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE messages ADD COLUMN fwd_from_name TEXT NOT NULL DEFAULT '';
     ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
     "#,
+    // 5 (В5): известные непрерывные участки истории (окно модели и «дырки»).
+    // lo = 0 — от начала чата, hi = 2147483647 — до настоящего (дальше — обновления).
+    r#"
+    CREATE TABLE history_ranges (
+        peer_id INTEGER NOT NULL,
+        lo      INTEGER NOT NULL,
+        hi      INTEGER NOT NULL,
+        PRIMARY KEY (peer_id, lo)
+    ) WITHOUT ROWID;
+    "#,
 ];
 
 /// Текущая версия схемы.

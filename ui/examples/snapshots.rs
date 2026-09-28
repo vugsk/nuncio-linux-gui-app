@@ -248,7 +248,8 @@ fn chat_model(open: Option<i64>) -> domain::chat::ChatModel {
         h.push(Message { reply_to: 3, ..msg(9, 1, true, 15, "Посмотрю после обеда") });
         h.push(Message { fwd_from_id: 8, ..msg(10, 7, false, 10, "Документ на согласовании до пятницы") });
         let senders = std::collections::HashMap::from([(7, "Пётр".to_string()), (8, "Мария".to_string())]);
-        m.set_history(id, h, senders);
+        let w = domain::history::Window { messages: h, found: true, start: true, end: true, ..Default::default() };
+        m.set_history(id, w, senders);
         m.set_quotes(id, std::collections::HashMap::from([(3, ("Пётр".to_string(), "релиз готов, можно проверять".to_string()))]));
         m.set_pinned(id, vec![Message { pinned: true, ..msg(4, 7, false, 1290, "ссылка на сборку ниже") },
             Message { pinned: true, ..msg(1, 7, false, 90_000, "вчерашнее сообщение") }]);
@@ -302,7 +303,9 @@ fn main() {
                     peer_id: 100, id: mid, from_id: if out { 1 } else { 100 }, out, date: now - 600 + i64::from(mid) * 30,
                     text: text.into(), ..Default::default()
                 };
-                chat.set_history(100, vec![
+                let w = |messages| domain::history::Window { messages, found: true, start: true, end: true,
+                    ..Default::default() };
+                chat.set_history(100, w(vec![
                     msg(1, false, "Привет! 👋 Как дела?"),
                     msg(2, true, "Отлично 😀 собрал релиз 🎉🎉 и уже проверил на двух машинах 👍🏽"),
                     msg(3, false, "🔥"),
@@ -310,12 +313,13 @@ fn main() {
                     msg(5, false, "Флаги тоже: 🇷🇺 🇩🇪 🇯🇵 и семья 👨‍👩‍👧‍👦 и радуга 🏳️‍🌈, а ещё длинная строка, чтобы проверить перенос по словам вместе с картинками 🚀🚀🚀 до конца пузыря"),
                     msg(6, true, "Строка 1 ✈️\nСтрока 2 без эмодзи\n1️⃣ 2️⃣ 3️⃣"),
                     msg(7, false, "обычное сообщение без эмодзи: 1 # *"),
-                ], Default::default());
+                ]), Default::default());
             }
             _ => {}
         }
-        ui::chatview::ChatRenderer::default().render(&app, &chat, &Default::default());
-        for _ in 0..3 {
+        ui::bind(&app, |_| {});
+        ui::chatview::render(&app, &chat, &Default::default());
+        for _ in 0..6 {
             slint::platform::update_timers_and_animations();
             let mut buf = vec![PremultipliedRgbaColor::default(); (width * H) as usize];
             window.request_redraw();

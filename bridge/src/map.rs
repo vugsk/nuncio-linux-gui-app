@@ -131,11 +131,11 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
             offset_id,
             offset_peer: offset_peer.map(peer_ref_to),
         }),
-        Command::LoadHistory { peer, offset_id, limit } => C::LoadHistory(proto::LoadHistory {
+        Command::LoadHistory { peer, offset_id, add_offset, limit } => C::LoadHistory(proto::LoadHistory {
             peer: Some(peer_ref_to(peer)),
             offset_id,
             limit,
-            add_offset: 0,
+            add_offset,
         }),
         Command::SendMessage { peer, text, random_id } => C::SendMessage(proto::SendMessage {
             peer: Some(peer_ref_to(peer)),
@@ -308,7 +308,7 @@ mod tests {
             Command::GetCountries { lang: "ru".into() },
             Command::RetryStartup,
             Command::LoadDialogs { limit: 100, offset_date: 1, offset_id: 2, offset_peer: Some(PeerRef { id: -5, access_hash: 0 }) },
-            Command::LoadHistory { peer: PeerRef { id: 5, access_hash: 6 }, offset_id: 0, limit: 50 },
+            Command::LoadHistory { peer: PeerRef { id: 5, access_hash: 6 }, offset_id: 0, add_offset: 0, limit: 50 },
             Command::SendMessage { peer: PeerRef { id: 5, access_hash: 6 }, text: "т".into(), random_id: 7 },
             Command::MarkRead { peer: PeerRef { id: 5, access_hash: 6 }, max_id: 9 },
             Command::DownloadAvatar { peer: PeerRef { id: 5, access_hash: 6 }, photo_id: 1, dc: 4 },

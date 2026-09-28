@@ -69,12 +69,18 @@ func (a *Account) seed() {
 		return
 	}
 	a.seeded = true
-	date := int32(time.Now().Unix()) - 10000
+	total := 0
 	for _, c := range a.Contacts {
-		for _, t := range c.Messages {
+		total += len(c.Messages)
+	}
+	// По 10 минут между сообщениями: длинная история растягивается на дни.
+	date := int32(time.Now().Unix()) - int32(total+1)*600
+	for _, c := range a.Contacts {
+		for i, t := range c.Messages {
 			a.pts++
-			date++
-			a.msgs = append(a.msgs, fakeMsg{id: int32(len(a.msgs) + 1), peer: c.ID, text: t, date: date})
+			date += 600
+			out := c.OutEvery > 0 && i%c.OutEvery == c.OutEvery-1
+			a.msgs = append(a.msgs, fakeMsg{id: int32(len(a.msgs) + 1), peer: c.ID, text: t, date: date, out: out})
 		}
 	}
 }
@@ -162,6 +168,7 @@ type Contact struct {
 	Name       string
 	AccessHash int64
 	Messages   []string // от старых к новым; id сообщений общие по аккаунту
+	OutEvery   int      // каждое n-е из Messages — своё (0 — все входящие)
 }
 
 type fakeMsg struct {
@@ -422,7 +429,7 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 				continue
 			}
 			out.Dialogs = append(out.Dialogs, &tl.Dialog{Peer: &tl.PeerUser{UserId: c.ID}, TopMessage: top.id,
-				UnreadCount: 1, NotifySettings: &tl.PeerNotifySettings{}})
+				UnreadCount: 1, ReadInboxMaxId: top.id - 1, NotifySettings: &tl.PeerNotifySettings{}})
 			out.Messages = append(out.Messages, top.tl())
 		}
 		return out, nil
@@ -436,11 +443,23 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 			return nil, &rpcErr{400, "PEER_ID_INVALID"}
 		}
 		out := &tl.MessagesMessages{Topics: []tl.ForumTopicClass{}, Chats: []tl.ChatClass{}, Users: a.contactUsers()}
-		for i := len(a.msgs) - 1; i >= 0 && len(out.Messages) < int(r.Limit); i-- {
-			m := a.msgs[i]
-			if m.peer == p.UserId && (r.OffsetId == 0 || m.id < r.OffsetId) {
-				out.Messages = append(out.Messages, m.tl())
+		// Как Telegram: список от новых к старым, позиция — первое старше
+		// offset_id, сдвиг add_offset (отрицательный — к новым), limit штук.
+		var list []fakeMsg
+		for i := len(a.msgs) - 1; i >= 0; i-- {
+			if m := a.msgs[i]; m.peer == p.UserId && !m.deleted {
+				list = append(list, m)
 			}
+		}
+		pos := 0
+		if r.OffsetId != 0 {
+			for pos < len(list) && list[pos].id >= r.OffsetId {
+				pos++
+			}
+		}
+		start := max(pos+int(r.AddOffset), 0)
+		for i := start; i < len(list) && len(out.Messages) < int(r.Limit); i++ {
+			out.Messages = append(out.Messages, list[i].tl())
 		}
 		return out, nil
 	case *tl.MessagesSendMessageRequest:

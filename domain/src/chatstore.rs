@@ -7,6 +7,7 @@
 use rusqlite::{params, OptionalExtension, Row, Transaction};
 
 use crate::model::{Dialog, DomainUpdate, Message, Peer, PeerKind, UpdateState, UpdatesBatch, CHANNEL_SHIFT};
+use crate::history;
 use crate::store::{Store, StoreError};
 
 /// Строка списка: диалог, собеседник и последнее сообщение.
@@ -49,7 +50,7 @@ fn upsert_peer(tx: &Transaction, p: &Peer) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn insert_message(tx: &Transaction, m: &Message) -> rusqlite::Result<()> {
+pub(crate) fn insert_message(tx: &Transaction, m: &Message) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT INTO messages (peer_id, id, date, sender_id, text, reply_to, send_state, media_ref, out, service,
                                edit_date, random_id, fwd_from_id, fwd_from_name, pinned)
@@ -105,10 +106,10 @@ fn peer_from_row(r: &Row, o: usize) -> rusqlite::Result<Peer> {
     })
 }
 
-const MSG_COLS: &str = "peer_id, id, date, sender_id, text, reply_to, media_ref, out, service, edit_date, random_id, \
+pub(crate) const MSG_COLS: &str = "peer_id, id, date, sender_id, text, reply_to, media_ref, out, service, edit_date, random_id, \
                         send_state, fwd_from_id, fwd_from_name, pinned";
 
-fn message_from_row(r: &Row, o: usize) -> rusqlite::Result<Message> {
+pub(crate) fn message_from_row(r: &Row, o: usize) -> rusqlite::Result<Message> {
     Ok(Message {
         peer_id: r.get(o)?,
         id: r.get(o + 1)?,
@@ -143,6 +144,7 @@ impl Store {
                 DomainUpdate::NewMessage(m) => {
                     insert_message(&tx, m)?;
                     bump_dialog(&tx, m, true)?;
+                    history::note_new(&tx, m.peer_id, m.id)?;
                     touched.push(m.peer_id);
                 }
                 DomainUpdate::EditMessage(m) => {
@@ -179,7 +181,7 @@ impl Store {
                     )?;
                     touched.push(*peer_id);
                 }
-                DomainUpdate::Reset => {}
+                DomainUpdate::Reset => history::cut_live_all(&tx)?,
                 DomainUpdate::Pinned { peer_id, ids, pinned } => {
                     for id in ids {
                         tx.execute("UPDATE messages SET pinned = ?3 WHERE peer_id = ?1 AND id = ?2",
@@ -189,6 +191,7 @@ impl Store {
                 }
                 DomainUpdate::ResetChannel { peer_id } => {
                     tx.execute("DELETE FROM messages WHERE peer_id = ?1", params![peer_id])?;
+                    tx.execute("DELETE FROM history_ranges WHERE peer_id = ?1", params![peer_id])?;
                     touched.push(*peer_id);
                 }
             }
@@ -219,8 +222,24 @@ impl Store {
         for p in peers {
             upsert_peer(&tx, p)?;
         }
+        // Верх диалога, которого не было в базе, мог прийти мимо обновлений
+        // (например, канал без getChannelDifference): участок «до настоящего»
+        // тогда не продолжается, а начинается заново с верха.
+        for d in dialogs.iter().filter(|d| d.top_message > 0) {
+            let known: bool = tx
+                .query_row("SELECT 1 FROM messages WHERE peer_id = ?1 AND id = ?2", params![d.peer_id, d.top_message],
+                    |_| Ok(true))
+                .optional()?
+                .unwrap_or(false);
+            if !known {
+                history::cut_live(&tx, d.peer_id)?;
+            }
+        }
         for m in messages {
             insert_message(&tx, m)?;
+        }
+        for d in dialogs.iter().filter(|d| d.top_message > 0) {
+            history::add_range(&tx, history::Span { peer_id: d.peer_id, lo: d.top_message, hi: history::LIVE })?;
         }
         for d in dialogs {
             let top_date: i64 = messages
@@ -243,8 +262,10 @@ impl Store {
         Ok(())
     }
 
-    /// Страница истории с сервера.
-    pub fn save_history(&mut self, messages: &[Message], peers: &[Peer]) -> Result<(), StoreError> {
+    /// Сообщения с сервера. `span` — непрерывный участок, который покрывает
+    /// страница истории; у цитат, закреплённых и т. п. его нет.
+    pub fn save_history(&mut self, messages: &[Message], peers: &[Peer], span: Option<history::Span>)
+        -> Result<(), StoreError> {
         let tx = self.conn_mut().transaction()?;
         for p in peers {
             upsert_peer(&tx, p)?;
@@ -252,6 +273,9 @@ impl Store {
         for m in messages {
             insert_message(&tx, m)?;
             bump_dialog(&tx, m, false)?;
+        }
+        if let Some(s) = span {
+            history::add_range(&tx, s)?;
         }
         tx.commit()?;
         Ok(())
@@ -389,10 +413,16 @@ impl Store {
         Ok(())
     }
 
-    /// Локально отметить прочитанным (сервер подтвердит обновлением).
+    /// Локально отметить прочитанным до `max_id` (сервер подтвердит обновлением
+    /// со своим счётчиком): непрочитанных меньше на прочитанные входящие.
     pub fn mark_read_local(&self, peer_id: i64, max_id: i32) -> Result<(), StoreError> {
         self.conn().execute(
-            "UPDATE dialogs SET unread = 0, read_inbox_max = MAX(read_inbox_max, ?2) WHERE peer_id = ?1",
+            "UPDATE dialogs SET
+               unread = CASE WHEN ?2 >= top_message_id THEN 0 ELSE MAX(0, unread - (
+                 SELECT COUNT(*) FROM messages m WHERE m.peer_id = ?1 AND m.id > dialogs.read_inbox_max
+                   AND m.id <= ?2 AND m.out = 0 AND m.service = '')) END,
+               read_inbox_max = MAX(read_inbox_max, ?2)
+             WHERE peer_id = ?1",
             params![peer_id, max_id],
         )?;
         Ok(())
@@ -502,7 +532,7 @@ mod tests {
     fn history_window_and_min_peers() {
         let mut s = Store::in_memory().unwrap();
         s.save_history(&(1..=120).map(|i| msg(10, i, i64::from(i), "m", i % 2 == 0)).collect::<Vec<_>>(),
-            &[peer(10, "Анна")])
+            &[peer(10, "Анна")], None)
             .unwrap();
         let last = s.history(10, None, 50).unwrap();
         assert_eq!((last.first().unwrap().id, last.last().unwrap().id), (71, 120));
@@ -516,6 +546,12 @@ mod tests {
         let p = s.peer(10).unwrap().unwrap();
         assert_eq!((p.access_hash, p.name.as_str()), (100, "Анна"));
         s.set_avatar_path(10, "/tmp/a.jpg").unwrap();
+        // Частично прочитано: 1..=120, входящие — нечётные; сервер сказал 10 непрочитанных.
+        s.conn().execute("UPDATE dialogs SET unread = 10, read_inbox_max = 100 WHERE peer_id = 10", []).unwrap();
+        s.mark_read_local(10, 110).unwrap();
+        let unread = |s: &Store| s.dialog_rows(0, 10).unwrap()[0].dialog.unread_count;
+        assert_eq!(unread(&s), 5, "прочитаны входящие 101..=109");
         s.mark_read_local(10, 120).unwrap();
+        assert_eq!(unread(&s), 0, "до верха — всё");
     }
 }

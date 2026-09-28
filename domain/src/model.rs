@@ -166,7 +166,8 @@ pub enum Command {
     GetCountries { lang: String },
     RetryStartup,
     LoadDialogs { limit: i32, offset_date: i64, offset_id: i32, offset_peer: Option<PeerRef> },
-    LoadHistory { peer: PeerRef, offset_id: i32, limit: i32 },
+    /// `add_offset = -k`: и k сообщений с id не меньше `offset_id` (подгрузка вниз, окно вокруг).
+    LoadHistory { peer: PeerRef, offset_id: i32, add_offset: i32, limit: i32 },
     SendMessage { peer: PeerRef, text: String, random_id: i64 },
     MarkRead { peer: PeerRef, max_id: i32 },
     DownloadAvatar { peer: PeerRef, photo_id: i64, dc: i32 },

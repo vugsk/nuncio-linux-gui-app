@@ -28,10 +28,23 @@ func main() {
 	every := flag.Duration("every", 20*time.Millisecond, "интервал входящих")
 	start := flag.Duration("start", 3*time.Second, "задержка перед первым входящим после входа")
 	dump := flag.String("dump", "", "куда сохранить историю при остановке")
+	history := flag.Int("history", 0, "сколько сообщений заранее в чате (длинная история для прокрутки)")
 	flag.Parse()
 
+	msgs := []string{"начало"}
+	for i := 1; i <= *history; i++ {
+		t := fmt.Sprintf("сообщение %d", i)
+		switch {
+		case i%7 == 0:
+			t += "\nвторая строка, чтобы высоты строк были разными"
+		case i%11 == 0:
+			t += " 🎉👍"
+		}
+		msgs = append(msgs, t)
+	}
+
 	acc := &fakeserver.Account{Phone: "1", Code: "1", Registered: true, UserID: 5, FirstName: "Тест", AutoQR: true,
-		Contacts: []fakeserver.Contact{{ID: 100, Name: "Отправитель", AccessHash: 11, Messages: []string{"начало"}}}}
+		Contacts: []fakeserver.Contact{{ID: 100, Name: "Отправитель", AccessHash: 11, Messages: msgs, OutEvery: 3}}}
 	srv, err := fakeserver.StartAt(*listen, fakeserver.Options{DC: 2, Account: acc})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

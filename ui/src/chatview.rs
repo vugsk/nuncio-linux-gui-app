@@ -3,16 +3,18 @@
 //! теряются прокрутка и выделение (Архитектура/nuncio - Приложение (Rust и
 //! Slint).md, раздел 3).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use domain::chat::{ChatModel, Compose, PickerPurpose};
+use domain::chat::{ChatIntent, ChatModel, Compose, Jump, PickerPurpose};
 use domain::chatstore::DialogRow;
 use domain::model::{Message, Peer, PeerKind};
 use domain::timefmt;
 use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
 use crate::richtext::{self, Metrics, Seg};
+use crate::scroller::Scroller;
 use crate::{avatar, App, Chat, DialogItem, MessageItem, PickerItem, RichLine, RichSeg};
 
 /// Подписи на языке интерфейса (в Rust: собираются из данных, не из разметки).
@@ -146,17 +148,167 @@ fn sync<T: Clone + PartialEq + 'static>(model: &VecModel<T>, items: Vec<T>) {
     }
 }
 
+thread_local! {
+    static RENDERER: RefCell<ChatRenderer> = RefCell::new(ChatRenderer::default());
+    /// Высоты, отложенные до следующего прохода цикла событий.
+    static LATE: RefCell<Late> = RefCell::new(Late::default());
+}
+
+/// Отрисовать снимок модели чата (поток интерфейса).
+pub fn render(app: &App, m: &ChatModel, avatars: &HashMap<String, SharedPixelBuffer<Rgba8Pixel>>) {
+    RENDERER.with(|r| r.borrow_mut().render(app, m, avatars));
+}
+
+/// Намерения, которые рождает сама прокрутка (подгрузка, «прочитано»).
+pub fn set_sender(f: impl Fn(ChatIntent) + 'static) {
+    RENDERER.with(|r| r.borrow_mut().sender = Some(Rc::new(f)));
+}
+
+/// Колесо, высота области, высота строки: прямо в потоке интерфейса.
+pub fn scroll(app: &App, dy: f32) {
+    with(app, |r| r.scroller.scroll(dy));
+}
+
+/// Высота области и строк приходят из `init` и `changed` разметки — иногда
+/// прямо во время создания строк повторителем, когда менять модели нельзя.
+/// Поэтому здесь только запоминаем, а вид пересчитываем следующим проходом
+/// цикла событий.
+pub fn set_view_height(app: &App, h: f32) {
+    LATE.with(|l| l.borrow_mut().view_h = Some(h));
+    schedule(app);
+}
+
+pub fn row_height(app: &App, key: i64, h: f32) {
+    if h > 0.0 {
+        LATE.with(|l| l.borrow_mut().heights.push((key, h)));
+        schedule(app);
+    }
+}
+
+#[derive(Default)]
+struct Late {
+    view_h: Option<f32>,
+    heights: Vec<(i64, f32)>,
+    scheduled: bool,
+}
+
+fn schedule(app: &App) {
+    let first = LATE.with(|l| !std::mem::replace(&mut l.borrow_mut().scheduled, true));
+    if first {
+        let weak = app.as_weak();
+        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+            if let Some(app) = weak.upgrade() {
+                drain_late(&app);
+            }
+        });
+    }
+}
+
+fn with(app: &App, f: impl FnOnce(&mut ChatRenderer)) {
+    RENDERER.with(|r| {
+        if let Ok(mut r) = r.try_borrow_mut() {
+            f(&mut r);
+            r.apply_view(app);
+        }
+    });
+}
+
+fn drain_late(app: &App) {
+    let late = LATE.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    if late.view_h.is_none() && late.heights.is_empty() {
+        return;
+    }
+    with(app, |r| {
+        if let Some(h) = late.view_h {
+            r.scroller.set_view_height(h);
+        }
+        for (k, h) in late.heights {
+            r.scroller.set_height(k, h);
+        }
+    });
+}
+
+/// Модель строк Slint, синхронизируемая по ключам: сдвиг окна вставляет и
+/// удаляет строки на краях, а не переписывает все.
+#[derive(Default)]
+struct RowsModel {
+    model: Option<Rc<VecModel<MessageItem>>>,
+    items: Vec<MessageItem>,
+}
+
+impl RowsModel {
+    fn model(&mut self) -> Rc<VecModel<MessageItem>> {
+        self.model.get_or_insert_with(|| Rc::new(VecModel::default())).clone()
+    }
+
+    fn sync(&mut self, new: &[MessageItem]) {
+        let model = self.model();
+        let old_first = self.items.first().map(|i| i.key);
+        let new_first = new.first().map(|i| i.key);
+        if let (Some(of), Some(nf)) = (old_first, new_first) {
+            if let Some(k) = new.iter().position(|i| i.key == of) {
+                for (i, it) in new[..k].iter().enumerate() {
+                    model.insert(i, it.clone());
+                    self.items.insert(i, it.clone());
+                }
+            } else if let Some(j) = self.items.iter().position(|i| i.key == nf) {
+                for _ in 0..j {
+                    model.remove(0);
+                    self.items.remove(0);
+                }
+            } else {
+                model.set_vec(new.to_vec());
+                self.items = new.to_vec();
+                return;
+            }
+        }
+        for (i, it) in new.iter().enumerate() {
+            if i < self.items.len() {
+                if self.items[i] != *it {
+                    model.set_row_data(i, it.clone());
+                    self.items[i] = it.clone();
+                }
+            } else {
+                model.push(it.clone());
+                self.items.push(it.clone());
+            }
+        }
+        while self.items.len() > new.len() {
+            model.remove(self.items.len() - 1);
+            self.items.pop();
+        }
+    }
+
+    fn clear(&mut self) {
+        if let Some(m) = &self.model {
+            m.set_vec(Vec::new());
+        }
+        self.items.clear();
+    }
+}
+
 /// Кэш картинок аватаров (готовые круглые буферы от потока домена).
 #[derive(Default)]
 pub struct ChatRenderer {
     dialogs: Option<Rc<VecModel<DialogItem>>>,
-    messages: Option<Rc<VecModel<MessageItem>>>,
     images: HashMap<String, Image>,
     open: Option<i64>,
-    version: i32,
     picker: Option<Rc<VecModel<PickerItem>>>,
-    picker_bound: bool,
     rich: RichCache,
+    // История: всё окно, прокрутка и видимые части.
+    items: Vec<MessageItem>,
+    pub scroller: Scroller,
+    above: RowsModel,
+    below: RowsModel,
+    jump_seq: u64,
+    first_id: Option<i32>,
+    top_id: i32,
+    /// Уже попрошено: подгрузка у края окна с этим ключом края, «прочитано» до id.
+    asked_older: Option<u64>,
+    asked_newer: Option<u64>,
+    window_version: u64,
+    seen_sent: i32,
+    sender: Option<Rc<dyn Fn(ChatIntent)>>,
 }
 
 /// Раскладка текстов с эмодзи и картинки эмодзи. Готовые модели строк
@@ -260,15 +412,8 @@ impl ChatRenderer {
         let chat = app.global::<Chat>();
         let ru = m.lang == "ru";
 
-        let dialogs = match &self.dialogs {
-            Some(d) => d.clone(),
-            None => {
-                let d = Rc::new(VecModel::default());
-                chat.set_dialogs(ModelRc::from(d.clone()));
-                self.dialogs = Some(d.clone());
-                d
-            }
-        };
+        let dialogs = self.dialogs.get_or_insert_with(|| Rc::new(VecModel::default())).clone();
+        chat.set_dialogs(ModelRc::from(dialogs.clone()));
         let items: Vec<DialogItem> = m
             .rows
             .iter()
@@ -321,28 +466,50 @@ impl ChatRenderer {
             chat.set_open_status(status.into());
             chat.set_can_write(!(peer.kind == PeerKind::Channel && peer.broadcast));
         }
-        let msgs = match &self.messages {
-            Some(x) => x.clone(),
-            None => {
-                let x = Rc::new(VecModel::default());
-                chat.set_messages(ModelRc::from(x.clone()));
-                self.messages = Some(x.clone());
-                x
-            }
-        };
+        // Те же модели (повторная установка без изменений ничего не стоит).
+        chat.set_above(ModelRc::from(self.above.model()));
+        chat.set_below(ModelRc::from(self.below.model()));
         if self.open != m.open {
+            // Другой чат — окно истории и прокрутка заново.
             self.open = m.open;
-            msgs.clear(); // другой чат — окно истории заново
+            let h = self.scroller.view_height();
+            self.scroller = Scroller::new();
+            self.scroller.set_view_height(h);
+            self.above.clear();
+            self.below.clear();
+            self.asked_older = None;
+            self.asked_newer = None;
+            self.seen_sent = 0;
         }
         let group = m.open.is_some_and(|id| PeerKind::of(id) != PeerKind::User);
         let read_out = m.open_row().map(|r| r.dialog.read_outbox_max_id).unwrap_or(0);
         let cx = HistoryCtx { senders: &m.senders, quotes: &m.quotes, group, read_out, now: m.now, lang: &m.lang,
             peer: m.open_peer() };
         let mut items = message_items(&m.history, &cx);
+        let mut divider = m.unread_mark;
         for it in &mut items {
             self.rich.enrich(it, m.view_width);
+            if divider.is_some_and(|mark| it.key > mark && !it.out) {
+                it.unread_divider = true;
+                divider = None;
+            }
         }
-        sync(&msgs, items);
+        self.scroller.set_rows(items.iter().map(|i| i64::from(i.key)).collect(), m.window.start, m.window.end);
+        self.items = items;
+        if let Some((seq, j)) = m.jump {
+            if seq != self.jump_seq {
+                self.jump_seq = seq;
+                match j {
+                    Jump::To(id) => self.scroller.jump_to(i64::from(id)),
+                    Jump::Bottom => self.scroller.jump_bottom(),
+                }
+            }
+        }
+        self.first_id = m.window.first_id;
+        self.window_version = m.window_version;
+        self.top_id = m.open_row().map(|r| r.dialog.top_message).unwrap_or(0);
+        chat.set_unread_below(m.open_row().map(|r| r.dialog.unread_count).unwrap_or(0));
+        self.apply_view(app);
 
         // Ответ или правка.
         match &m.compose {
@@ -391,10 +558,7 @@ impl ChatRenderer {
                 })
                 .collect();
             let model = self.picker.get_or_insert_with(|| Rc::new(VecModel::default())).clone();
-            if chat.get_picker_items().row_count() == 0 || !self.picker_bound {
-                chat.set_picker_items(ModelRc::from(model.clone()));
-                self.picker_bound = true;
-            }
+            chat.set_picker_items(ModelRc::from(model.clone()));
             sync(&model, items);
         }
         // Удаление.
@@ -411,8 +575,43 @@ impl ChatRenderer {
             chat.set_composer(m.composer.clone().into());
         }
         chat.set_error(m.error.clone().unwrap_or_default().into());
-        self.version += 1;
-        chat.set_history_version(self.version);
+    }
+
+    /// Видимые строки, линия опоры, ползунок; просьбы о подгрузке и «прочитано».
+    pub fn apply_view(&mut self, app: &App) {
+        let chat = app.global::<Chat>();
+        let v = self.scroller.view();
+        self.above.sync(&self.items[v.above.clone()]);
+        self.below.sync(&self.items[v.below.clone()]);
+        chat.set_pivot(v.pivot);
+        chat.set_at_bottom(v.at_bottom || self.items.is_empty());
+        // Ползунок по хронологии: верхнее видимое сообщение между первым и последним.
+        let top_msg = v.top_row.and_then(|i| self.items[i..].iter().find(|x| x.key > 0)).map(|x| x.key);
+        let fits = v.top_row == Some(0) && v.at_bottom && !v.need_older && !v.need_newer;
+        match (self.first_id, top_msg) {
+            (Some(first), Some(id)) if self.top_id > first && !fits => {
+                chat.set_thumb_visible(true);
+                let f = if v.at_bottom { 1.0 } else { (id - first) as f32 / (self.top_id - first) as f32 };
+                chat.set_thumb(f.clamp(0.0, 1.0));
+            }
+            _ => chat.set_thumb_visible(false),
+        }
+        let Some(send) = self.sender.clone() else { return };
+        // Раз на окно: новое окно (сдвиг или страница с сервера) — можно ещё.
+        let w = Some(self.window_version);
+        if v.need_older && !self.items.is_empty() && self.asked_older != w {
+            self.asked_older = w;
+            send(ChatIntent::NeedOlder);
+        }
+        if v.need_newer && !self.items.is_empty() && self.asked_newer != w {
+            self.asked_newer = w;
+            send(ChatIntent::NeedNewer);
+        }
+        let seen = v.bottom_row.and_then(|b| self.items[..=b].iter().rev().find(|x| x.key > 0)).map(|x| x.key);
+        if let Some(id) = seen.filter(|id| *id > self.seen_sent) {
+            self.seen_sent = id;
+            send(ChatIntent::Seen(id));
+        }
     }
 }
 
@@ -483,6 +682,8 @@ pub fn message_items(history: &[Message], cx: &HistoryCtx) -> Vec<MessageItem> {
             can_delete: msg.id > 0 && (msg.out || !group || cx.peer.is_some_and(|p| p.kind == PeerKind::Chat)),
             pinned: msg.pinned,
             has_link: cx.peer.and_then(|p| domain::chat::message_link(p, msg.id)).is_some(),
+            key: msg.id, // у очереди id = −local_id
+            reply_id: if msg.reply_to > 0 { msg.reply_to.to_string().into() } else { "".into() },
             ..Default::default()
         });
         prev = Some(msg);

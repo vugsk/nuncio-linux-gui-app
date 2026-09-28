@@ -6,14 +6,19 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::chatstore::DialogRow;
+use crate::history::{Anchor, Span, Window};
 use crate::model::{
     Command, CommandResult, Dialog, Event, Message, Payload, Peer, PeerRef, UpdatesBatch,
 };
 
 /// Сколько диалогов держать в списке (окно модели; остальные — из базы по требованию, В5).
 pub const DIALOGS_WINDOW: usize = 500;
-/// Страница истории.
+/// Страница истории с сервера.
 pub const HISTORY_PAGE: i32 = 50;
+/// Окно истории в памяти: последние `LATEST_WINDOW` или по `WINDOW_HALF`
+/// с каждой стороны от якоря (Приложение, раздел «Окно истории»).
+pub const LATEST_WINDOW: usize = 100;
+pub const WINDOW_HALF: usize = 50;
 /// Страниц диалогов при старте (по 100): не упираться в ограничитель частоты.
 pub const DIALOG_PAGES: u32 = 5;
 /// Одновременных загрузок аватаров.
@@ -23,14 +28,15 @@ pub const AVATARS_INFLIGHT: usize = 3;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DbOp {
     SaveDialogs { dialogs: Vec<Dialog>, messages: Vec<Message>, peers: Vec<Peer> },
-    SaveHistory { messages: Vec<Message>, peers: Vec<Peer> },
+    /// `span` — непрерывный участок страницы истории (у цитат и закреплённых нет).
+    SaveHistory { messages: Vec<Message>, peers: Vec<Peer>, span: Option<Span> },
     ApplyBatch(UpdatesBatch),
     SetAvatar { peer_id: i64, path: String },
     MarkReadLocal { peer_id: i64, max_id: i32 },
     /// Перечитать список (результат — `set_rows`).
     ReloadRows,
     /// Перечитать окно истории открытого чата (результат — `set_history`).
-    ReloadHistory { peer_id: i64, limit: usize },
+    ReloadHistory { peer_id: i64, anchor: Anchor, before: usize, after: usize },
     /// Очередь отправки (О-9).
     Enqueue { peer_id: i64, text: String, reply_to: i32, random_id: i64 },
     /// Поиск собеседников в базе (результат — `set_picker_results`).
@@ -88,13 +94,32 @@ pub struct DeleteAsk {
     pub revoke: bool,
 }
 
+/// Куда поставить вид истории, когда окно будет готово (выполняет интерфейс).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Jump {
+    /// Сообщение (или первое после него) — вверху видимой области.
+    To(i32),
+    /// Конец истории.
+    Bottom,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatIntent {
     OpenChat(i64),
     CloseChat,
     ComposerEdited(String),
     Send,
-    LoadOlder,
+    /// Вид дошёл до края окна: сдвинуть окно (или подгрузить с сервера).
+    NeedOlder,
+    NeedNewer,
+    /// Переход к сообщению сменой окна модели (ответ, закреплённое, Чт-3, Чт-14).
+    JumpTo(i32),
+    /// Кнопка «вниз» (Чт-10).
+    JumpBottom,
+    /// Полоса прокрутки: доля от первого сообщения чата до последнего, в тысячных.
+    JumpPermille(i32),
+    /// Самое новое видимое сообщение: «прочитано» по мере просмотра.
+    Seen(i32),
     Tick(i64),
     /// «Повторить» и «Удалить» у неотправленного (Чт-6).
     RetrySend(i64),
@@ -128,7 +153,8 @@ pub enum ChatIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pending {
     Dialogs,
-    History { peer_id: i64, older: bool },
+    History { peer_id: i64, offset_id: i32, add_offset: i32, limit: i32 },
+    Read { peer_id: i64 },
     Outbox { local_id: i64 },
     Avatar { peer_id: i64 },
     Action,
@@ -136,19 +162,31 @@ enum Pending {
     Quotes { peer_id: i64 },
     PickerSearch,
     Contacts,
-    Other,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ChatModel {
     pub rows: Vec<DialogRow>,
     pub open: Option<i64>,
-    /// Окно истории открытого чата, по возрастанию id.
+    /// Окно истории открытого чата, по возрастанию id (очередь отправки в конце).
     pub history: Vec<Message>,
-    pub history_complete: bool,
     pub history_loading: bool,
-    /// Сколько сообщений держать в окне (растёт при подгрузке вверх).
-    pub history_limit: usize,
+    /// Где держится окно и что о нём известно (сообщения — в `history`).
+    pub anchor: Anchor,
+    pub window: Window,
+    /// Растёт с каждым окном из базы: интерфейс просит подгрузку раз на окно.
+    pub window_version: u64,
+    /// Линия «Новые сообщения» (Чт-10): после этого id, пока чат открыт.
+    pub unread_mark: Option<i32>,
+    /// Переход для интерфейса и его номер (интерфейс выполняет каждый номер один
+    /// раз). Появляется, когда окно для него уже прочитано из базы.
+    pub jump: Option<(u64, Jump)>,
+    jump_seq: u64,
+    pending_jump: Option<Jump>,
+    first_requested: bool,
+    /// «Прочитано» до этого id отправлено; `seen` — что видно сейчас.
+    read_sent: i32,
+    seen: i32,
     /// Имена отправителей истории (группы): id → имя.
     pub senders: HashMap<i64, String>,
     /// Цитаты ответов (Чт-3): id исходного → (автор, первая строка).
@@ -188,7 +226,6 @@ impl ChatModel {
             lang: lang.into(),
             now,
             next_id: 1 << 32, // у модели входа id с 1: не пересекаются
-            history_limit: HISTORY_PAGE as usize,
             ..Default::default()
         }
     }
@@ -266,12 +303,57 @@ impl ChatModel {
         }
     }
 
-    /// Результат `ReloadHistory`.
-    pub fn set_history(&mut self, peer_id: i64, msgs: Vec<Message>, senders: HashMap<i64, String>) {
-        if self.open == Some(peer_id) {
-            self.history = msgs;
-            self.senders = senders;
+    /// Результат `ReloadHistory`: окно из базы. Якоря нет в известных участках —
+    /// страница вокруг него с сервера; окно дошло до настоящего — дальше держим
+    /// последние сообщения.
+    pub fn set_history(&mut self, peer_id: i64, mut w: Window, senders: HashMap<i64, String>) -> Vec<ChatEffect> {
+        let mut out = Vec::new();
+        if self.open != Some(peer_id) {
+            return out;
         }
+        self.history = std::mem::take(&mut w.messages);
+        self.senders = senders;
+        self.window = w;
+        self.window_version += 1;
+        if !self.window.found && !self.history_request_pending(peer_id) {
+            match self.anchor {
+                Anchor::Latest => self.load_page(peer_id, 0, 0, HISTORY_PAGE, &mut out),
+                Anchor::At(x) => self.load_page(peer_id, x, -(WINDOW_HALF as i32), 2 * WINDOW_HALF as i32, &mut out),
+            }
+        }
+        if matches!(self.anchor, Anchor::At(_)) && self.window.end {
+            self.anchor = Anchor::Latest;
+        }
+        let ready = match self.pending_jump {
+            Some(Jump::Bottom) => true,
+            Some(Jump::To(_)) => self.window.found,
+            None => false,
+        };
+        if ready {
+            self.jump_seq += 1;
+            self.jump = self.pending_jump.take().map(|j| (self.jump_seq, j));
+        }
+        out
+    }
+
+    fn history_request_pending(&self, peer_id: i64) -> bool {
+        self.pending.values().any(|p| matches!(p, Pending::History { peer_id: x, .. } if *x == peer_id))
+    }
+
+    fn load_page(&mut self, peer_id: i64, offset_id: i32, add_offset: i32, limit: i32, out: &mut Vec<ChatEffect>) {
+        let Some(peer) = self.peer_ref(peer_id) else { return };
+        self.history_loading = true;
+        self.send(Command::LoadHistory { peer, offset_id, add_offset, limit },
+            Pending::History { peer_id, offset_id, add_offset, limit }, out);
+    }
+
+    fn set_jump(&mut self, j: Jump) {
+        self.pending_jump = Some(j);
+    }
+
+    fn reload_at(&mut self, anchor: Anchor, out: &mut Vec<ChatEffect>) {
+        self.anchor = anchor;
+        self.reload_open(out);
     }
 
     /// Цитаты ответов из базы; недостающие — запросом к серверу (один раз).
@@ -343,25 +425,30 @@ impl ChatModel {
                 self.pinned.clear();
                 self.pinned_index = 0;
                 self.quotes.clear();
-                self.history_complete = false;
-                self.history_limit = HISTORY_PAGE as usize;
                 self.composer.clear();
                 self.error = None;
-                out.push(ChatEffect::Db(DbOp::ReloadHistory { peer_id, limit: self.history_limit }));
+                self.window = Window::default();
+                self.first_requested = false;
+                self.seen = 0;
+                // Вход к первому непрочитанному с линией «Новые сообщения» (Чт-10).
+                let (unread, read_in) = self.open_row().map(|r| (r.dialog.unread_count, r.dialog.read_inbox_max_id))
+                    .unwrap_or((0, 0));
+                self.read_sent = read_in;
+                if unread > 0 {
+                    self.unread_mark = Some(read_in);
+                    self.anchor = Anchor::At(read_in + 1);
+                    self.set_jump(Jump::To(read_in + 1));
+                    self.load_page(peer_id, read_in + 1, -(WINDOW_HALF as i32), 2 * WINDOW_HALF as i32, &mut out);
+                } else {
+                    self.unread_mark = None;
+                    self.anchor = Anchor::Latest;
+                    self.set_jump(Jump::Bottom);
+                    self.load_page(peer_id, 0, 0, HISTORY_PAGE, &mut out);
+                }
+                self.reload_open(&mut out);
                 out.push(ChatEffect::Db(DbOp::ReloadPinned { peer_id }));
                 if let Some(peer) = self.peer_ref(peer_id) {
-                    self.history_loading = true;
-                    self.send(Command::LoadHistory { peer, offset_id: 0, limit: HISTORY_PAGE },
-                        Pending::History { peer_id, older: false }, &mut out);
                     self.send(Command::LoadPinned { peer }, Pending::Pinned { peer_id }, &mut out);
-                    let unread = self.open_row().map(|r| (r.dialog.unread_count, r.dialog.top_message));
-                    if let Some((n, top)) = unread {
-                        if n > 0 {
-                            self.send(Command::MarkRead { peer, max_id: top }, Pending::Other, &mut out);
-                            out.push(ChatEffect::Db(DbOp::MarkReadLocal { peer_id, max_id: top }));
-                            out.push(ChatEffect::Db(DbOp::ReloadRows));
-                        }
-                    }
                 }
             }
             ChatIntent::CloseChat => {
@@ -512,23 +599,72 @@ impl ChatModel {
                 }
             }
             ChatIntent::NextPinned => {
-                if !self.pinned.is_empty() {
+                // Клик: к показанному закреплённому, в полосе — следующее (Чт-14).
+                if let Some(id) = self.pinned.get(self.pinned_index).map(|m| m.id) {
                     self.pinned_index = (self.pinned_index + 1) % self.pinned.len();
+                    out.extend(self.intent(ChatIntent::JumpTo(id)));
+                }
+            }
+            ChatIntent::JumpTo(id) => {
+                if self.open.is_some() && id > 0 {
+                    self.set_jump(Jump::To(id));
+                    self.reload_at(Anchor::At(id), &mut out);
+                }
+            }
+            ChatIntent::JumpBottom => {
+                if self.open.is_some() {
+                    self.set_jump(Jump::Bottom);
+                    self.reload_at(Anchor::Latest, &mut out);
+                }
+            }
+            ChatIntent::JumpPermille(f) => {
+                let f = f as f32 / 1000.0;
+                let top = self.open_row().map(|r| r.dialog.top_message).unwrap_or(0)
+                    .max(self.history.iter().map(|m| m.id).max().unwrap_or(0));
+                if let (Some(first), true) = (self.window.first_id, top > 0) {
+                    if f >= 0.999 {
+                        out.extend(self.intent(ChatIntent::JumpBottom));
+                    } else {
+                        let id = first + ((top - first) as f32 * f.clamp(0.0, 1.0)) as i32;
+                        out.extend(self.intent(ChatIntent::JumpTo(id.max(1))));
+                    }
+                }
+            }
+            ChatIntent::Seen(id) => {
+                let Some(peer_id) = self.open else { return out };
+                let incoming = self.history.iter().any(|m| m.id > self.read_sent && m.id <= id && !m.out);
+                if id > self.seen {
+                    self.seen = id;
+                }
+                if incoming && !self.pending.values().any(|p| *p == Pending::Read { peer_id }) {
+                    self.mark_read(peer_id, &mut out);
                 }
             }
             ChatIntent::DismissToast => self.toast = None,
             ChatIntent::ViewWidth(w) => self.view_width = w.max(0),
-            ChatIntent::LoadOlder => {
+            ChatIntent::NeedOlder => {
                 let Some(peer_id) = self.open else { return out };
-                if self.history_loading || self.history_complete {
+                if self.window.start || self.history_request_pending(peer_id) {
                     return out;
                 }
-                let Some(oldest) = self.history.first().map(|m| m.id) else { return out };
-                let Some(peer) = self.peer_ref(peer_id) else { return out };
-                self.history_loading = true;
-                self.history_limit += HISTORY_PAGE as usize;
-                self.send(Command::LoadHistory { peer, offset_id: oldest, limit: HISTORY_PAGE },
-                    Pending::History { peer_id, older: true }, &mut out);
+                let Some(first) = self.history.iter().map(|m| m.id).find(|&id| id > 0) else { return out };
+                if self.window.need_older {
+                    self.load_page(peer_id, first, 0, HISTORY_PAGE, &mut out);
+                } else {
+                    self.reload_at(Anchor::At(first), &mut out);
+                }
+            }
+            ChatIntent::NeedNewer => {
+                let Some(peer_id) = self.open else { return out };
+                if self.window.end || self.history_request_pending(peer_id) {
+                    return out;
+                }
+                let Some(last) = self.history.iter().map(|m| m.id).filter(|&id| id > 0).max() else { return out };
+                if self.window.need_newer {
+                    self.load_page(peer_id, last + 1, -HISTORY_PAGE, HISTORY_PAGE, &mut out);
+                } else {
+                    self.reload_at(Anchor::At(last), &mut out);
+                }
             }
         }
         out
@@ -541,12 +677,24 @@ impl ChatModel {
 
     fn enqueue_reply(&mut self, peer_id: i64, text: String, reply_to: i32) -> Vec<ChatEffect> {
         let random_id = self.random_id();
-        vec![
-            ChatEffect::Db(DbOp::Enqueue { peer_id, text, reply_to, random_id }),
-            ChatEffect::Db(DbOp::ReloadHistory { peer_id, limit: self.history_limit }),
-            ChatEffect::Db(DbOp::ReloadRows),
-            ChatEffect::Db(DbOp::PumpOutbox),
-        ]
+        let mut out = vec![ChatEffect::Db(DbOp::Enqueue { peer_id, text, reply_to, random_id })];
+        if self.open == Some(peer_id) {
+            // Своё сообщение видно сразу: к концу истории.
+            self.set_jump(Jump::Bottom);
+            self.reload_at(Anchor::Latest, &mut out);
+        }
+        out.push(ChatEffect::Db(DbOp::ReloadRows));
+        out.push(ChatEffect::Db(DbOp::PumpOutbox));
+        out
+    }
+
+    fn mark_read(&mut self, peer_id: i64, out: &mut Vec<ChatEffect>) {
+        let max_id = self.seen;
+        let Some(peer) = self.peer_ref(peer_id) else { return };
+        self.read_sent = max_id;
+        self.send(Command::MarkRead { peer, max_id }, Pending::Read { peer_id }, out);
+        out.push(ChatEffect::Db(DbOp::MarkReadLocal { peer_id, max_id }));
+        out.push(ChatEffect::Db(DbOp::ReloadRows));
     }
 
     fn open_picker(&mut self, purpose: PickerPurpose, out: &mut Vec<ChatEffect>) {
@@ -568,7 +716,11 @@ impl ChatModel {
 
     fn reload_open(&self, out: &mut Vec<ChatEffect>) {
         if let Some(peer_id) = self.open {
-            out.push(ChatEffect::Db(DbOp::ReloadHistory { peer_id, limit: self.history_limit }));
+            let (before, after) = match self.anchor {
+                Anchor::Latest => (LATEST_WINDOW, 0),
+                Anchor::At(_) => (WINDOW_HALF, WINDOW_HALF),
+            };
+            out.push(ChatEffect::Db(DbOp::ReloadHistory { peer_id, anchor: self.anchor, before, after }));
         }
     }
 
@@ -597,28 +749,17 @@ impl ChatModel {
             Event::Updates(b) => {
                 out.push(ChatEffect::Db(DbOp::ApplyBatch(b.clone())));
                 out.push(ChatEffect::Db(DbOp::ReloadRows));
-                if let Some(peer_id) = self.open {
-                    out.push(ChatEffect::Db(DbOp::ReloadHistory { peer_id, limit: self.history_limit }));
-                    // Открытый чат: входящее сразу прочитано (как в Telegram Desktop при фокусе).
-                    let newest_in = b.updates.iter().filter_map(|u| match u {
-                        crate::model::DomainUpdate::NewMessage(m) if m.peer_id == peer_id && !m.out => Some(m.id),
-                        _ => None,
-                    }).max();
-                    if let (Some(max_id), Some(peer)) = (newest_in, self.peer_ref(peer_id)) {
-                        self.send(Command::MarkRead { peer, max_id }, Pending::Other, &mut out);
-                        out.push(ChatEffect::Db(DbOp::MarkReadLocal { peer_id, max_id }));
-                    }
-                }
+                // Входящие открытого чата становятся прочитанными, когда их видно
+                // (интерфейс сообщает `Seen`), а не сразу.
+                self.reload_open(&mut out);
                 let reset_open = b.updates.iter().any(|u| {
                     matches!(u, crate::model::DomainUpdate::ResetChannel { peer_id } if Some(*peer_id) == self.open)
                 });
                 if let (true, Some(peer_id)) = (reset_open, self.open) {
-                    if let Some(peer) = self.peer_ref(peer_id) {
-                        self.history_complete = false;
-                        self.history_loading = true;
-                        self.send(Command::LoadHistory { peer, offset_id: 0, limit: HISTORY_PAGE },
-                            Pending::History { peer_id, older: false }, &mut out);
-                    }
+                    // История канала стёрта: окно заново с сервера.
+                    self.set_jump(Jump::Bottom);
+                    self.anchor = Anchor::Latest;
+                    self.load_page(peer_id, 0, 0, HISTORY_PAGE, &mut out);
                 }
                 if b.updates.iter().any(|u| matches!(u, crate::model::DomainUpdate::Reset)) {
                     self.pages = 0;
@@ -660,21 +801,32 @@ impl ChatModel {
                     self.error = Some(e.text.clone());
                 }
             }
-            Pending::History { peer_id, older } => {
-                self.history_loading = false;
+            Pending::History { peer_id, offset_id, add_offset, limit } => {
+                self.history_loading = self.history_request_pending(peer_id);
                 if let Payload::History { messages, peers, .. } = &r.payload {
+                    let ids: Vec<i32> = messages.iter().map(|m| m.id).collect();
+                    let span = Span::from_page(peer_id, offset_id, add_offset, limit, &ids);
+                    out.push(ChatEffect::Db(DbOp::SaveHistory { messages: messages.clone(), peers: peers.clone(), span }));
                     if self.open == Some(peer_id) {
-                        // Неполная страница — дальше сообщений нет.
-                        self.history_complete = messages.len() < HISTORY_PAGE as usize;
-                    }
-                    let _ = older;
-                    out.push(ChatEffect::Db(DbOp::SaveHistory { messages: messages.clone(), peers: peers.clone() }));
-                    if self.open == Some(peer_id) {
-                        out.push(ChatEffect::Db(DbOp::ReloadHistory { peer_id, limit: self.history_limit }));
+                        self.reload_open(out);
+                        // Начало чата — для полосы прокрутки (самое старое сообщение).
+                        let start_known = self.window.first_id.is_some() || span.is_some_and(|s| s.lo == 0);
+                        if !start_known && !self.first_requested {
+                            self.first_requested = true;
+                            self.load_page(peer_id, 1, -1, 1, out);
+                        }
                     }
                     out.push(ChatEffect::Db(DbOp::ReloadRows));
                 } else if let Some(e) = &r.error {
                     self.error = Some(e.text.clone());
+                }
+            }
+            Pending::Read { peer_id } => {
+                // Пока ответ шёл, видно стало больше — ещё раз.
+                if self.open == Some(peer_id) && self.seen > self.read_sent
+                    && self.history.iter().any(|m| m.id > self.read_sent && m.id <= self.seen && !m.out)
+                {
+                    self.mark_read(peer_id, out);
                 }
             }
             Pending::Outbox { local_id } => {
@@ -724,15 +876,15 @@ impl ChatModel {
             }
             Pending::Pinned { peer_id } => {
                 if let Payload::History { messages, peers, .. } = &r.payload {
-                    out.push(ChatEffect::Db(DbOp::SaveHistory { messages: messages.clone(), peers: peers.clone() }));
+                    out.push(ChatEffect::Db(DbOp::SaveHistory { messages: messages.clone(), peers: peers.clone(), span: None }));
                     out.push(ChatEffect::Db(DbOp::ReloadPinned { peer_id }));
                 }
             }
             Pending::Quotes { peer_id } => {
                 if let Payload::History { messages, peers, .. } = &r.payload {
-                    out.push(ChatEffect::Db(DbOp::SaveHistory { messages: messages.clone(), peers: peers.clone() }));
+                    out.push(ChatEffect::Db(DbOp::SaveHistory { messages: messages.clone(), peers: peers.clone(), span: None }));
                     if self.open == Some(peer_id) {
-                        out.push(ChatEffect::Db(DbOp::ReloadHistory { peer_id, limit: self.history_limit }));
+                        self.reload_open(out);
                     }
                 }
             }
@@ -743,7 +895,6 @@ impl ChatModel {
                     out.push(ChatEffect::Db(DbOp::SearchPeers { query: q }));
                 }
             }
-            Pending::Other => {}
         }
     }
 }
@@ -830,38 +981,106 @@ mod tests {
         }
     }
 
-    #[test]
-    fn open_chat_loads_history_and_marks_read() {
-        let mut m = ChatModel::new(1, "ru", 0);
-        m.set_rows(vec![row(10, 3, 55, 0), row(20, 0, 9, 0)]);
-        let fx = m.intent(ChatIntent::OpenChat(10));
-        assert_eq!(fx[0], ChatEffect::Db(DbOp::ReloadHistory { peer_id: 10, limit: 50 }));
-        let s = sends(&fx);
-        assert_eq!(s[0].1, Command::LoadHistory { peer: PeerRef { id: 10, access_hash: 30 }, offset_id: 0, limit: 50 });
-        assert_eq!(s[1].1, Command::LoadPinned { peer: PeerRef { id: 10, access_hash: 30 } });
-        assert_eq!(s[2].1, Command::MarkRead { peer: PeerRef { id: 10, access_hash: 30 }, max_id: 55 });
-        assert!(fx.contains(&ChatEffect::Db(DbOp::MarkReadLocal { peer_id: 10, max_id: 55 })));
-        // Прочитанный чат не шлёт MarkRead.
-        assert_eq!(sends(&m.intent(ChatIntent::OpenChat(20))).len(), 2);
+    fn win(msgs: Vec<Message>, f: impl FnOnce(&mut Window)) -> Window {
+        let mut w = Window { messages: msgs, found: true, ..Default::default() };
+        f(&mut w);
+        w
+    }
+
+    fn page_ids(r: std::ops::RangeInclusive<i32>) -> Vec<Message> {
+        r.map(|i| Message { peer_id: 10, id: i, ..Default::default() }).collect()
     }
 
     #[test]
-    fn older_history_and_completion() {
+    fn open_chat_at_first_unread_or_bottom() {
+        let mut m = ChatModel::new(1, "ru", 0);
+        let mut unread = row(10, 3, 55, 0);
+        unread.dialog.read_inbox_max_id = 52;
+        m.set_rows(vec![unread, row(20, 0, 9, 0)]);
+        let fx = m.intent(ChatIntent::OpenChat(10));
+        let s = sends(&fx);
+        let peer = PeerRef { id: 10, access_hash: 30 };
+        assert_eq!(s[0].1, Command::LoadHistory { peer, offset_id: 53, add_offset: -50, limit: 100 }, "вокруг непрочитанного");
+        assert_eq!(s[1].1, Command::LoadPinned { peer });
+        assert!(fx.contains(&ChatEffect::Db(DbOp::ReloadHistory { peer_id: 10, anchor: Anchor::At(53), before: 50, after: 50 })));
+        assert_eq!(m.unread_mark, Some(52));
+        assert_eq!(m.jump, None, "переход — когда окно готово");
+        m.set_history(10, win(page_ids(40..=60), |_| {}), HashMap::new());
+        assert_eq!(m.jump.map(|j| j.1), Some(Jump::To(53)));
+        assert!(!s.iter().any(|(_, c)| matches!(c, Command::MarkRead { .. })), "прочитанным — по мере просмотра");
+        // Прочитанный чат — к концу.
+        let fx = m.intent(ChatIntent::OpenChat(20));
+        assert_eq!(sends(&fx)[0].1, Command::LoadHistory { peer: PeerRef { id: 20, access_hash: 60 }, offset_id: 0,
+            add_offset: 0, limit: 50 });
+        m.set_history(20, win(vec![], |w| w.end = true), HashMap::new());
+        assert_eq!((m.anchor, m.unread_mark, m.jump.map(|j| j.1)), (Anchor::Latest, None, Some(Jump::Bottom)));
+    }
+
+    #[test]
+    fn window_moves_inside_base_then_asks_server() {
         let mut m = ChatModel::new(1, "ru", 0);
         m.set_rows(vec![row(10, 0, 100, 0)]);
         let hid = sends(&m.intent(ChatIntent::OpenChat(10)))[0].0;
-        let page: Vec<Message> = (51..=100).map(|i| Message { peer_id: 10, id: i, ..Default::default() }).collect();
-        m.event(&ok(hid, Payload::History { messages: page.clone(), peers: vec![], total: 70 }));
-        m.set_history(10, page, HashMap::new());
-        let fx = m.intent(ChatIntent::LoadOlder);
-        let (id, cmd) = sends(&fx)[0].clone();
-        assert_eq!(cmd, Command::LoadHistory { peer: PeerRef { id: 10, access_hash: 30 }, offset_id: 51, limit: 50 });
-        assert!(sends(&m.intent(ChatIntent::LoadOlder)).is_empty(), "пока грузится — без повторов");
-        let older: Vec<Message> = (31..=50).map(|i| Message { peer_id: 10, id: i, ..Default::default() }).collect();
-        let fx = m.event(&ok(id, Payload::History { messages: older, peers: vec![], total: 70 }));
-        assert!(fx.contains(&ChatEffect::Db(DbOp::ReloadHistory { peer_id: 10, limit: 100 })));
-        assert!(m.history_complete);
-        assert!(sends(&m.intent(ChatIntent::LoadOlder)).is_empty());
+        let fx = m.event(&ok(hid, Payload::History { messages: page_ids(51..=100), peers: vec![], total: 70 }));
+        let span = Some(Span { peer_id: 10, lo: 51, hi: crate::history::LIVE });
+        assert!(fx.iter().any(|e| matches!(e, ChatEffect::Db(DbOp::SaveHistory { span: s, .. }) if *s == span)));
+        // Начало неизвестно — самое старое сообщение для полосы прокрутки.
+        let (first_id, first) = sends(&fx)[0].clone();
+        assert_eq!(first, Command::LoadHistory { peer: PeerRef { id: 10, access_hash: 30 }, offset_id: 1, add_offset: -1, limit: 1 });
+        m.event(&ok(first_id, Payload::History { messages: page_ids(1..=1), peers: vec![], total: 70 }));
+        // В базе старше нет: страница с сервера, повторов пока грузится нет.
+        m.set_history(10, win(page_ids(51..=100), |w| { w.end = true; w.need_older = true; }), HashMap::new());
+        let (id, cmd) = sends(&m.intent(ChatIntent::NeedOlder))[0].clone();
+        assert_eq!(cmd, Command::LoadHistory { peer: PeerRef { id: 10, access_hash: 30 }, offset_id: 51, add_offset: 0, limit: 50 });
+        assert!(sends(&m.intent(ChatIntent::NeedOlder)).is_empty(), "пока грузится — без повторов");
+        let fx = m.event(&ok(id, Payload::History { messages: page_ids(31..=50), peers: vec![], total: 70 }));
+        let span = Some(Span { peer_id: 10, lo: 0, hi: 50 });
+        assert!(fx.iter().any(|e| matches!(e, ChatEffect::Db(DbOp::SaveHistory { span: s, .. }) if *s == span)));
+        // В базе есть — окно сдвигается без сервера; дошли до начала — стоп.
+        m.set_history(10, win(page_ids(31..=100), |w| w.end = true), HashMap::new());
+        let fx = m.intent(ChatIntent::NeedOlder);
+        assert!(sends(&fx).is_empty());
+        assert!(fx.contains(&ChatEffect::Db(DbOp::ReloadHistory { peer_id: 10, anchor: Anchor::At(31), before: 50, after: 50 })));
+        m.set_history(10, win(page_ids(1..=80), |w| { w.start = true; w.need_newer = true; }), HashMap::new());
+        assert!(m.intent(ChatIntent::NeedOlder).is_empty());
+        // Вниз: в базе нет — страница новее.
+        let fx = m.intent(ChatIntent::NeedNewer);
+        assert_eq!(sends(&fx)[0].1, Command::LoadHistory { peer: PeerRef { id: 10, access_hash: 30 }, offset_id: 81,
+            add_offset: -50, limit: 50 });
+        // Окно дошло до настоящего — дальше держим последние.
+        m.set_history(10, win(page_ids(40..=100), |w| w.end = true), HashMap::new());
+        assert_eq!(m.anchor, Anchor::Latest);
+    }
+
+    #[test]
+    fn jumps_and_missing_anchor() {
+        let mut m = ChatModel::new(1, "ru", 0);
+        m.set_rows(vec![row(10, 0, 1000, 0)]);
+        m.intent(ChatIntent::OpenChat(10));
+        m.pending.clear();
+        let fx = m.intent(ChatIntent::JumpTo(400));
+        assert!(fx.contains(&ChatEffect::Db(DbOp::ReloadHistory { peer_id: 10, anchor: Anchor::At(400), before: 50, after: 50 })));
+        // Якоря нет в базе — страница вокруг него; переход ждёт окна.
+        let fx = m.set_history(10, Window::default(), HashMap::new());
+        assert_eq!(sends(&fx)[0].1, Command::LoadHistory { peer: PeerRef { id: 10, access_hash: 30 }, offset_id: 400,
+            add_offset: -50, limit: 100 });
+        assert!(m.jump.is_none_or(|j| j.1 != Jump::To(400)));
+        // Полоса прокрутки: доля между первым и последним.
+        m.set_history(10, win(page_ids(350..=450), |w| w.first_id = Some(100)), HashMap::new());
+        let seq = m.jump.unwrap().0;
+        assert_eq!(m.jump.unwrap().1, Jump::To(400));
+        m.intent(ChatIntent::JumpPermille(500));
+        assert_eq!(m.anchor, Anchor::At(550));
+        m.set_history(10, win(page_ids(500..=600), |w| w.first_id = Some(100)), HashMap::new());
+        assert!(m.jump.unwrap().0 > seq, "каждый переход — новый номер");
+        m.intent(ChatIntent::JumpPermille(1000));
+        m.set_history(10, win(page_ids(900..=1000), |w| w.end = true), HashMap::new());
+        assert_eq!((m.anchor, m.jump.map(|j| j.1)), (Anchor::Latest, Some(Jump::Bottom)));
+        // Закреплённое: переход к показанному, в полосе — следующее.
+        m.set_pinned(10, vec![Message { id: 700, pinned: true, ..Default::default() },
+            Message { id: 300, pinned: true, ..Default::default() }]);
+        m.intent(ChatIntent::NextPinned);
+        assert_eq!((m.anchor, m.pinned_index), (Anchor::At(700), 1));
     }
 
     #[test]
@@ -922,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn updates_apply_and_mark_open_chat_read() {
+    fn updates_apply_and_seen_marks_read() {
         let mut m = ChatModel::new(1, "ru", 0);
         m.set_rows(vec![row(10, 0, 1, 0)]);
         m.intent(ChatIntent::OpenChat(10));
@@ -934,7 +1153,16 @@ mod tests {
         };
         let fx = m.event(&Event::Updates(b.clone()));
         assert_eq!(fx[0], ChatEffect::Db(DbOp::ApplyBatch(b)), "сначала запись пачки с состоянием");
+        assert!(sends(&fx).is_empty(), "не видно — не прочитано");
+        m.set_history(10, win(page_ids(1..=3), |w| w.end = true), HashMap::new());
+        let fx = m.intent(ChatIntent::Seen(2));
+        let (rid, cmd) = sends(&fx)[0].clone();
+        assert_eq!(cmd, Command::MarkRead { peer: PeerRef { id: 10, access_hash: 30 }, max_id: 2 });
+        assert!(fx.contains(&ChatEffect::Db(DbOp::MarkReadLocal { peer_id: 10, max_id: 2 })));
+        assert!(sends(&m.intent(ChatIntent::Seen(3))).is_empty(), "пока ответа нет — ждём");
+        let fx = m.event(&ok(rid, Payload::None));
         assert_eq!(sends(&fx)[0].1, Command::MarkRead { peer: PeerRef { id: 10, access_hash: 30 }, max_id: 3 });
+        assert!(sends(&m.intent(ChatIntent::Seen(3))).is_empty(), "уже прочитано");
         let reset = UpdatesBatch { updates: vec![DomainUpdate::Reset], ..Default::default() };
         assert!(matches!(sends(&m.event(&Event::Updates(reset)))[0].1, Command::LoadDialogs { .. }));
     }
@@ -958,8 +1186,8 @@ mod tests {
         m.intent(ChatIntent::OpenChat(10));
         let msg = |id: i32, out: bool, text: &str| Message { peer_id: 10, id, out, from_id: if out { 1 } else { 10 },
             text: text.into(), ..Default::default() };
-        m.set_history(10, vec![msg(1, false, "вопрос\nвторая строка"), msg(2, true, "мой ответ"), msg(3, false, "ещё")],
-            HashMap::new());
+        m.set_history(10, win(vec![msg(1, false, "вопрос\nвторая строка"), msg(2, true, "мой ответ"), msg(3, false, "ещё")],
+            |w| w.end = true), HashMap::new());
         m
     }
 

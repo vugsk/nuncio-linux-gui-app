@@ -360,3 +360,9 @@ msgstr "Открепить"
 
 msgid "Write"
 msgstr "Написать"
+
+msgid "New messages"
+msgstr "Новые сообщения"
+
+msgid "Scroll to bottom"
+msgstr "Вниз"

@@ -6,6 +6,7 @@ pub mod backend;
 pub mod chat;
 pub mod chatstore;
 pub mod config;
+pub mod history;
 pub mod login;
 pub mod model;
 pub mod outbox;

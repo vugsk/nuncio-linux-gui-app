@@ -60,6 +60,9 @@ export struct MessageItem {
     can-delete: bool,
     pinned: bool,
     has-link: bool,
+    key: int,             // id сообщения или −local_id (очередь): порядок и высоты строк
+    unread-divider: bool, // линия «Новые сообщения» перед сообщением (Чт-10)
+    reply-id: string,     // клик по цитате — переход к исходному
     rich: bool,           // текст с эмодзи: рисовать `lines`, а не `text`
     lines: [RichLine],
     big-emoji: [image],   // 1–3 эмодзи без текста — крупно без пузыря (Чт-12)
@@ -77,7 +80,14 @@ export struct PickerItem {
 export global Chat {
     in property <[DialogItem]> dialogs;
     in property <bool> dialogs-loading;
-    in property <[MessageItem]> messages;
+    // История: строки до опоры и от неё, линия опоры (своя прокрутка, scroller.rs).
+    in property <[MessageItem]> above;
+    in property <[MessageItem]> below;
+    in property <length> pivot;
+    in property <bool> at-bottom: true;
+    in property <int> unread-below;   // счётчик на кнопке «вниз»
+    in property <bool> thumb-visible; // полоса прокрутки по хронологии
+    in property <float> thumb;        // 0 — начало чата, 1 — конец
     in property <bool> has-open;
     in property <string> open-name;
     in property <string> open-status;
@@ -91,12 +101,16 @@ export global Chat {
     in property <bool> sending;
     in property <string> error;
     // Счётчик изменений истории: при росте — прокрутка вниз, если были внизу.
-    in property <int> history-version;
     callback open(string);
     callback back();
     callback send();
     callback composer-edited(string);
-    callback load-older();
+    callback scroll(float);
+    callback view-height(float);
+    callback row-height(int, float);
+    callback jump-bottom();
+    callback jump-to(string);
+    callback thumb-release(float);
     callback retry-send(string);
     callback delete-unsent(string);
     in-out property <bool> confirm-logout;
@@ -448,12 +462,20 @@ component Bubble inherits VerticalLayout {
                     color: Theme.link;
                     font-size: 11px;
                 }
-                if root.item.reply-author != "" || root.item.reply-text != "": HorizontalLayout {
-                    spacing: 6px;
-                    Rectangle { width: 3px; background: root.item.reply-color; border-radius: 1px; }
-                    VerticalLayout {
-                        Text { text: root.item.reply-author; color: root.item.reply-color; font-size: 11px; font-weight: 600; overflow: elide; }
-                        Text { text: root.item.reply-text; color: #c9d6e2; font-size: 11px; overflow: elide; }
+                if root.item.reply-author != "" || root.item.reply-text != "": Rectangle {
+                    height: quote.preferred-height;
+                    // Клик по цитате — к исходному сообщению сменой окна (Дз, Чт-3).
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Chat.jump-to(root.item.reply-id); }
+                    }
+                    quote := HorizontalLayout {
+                        spacing: 6px;
+                        Rectangle { width: 3px; background: root.item.reply-color; border-radius: 1px; }
+                        VerticalLayout {
+                            Text { text: root.item.reply-author; color: root.item.reply-color; font-size: 11px; font-weight: 600; overflow: elide; }
+                            Text { text: root.item.reply-text; color: #c9d6e2; font-size: 11px; overflow: elide; }
+                        }
                     }
                 }
                 if root.item.media != "": Text {
@@ -555,6 +577,10 @@ component MessageRow inherits VerticalLayout {
     padding-top: item.first-in-series ? 6px : 2px;
     padding-bottom: 2px;
     spacing: 6px;
+    // Высота после раскладки — прокрутке (края и видимые строки).
+    init => { if (self.height > 0) { Chat.row-height(root.item.key, self.height / 1px); } }
+    changed height => { Chat.row-height(root.item.key, self.height / 1px); }
+    changed item => { if (self.height > 0) { Chat.row-height(root.item.key, self.height / 1px); } }
     if root.item.date-label != "": HorizontalLayout {
         alignment: center;
         padding-top: 6px;
@@ -567,6 +593,11 @@ component MessageRow inherits VerticalLayout {
             border-color: Theme.card-border;
             date-text := Text { text: root.item.date-label; color: Theme.text; font-size: 11px; }
         }
+    }
+    if root.item.unread-divider: Rectangle {
+        height: 26px;
+        background: Theme.card-bg;
+        Text { text: @tr("New messages"); color: Theme.link; font-size: 12px; }
     }
     if root.item.service: HorizontalLayout {
         alignment: center;
@@ -628,9 +659,6 @@ component MessageRow inherits VerticalLayout {
 
 component ChatPane inherits Rectangle {
     in property <bool> narrow;
-    // Были ли внизу истории перед изменением (тогда после — снова вниз).
-    property <bool> at-bottom: true;
-    property <int> seen-version;
     background: Theme.window-bg;
     if !Chat.has-open: Text {
         text: @tr("Select a chat");
@@ -697,26 +725,106 @@ component ChatPane inherits Rectangle {
             }
         }
         Rectangle { height: 1px; background: Theme.card-border; }
+        // История: своя прокрутка (scroller.rs) — строки до опоры прижаты к её
+        // линии снизу, от опоры — сверху; ползунок по хронологии (П-2).
         Rectangle {
             vertical-stretch: 1;
-            list := ListView {
-                for m in Chat.messages: MessageRow { item: m; }
-                init => { Chat.view-width(self.visible-width / 1px); }
-                changed visible-width => { Chat.view-width(self.visible-width / 1px); }
-                changed content-y => {
-                    root.at-bottom = self.content-y <= self.visible-height - self.content-height + 40px;
-                    // Подгрузка вверх заранее, за несколько строк до края (П-2).
-                    if (self.content-y > -400px && !Chat.history-loading) {
-                        Chat.load-older();
-                    }
-                }
-                changed content-height => {
-                    if (root.at-bottom) {
-                        self.content-y = min(0px, self.visible-height - self.content-height);
-                    }
+            clip: true;
+            // Внизу ленты 8 px воздуха над полем ввода.
+            init => {
+                Chat.view-height(self.height / 1px - 8);
+                Chat.view-width(self.width / 1px - 10);
+            }
+            changed height => { Chat.view-height(self.height / 1px - 8); }
+            // Ширина ленты — раскладке текста с эмодзи (О-14).
+            changed width => { Chat.view-width(self.width / 1px - 10); }
+            TouchArea {
+                scroll-event(e) => {
+                    Chat.scroll(e.delta-y / 1px);
+                    accept
                 }
             }
-            if Chat.history-loading && Chat.messages.length == 0: Text {
+            VerticalLayout {
+                x: 0;
+                width: parent.width - 10px;
+                height: self.preferred-height;
+                y: Chat.pivot - self.preferred-height;
+                for m in Chat.above: MessageRow { item: m; }
+            }
+            VerticalLayout {
+                x: 0;
+                width: parent.width - 10px;
+                height: self.preferred-height;
+                y: Chat.pivot;
+                for m in Chat.below: MessageRow { item: m; }
+            }
+            if Chat.thumb-visible: Rectangle {
+                property <length> th: 36px;
+                property <float> drag;
+                x: parent.width - 9px;
+                y: 4px;
+                width: 7px;
+                height: parent.height - 8px;
+                bar := TouchArea {
+                    mouse-cursor: pointer;
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down) {
+                            parent.drag = max(0, min(1, (self.mouse-y - parent.th / 2) / (parent.height - parent.th)));
+                        }
+                        if (e.kind == PointerEventKind.up) {
+                            Chat.thumb-release(parent.drag);
+                        }
+                    }
+                    moved => {
+                        if (self.pressed) {
+                            parent.drag = max(0, min(1, (self.mouse-y - parent.th / 2) / (parent.height - parent.th)));
+                        }
+                    }
+                }
+                Rectangle {
+                    border-radius: 3px;
+                    background: bar.has-hover || bar.pressed ? #ffffff10 : transparent;
+                }
+                Rectangle {
+                    y: (bar.pressed ? parent.drag : Chat.thumb) * (parent.height - parent.th);
+                    height: parent.th;
+                    border-radius: 3px;
+                    background: bar.pressed ? Theme.link : bar.has-hover ? #8a9bb0c0 : #8a9bb070;
+                }
+            }
+            // «Вниз» со счётчиком (Чт-10): вне конца истории.
+            if !Chat.at-bottom: Rectangle {
+                x: parent.width - 58px;
+                y: parent.height - 58px;
+                width: 40px;
+                height: 40px;
+                border-radius: 20px;
+                background: down.has-hover ? Theme.row-bg : Theme.card-bg;
+                border-width: 1px;
+                border-color: Theme.card-border;
+                accessible-role: button;
+                accessible-label: @tr("Scroll to bottom");
+                down := TouchArea { clicked => { Chat.jump-bottom(); } }
+                Path {
+                    width: 14px;
+                    height: 8px;
+                    stroke: Theme.text;
+                    stroke-width: 2px;
+                    viewbox-width: 14;
+                    viewbox-height: 8;
+                    commands: "M 1 1 L 7 7 L 13 1";
+                }
+                if Chat.unread-below > 0: Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: -10px;
+                    height: 18px;
+                    width: max(18px, badge.preferred-width + 10px);
+                    border-radius: 9px;
+                    background: Theme.accent;
+                    badge := Text { text: Chat.unread-below; color: Theme.text; font-size: 10px; font-weight: 600; }
+                }
+            }
+            if Chat.history-loading && Chat.above.length + Chat.below.length == 0: Text {
                 text: @tr("Loading…");
                 color: Theme.text-muted;
                 font-size: 12px;

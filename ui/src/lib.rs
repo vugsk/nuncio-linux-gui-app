@@ -16,6 +16,7 @@ slint::include_modules!();
 pub mod avatar;
 pub mod chatview;
 pub mod richtext;
+pub mod scroller;
 
 mod flags {
     include!(concat!(env!("OUT_DIR"), "/flags.rs"));
@@ -390,7 +391,7 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
     }
     {
         let s = send.clone();
-        chat.on_load_older(move || s(Action::Chat(ChatIntent::LoadOlder)));
+        chat.on_jump_bottom(move || s(Action::Chat(ChatIntent::JumpBottom)));
     }
     {
         let i = i.clone();
@@ -427,6 +428,35 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
         let s = send.clone();
         let chat = app.global::<Chat>();
         chat.on_view_width(move |w| s(Action::Chat(ChatIntent::ViewWidth(w as i32))));
+        // Своя прокрутка истории — в потоке интерфейса, без захода в домен.
+        let s = send.clone();
+        chatview::set_sender(move |i| s(Action::Chat(i)));
+        let a = app.as_weak();
+        chat.on_scroll(move |dy| {
+            if let Some(app) = a.upgrade() {
+                chatview::scroll(&app, dy);
+            }
+        });
+        let a = app.as_weak();
+        chat.on_view_height(move |h| {
+            if let Some(app) = a.upgrade() {
+                chatview::set_view_height(&app, h);
+            }
+        });
+        let a = app.as_weak();
+        chat.on_row_height(move |key, h| {
+            if let Some(app) = a.upgrade() {
+                chatview::row_height(&app, i64::from(key), h);
+            }
+        });
+        let s = send.clone();
+        chat.on_jump_to(move |id| {
+            if let Ok(id) = id.parse() {
+                s(Action::Chat(ChatIntent::JumpTo(id)));
+            }
+        });
+        let s = send.clone();
+        chat.on_thumb_release(move |f| s(Action::Chat(ChatIntent::JumpPermille((f * 1000.0) as i32))));
     }
     chat_plain!(on_new_chat, ChatIntent::NewChat);
     chat_plain!(on_picker_confirm, ChatIntent::PickerConfirm);

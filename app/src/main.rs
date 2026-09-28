@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bridge::{GoBackend, StartParams};
 use domain::config::{self, Config, Paths};
 use domain::chat::{ChatEffect, ChatModel, DbOp, DIALOGS_WINDOW};
+use domain::history::Anchor;
 use domain::login::{CriticalKind, Effect, LoginModel, Screen};
 use domain::model::Event;
 use domain::store::{DbThread, Store};
@@ -89,7 +90,7 @@ impl Domain {
             if let (Some(app), Some(m)) = (ui.upgrade(), model) {
                 RENDERER.with(|r| r.borrow_mut().render(&app, &m));
                 if let Some(c) = chat {
-                    CHAT_RENDERER.with(|r| r.borrow_mut().render(&app, &c, &avatars));
+                    ui::chatview::render(&app, &c, &avatars);
                 }
             }
         });
@@ -139,7 +140,7 @@ impl Domain {
     fn run_chat(&mut self, fx: Vec<ChatEffect>) {
         let mut queue: VecDeque<ChatEffect> = fx.into();
         loop {
-            let (mut rows, mut history) = (false, None::<(i64, usize)>);
+            let (mut rows, mut history) = (false, None::<(i64, Anchor, usize, usize)>);
             while let Some(e) = queue.pop_front() {
                 match e {
                     ChatEffect::Send { id, cmd } => {
@@ -187,7 +188,9 @@ impl Domain {
                             None => {}
                         }
                     }
-                    ChatEffect::Db(DbOp::ReloadHistory { peer_id, limit }) => history = Some((peer_id, limit)),
+                    ChatEffect::Db(DbOp::ReloadHistory { peer_id, anchor, before, after }) => {
+                        history = Some((peer_id, anchor, before, after));
+                    }
                     ChatEffect::Db(op) => self.db_write(op),
                 }
             }
@@ -226,13 +229,14 @@ impl Domain {
                     }
                 }
             }
-            if let Some((peer_id, limit)) = history {
+            if let Some((peer_id, anchor, before, after)) = history {
                 let loaded = self.db.as_ref().and_then(|db| {
                     db.call(move |s| {
-                        let msgs = s.history(peer_id, None, limit)?;
+                        let win = s.history_window(peer_id, anchor, before, after)?;
+                        let msgs = &win.messages;
                         // Имена отправителей для групп (серии, Чт-2).
                         let mut senders = HashMap::new();
-                        for m in &msgs {
+                        for m in msgs {
                             for id in [m.from_id, m.fwd_from_id] {
                                 if id != 0 && !senders.contains_key(&id) {
                                     if let Some(p) = s.peer(id)?.filter(|p| !p.name.is_empty()) {
@@ -243,7 +247,7 @@ impl Domain {
                         }
                         // Цитаты ответов (Чт-3): автор и первая строка исходного из базы.
                         let mut quotes = HashMap::new();
-                        for m in &msgs {
+                        for m in msgs {
                             if m.reply_to > 0 && !quotes.contains_key(&m.reply_to) {
                                 if let Some(src) = s.message(peer_id, m.reply_to)? {
                                     let author = if src.out {
@@ -255,13 +259,13 @@ impl Domain {
                                 }
                             }
                         }
-                        Ok::<_, domain::store::StoreError>((msgs, senders, quotes))
+                        Ok::<_, domain::store::StoreError>((win, senders, quotes))
                     })
                 });
                 match loaded {
                     Some(Ok((msgs, senders, quotes))) => {
                         if let Some(chat) = self.chat.as_mut() {
-                            chat.set_history(peer_id, msgs, senders);
+                            queue.extend(chat.set_history(peer_id, msgs, senders));
                             queue.extend(chat.set_quotes(peer_id, quotes));
                         }
                     }
@@ -292,7 +296,7 @@ impl Domain {
             DbOp::PumpOutbox | DbOp::SearchPeers { .. } | DbOp::ReloadPinned { .. } => Ok(()),
             DbOp::SavePeers(peers) => s.save_peers(&peers),
             DbOp::SaveDialogs { dialogs, messages, peers } => s.save_dialogs(&dialogs, &messages, &peers),
-            DbOp::SaveHistory { messages, peers } => s.save_history(&messages, &peers),
+            DbOp::SaveHistory { messages, peers, span } => s.save_history(&messages, &peers, span),
             DbOp::ApplyBatch(b) => s.apply_batch(&b).map(|_| ()),
             DbOp::SetAvatar { peer_id, path } => s.set_avatar_path(peer_id, &path),
             DbOp::MarkReadLocal { peer_id, max_id } => s.mark_read_local(peer_id, max_id),
@@ -421,7 +425,6 @@ fn screen_name(m: &LoginModel) -> &'static str {
 
 thread_local! {
     static RENDERER: RefCell<ui::Renderer> = RefCell::new(ui::Renderer::default());
-    static CHAT_RENDERER: RefCell<ui::chatview::ChatRenderer> = RefCell::new(ui::chatview::ChatRenderer::default());
 }
 
 static TX: Mutex<Option<mpsc::Sender<Msg>>> = Mutex::new(None);
