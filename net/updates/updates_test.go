@@ -13,8 +13,9 @@ import (
 
 // fakeInv отвечает на getState/getDifference по сценарию.
 type fakeInv struct {
-	mu    sync.Mutex
-	diffs []any
+	mu        sync.Mutex
+	diffs     []any
+	chanDiffs []any
 	calls []tlbin.Request
 	state *tl.UpdatesState
 }
@@ -26,6 +27,13 @@ func (f *fakeInv) Invoke(_ context.Context, req tlbin.Request) (any, error) {
 	switch req.(type) {
 	case *tl.UpdatesGetStateRequest:
 		return f.state, nil
+	case *tl.UpdatesGetChannelDifferenceRequest:
+		if len(f.chanDiffs) == 0 {
+			return &tl.UpdatesChannelDifferenceEmpty{Final: true, Pts: 0}, nil
+		}
+		d := f.chanDiffs[0]
+		f.chanDiffs = f.chanDiffs[1:]
+		return d, nil
 	case *tl.UpdatesGetDifferenceRequest:
 		if len(f.diffs) == 0 {
 			return &tl.UpdatesDifferenceEmpty{Date: 1, Seq: 0}, nil
@@ -85,6 +93,7 @@ func (s *sink) last() *pb.UpdatesBatch {
 }
 
 func start(t *testing.T, inv *fakeInv, st *pb.UpdateState) (*Manager, *sink) {
+	GapWait = 30 * time.Millisecond
 	s := &sink{}
 	m := New(Config{Inv: inv, Emit: s.emit, SelfID: func() int64 { return 1 }})
 	m.Start(st)
@@ -145,6 +154,8 @@ func TestGapTriggersDifference(t *testing.T) {
 	m, s := start(t, inv, &pb.UpdateState{Pts: 10, Date: 1})
 	m.Push(short(1, 11))
 	m.Push(short(4, 14)) // пропущены 12, 13
+	wait(m)
+	time.Sleep(3 * GapWait) // недостающие не пришли — разница после паузы
 	wait(m)
 	if inv.count("updates.getDifference") != 2 {
 		t.Fatalf("getDifference вызван %d раз", inv.count("updates.getDifference"))
@@ -219,6 +230,8 @@ func TestSeqGapAndCombined(t *testing.T) {
 	before := inv.count("updates.getDifference")
 	m.Push(&tl.Updates{Updates: []tl.UpdateClass{newMsg(3, 13)}, Date: 4, Seq: 9}) // seq пропущен
 	wait(m)
+	time.Sleep(3 * GapWait)
+	wait(m)
 	if inv.count("updates.getDifference") != before+1 {
 		t.Fatal("разрыв seq не вызвал getDifference")
 	}
@@ -243,3 +256,79 @@ func TestSentMessageInSameBatch(t *testing.T) {
 		t.Fatal("updateMessageID не сопоставлен")
 	}
 }
+
+func TestGapFilledDuringWait(t *testing.T) {
+	inv := &fakeInv{}
+	m, s := start(t, inv, &pb.UpdateState{Pts: 10, Date: 1})
+	wait(m)
+	before := inv.count("updates.getDifference")
+	m.Push(short(3, 13)) // пришло раньше 11 и 12
+	m.Push(short(1, 11))
+	m.Push(short(2, 12)) // разрыв закрылся до конца паузы
+	wait(m)
+	time.Sleep(3 * GapWait)
+	wait(m)
+	if inv.count("updates.getDifference") != before {
+		t.Fatal("разрыв закрылся сам, но был вызван getDifference")
+	}
+	ids := s.messages()
+	if len(ids) != 3 || ids[0] != 1 || ids[1] != 2 || ids[2] != 3 || m.State().Pts != 13 {
+		t.Fatalf("порядок после ожидания: %v pts %d", ids, m.State().Pts)
+	}
+}
+
+func chMsg(ch int64, id, pts int32) *tl.UpdateNewChannelMessage {
+	return &tl.UpdateNewChannelMessage{Message: &tl.Message{Id: id, PeerId: &tl.PeerChannel{ChannelId: ch}, Date: 5},
+		Pts: pts, PtsCount: 1}
+}
+
+func TestChannelPtsAndDifference(t *testing.T) {
+	const raw = 77
+	ch := -(1_000_000_000_000 + int64(raw))
+	inv := &fakeInv{}
+	inv.chanDiffs = []any{&tl.UpdatesChannelDifference{Final: true, Pts: 23,
+		NewMessages:  []tl.MessageClass{&tl.Message{Id: 2, PeerId: &tl.PeerChannel{ChannelId: raw}, Date: 5}},
+		OtherUpdates: []tl.UpdateClass{}, Chats: []tl.ChatClass{}, Users: []tl.UserClass{}}}
+	m, s := start(t, inv, &pb.UpdateState{Pts: 10, Date: 1})
+	m.SetChannels([]*pb.ChannelState{{PeerId: ch, Pts: 20}})
+	m.RememberPeers([]*pb.Peer{{Id: ch, Kind: pb.Peer_CHANNEL, AccessHash: 5}})
+	wait(m)
+	m.Push(&tl.UpdateShort{Update: chMsg(raw, 1, 21)})
+	m.Push(&tl.UpdateShort{Update: chMsg(raw, 1, 21)}) // дубль
+	m.Push(&tl.UpdateShort{Update: chMsg(raw, 3, 23)}) // разрыв канала: getChannelDifference
+	wait(m)
+	if inv.count("updates.getChannelDifference") != 1 {
+		t.Fatalf("getChannelDifference вызван %d раз", inv.count("updates.getChannelDifference"))
+	}
+	if ids := s.messages(); len(ids) != 2 || ids[0] != 1 || ids[1] != 2 {
+		t.Fatalf("канал: %v", ids)
+	}
+	if m.ChannelPts(ch) != 23 {
+		t.Fatalf("pts канала %d", m.ChannelPts(ch))
+	}
+	// Состояние канала уходит Rust в пачке.
+	found := false
+	for _, b := range s.batches {
+		for _, cs := range b.ChannelStates {
+			if cs.GetPeerId() == ch && cs.GetPts() == 23 {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("pts канала не передан в пачке")
+	}
+	// Разница слишком велика — сброс истории канала.
+	inv.mu.Lock()
+	inv.chanDiffs = []any{&tl.UpdatesChannelDifferenceTooLong{Final: true, Dialog: &tl.Dialog{Pts: ptr(int32(500)),
+		Peer: &tl.PeerChannel{ChannelId: raw}, NotifySettings: &tl.PeerNotifySettings{}}, Messages: []tl.MessageClass{},
+		Chats: []tl.ChatClass{}, Users: []tl.UserClass{}}}
+	inv.mu.Unlock()
+	m.Push(&tl.UpdateShort{Update: &tl.UpdateChannelTooLong{ChannelId: raw}})
+	wait(m)
+	if s.last().Updates[0].GetResetChannel().GetPeerId() != ch || m.ChannelPts(ch) != 500 {
+		t.Fatal("channelDifferenceTooLong не сбросил канал")
+	}
+}
+
+func ptr[T any](v T) *T { return &v }

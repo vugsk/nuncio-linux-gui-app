@@ -251,6 +251,17 @@ impl ChatModel {
                         out.push(ChatEffect::Db(DbOp::MarkReadLocal { peer_id, max_id }));
                     }
                 }
+                let reset_open = b.updates.iter().any(|u| {
+                    matches!(u, crate::model::DomainUpdate::ResetChannel { peer_id } if Some(*peer_id) == self.open)
+                });
+                if let (true, Some(peer_id)) = (reset_open, self.open) {
+                    if let Some(peer) = self.peer_ref(peer_id) {
+                        self.history_complete = false;
+                        self.history_loading = true;
+                        self.send(Command::LoadHistory { peer, offset_id: 0, limit: HISTORY_PAGE },
+                            Pending::History { peer_id, older: false }, &mut out);
+                    }
+                }
                 if b.updates.iter().any(|u| matches!(u, crate::model::DomainUpdate::Reset)) {
                     self.pages = 0;
                     self.load_dialogs_page(None, &mut out);

@@ -6,9 +6,9 @@
 // (UpdatesBatch) с новым состоянием: Rust пишет события и состояние одной
 // транзакцией (О-5), а на диск Go ничего не пишет.
 //
-// Веха В4: общий pts, seq, getDifference (включая differenceSlice и
-// differenceTooLong). Разрывы pts каналов (getChannelDifference) и буфер
-// ожидания перед getDifference — веха В5.
+// Общий pts и seq, getDifference (срезы и TooLong); у каждого канала свой pts
+// и getChannelDifference (channels.go). Разрыв не сразу ведёт к разнице:
+// обновление откладывается на GapWait — недостающие часто приходят следом.
 package updates
 
 import (
@@ -43,10 +43,19 @@ type state struct {
 }
 
 type job struct {
+	u        tl.UpdatesClass
+	diff     bool
+	gapCheck bool // истекло ожидание недостающих обновлений
+	done     chan struct{}
+	sent     *pb.Message // своё отправленное: для updateShortSentMessage (текст у отправителя)
+}
+
+// GapWait — сколько ждать недостающие обновления перед getDifference.
+var GapWait = 500 * time.Millisecond
+
+type stashed struct {
 	u    tl.UpdatesClass
-	diff bool
-	done chan struct{}
-	sent *pb.Message // своё отправленное: для updateShortSentMessage (текст у отправителя)
+	sent *pb.Message
 }
 
 // Manager — очередь и состояние обновлений одного аккаунта.
@@ -59,6 +68,11 @@ type Manager struct {
 	cancel  context.CancelFunc
 	jobs    chan job
 	sentIDs map[int64]int32 // random_id -> id (updateMessageID)
+
+	chans     map[int64]int32 // помеченный id канала -> pts
+	hashes    map[int64]int64 // помеченный id канала -> access_hash
+	stash     []stashed       // обновления после разрыва, ждут недостающих
+	gapTimer  *time.Timer
 }
 
 // New создаёт остановленный менеджер.
@@ -66,7 +80,7 @@ func New(cfg Config) *Manager {
 	if cfg.Log == nil {
 		cfg.Log = func(string, ...any) {}
 	}
-	return &Manager{cfg: cfg, sentIDs: map[int64]int32{}}
+	return &Manager{cfg: cfg, sentIDs: map[int64]int32{}, chans: map[int64]int32{}, hashes: map[int64]int64{}}
 }
 
 // State — текущее состояние.
@@ -106,6 +120,12 @@ func (m *Manager) Stop() {
 	m.cancel()
 	m.running = false
 	m.st = state{}
+	m.chans = map[int64]int32{}
+	m.hashes = map[int64]int64{}
+	m.stash = nil
+	if m.gapTimer != nil {
+		m.gapTimer.Stop()
+	}
 }
 
 func (m *Manager) enqueue(j job) bool {
@@ -163,9 +183,12 @@ func (m *Manager) loop(ctx context.Context, jobs chan job) {
 		case <-ctx.Done():
 			return
 		case j := <-jobs:
-			if j.diff {
+			switch {
+			case j.diff:
 				m.difference(ctx)
-			} else {
+			case j.gapCheck:
+				m.gapExpired(ctx)
+			default:
 				m.apply(ctx, j.u, j.sent)
 			}
 			if j.done != nil {
@@ -177,9 +200,12 @@ func (m *Manager) loop(ctx context.Context, jobs chan job) {
 
 // batch собирает события одного объекта Updates.
 type batch struct {
-	b        pb.UpdatesBatch
-	needDiff bool
-	changed  bool
+	b         pb.UpdatesBatch
+	needDiff  bool // разрыв общего pts или seq
+	changed   bool
+	progress  bool // общий pts сдвинулся
+	chanGaps  []int64
+	chanDirty map[int64]bool
 }
 
 func (b *batch) add(u *pb.DomainUpdate) { b.b.Updates = append(b.b.Updates, u) }
@@ -189,6 +215,11 @@ func (m *Manager) flush(b *batch) {
 		return
 	}
 	b.b.State = m.State()
+	m.mu.Lock()
+	for id := range b.chanDirty {
+		b.b.ChannelStates = append(b.b.ChannelStates, &pb.ChannelState{PeerId: id, Pts: m.chans[id]})
+	}
+	m.mu.Unlock()
 	if m.cfg.Emit != nil {
 		m.cfg.Emit(&b.b)
 	}
@@ -206,7 +237,7 @@ func (m *Manager) checkPts(b *batch, pts, count int32) bool {
 		return true
 	case m.st.Pts+count == pts:
 		m.st.Pts = pts
-		b.changed = true
+		b.changed, b.progress = true, true
 		return true
 	case m.st.Pts+count > pts:
 		return false // уже применено
@@ -233,11 +264,71 @@ func (m *Manager) self() int64 {
 }
 
 func (m *Manager) apply(ctx context.Context, u tl.UpdatesClass, sent *pb.Message) {
-	b := &batch{}
-	switch v := u.(type) {
-	case *tl.UpdatesTooLong:
+	if _, ok := u.(*tl.UpdatesTooLong); ok {
 		m.difference(ctx)
 		return
+	}
+	gap, progress := m.applyOnce(ctx, u, sent)
+	if gap {
+		// Разрыв: ждём недостающие GapWait, потом — getDifference.
+		m.mu.Lock()
+		m.stash = append(m.stash, stashed{u, sent})
+		if m.gapTimer == nil || len(m.stash) == 1 {
+			m.gapTimer = time.AfterFunc(GapWait, func() { m.enqueue(job{gapCheck: true}) })
+		}
+		m.mu.Unlock()
+		return
+	}
+	if progress {
+		m.retryStash(ctx)
+	}
+}
+
+// retryStash — пришли недостающие: применить отложенные по порядку (pts защищает от повторов).
+func (m *Manager) retryStash(ctx context.Context) {
+	for {
+		m.mu.Lock()
+		st := m.stash
+		m.stash = nil
+		m.mu.Unlock()
+		if len(st) == 0 {
+			return
+		}
+		moved := false
+		var left []stashed
+		for _, x := range st {
+			gap, progress := m.applyOnce(ctx, x.u, x.sent)
+			if gap {
+				left = append(left, x)
+			}
+			moved = moved || progress
+		}
+		m.mu.Lock()
+		m.stash = append(left, m.stash...)
+		m.mu.Unlock()
+		if !moved || len(left) == 0 {
+			return
+		}
+	}
+}
+
+func (m *Manager) gapExpired(ctx context.Context) {
+	m.retryStash(ctx)
+	m.mu.Lock()
+	pending := len(m.stash) > 0
+	m.stash = nil
+	m.mu.Unlock()
+	if pending {
+		m.cfg.Log("updates: разрыв pts не закрылся, getDifference")
+		m.difference(ctx)
+	}
+}
+
+// applyOnce применяет объект Updates; возвращает, был ли разрыв общего pts/seq
+// и сдвинулся ли pts. Разрывы каналов закрываются здесь же (getChannelDifference).
+func (m *Manager) applyOnce(ctx context.Context, u tl.UpdatesClass, sent *pb.Message) (gap, progress bool) {
+	b := &batch{}
+	switch v := u.(type) {
 	case *tl.UpdateShortMessage:
 		if m.checkPts(b, v.Pts, v.PtsCount) {
 			from := v.UserId
@@ -272,13 +363,13 @@ func (m *Manager) apply(ctx context.Context, u tl.UpdatesClass, sent *pb.Message
 	case *tl.UpdatesCombined:
 		m.combined(ctx, b, v.Updates, v.Users, v.Chats, v.Date, v.SeqStart, v.Seq)
 	default:
-		return
+		return false, false
 	}
 	m.flush(b)
-	if b.needDiff {
-		m.cfg.Log("updates: разрыв pts, getDifference")
-		m.difference(ctx)
+	for _, ch := range b.chanGaps {
+		m.channelDifference(ctx, ch)
 	}
+	return b.needDiff, b.progress
 }
 
 func (m *Manager) combined(ctx context.Context, b *batch, ups []tl.UpdateClass, users []tl.UserClass,
@@ -295,7 +386,9 @@ func (m *Manager) combined(ctx context.Context, b *batch, ups []tl.UpdateClass, 
 			return // уже применено
 		}
 	}
-	b.b.Peers = append(b.b.Peers, conv.Peers(users, chats)...)
+	peers := conv.Peers(users, chats)
+	m.RememberPeers(peers)
+	b.b.Peers = append(b.b.Peers, peers...)
 	for _, u := range ups {
 		m.update(b, u, true)
 	}
@@ -373,24 +466,31 @@ func (m *Manager) update(b *batch, u tl.UpdateClass, check bool) {
 			}
 			m.checkPts(b, p, c)
 		}
-	// Каналы: свои pts (В5 — getChannelDifference); пока применяются как есть.
+	// Каналы: свои pts; разрыв — getChannelDifference после пачки.
 	case *tl.UpdateNewChannelMessage:
-		if msg := conv.Message(v.Message); msg != nil {
+		if msg := conv.Message(v.Message); msg != nil && m.channelPts(b, msg.PeerId, v.Pts, v.PtsCount, check) {
 			b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_NewMessage{NewMessage: msg}})
 		}
 	case *tl.UpdateEditChannelMessage:
-		if msg := conv.Message(v.Message); msg != nil {
+		if msg := conv.Message(v.Message); msg != nil && m.channelPts(b, msg.PeerId, v.Pts, v.PtsCount, check) {
 			b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_EditMessage{EditMessage: msg}})
 		}
 	case *tl.UpdateDeleteChannelMessages:
-		b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_DeleteMessages{DeleteMessages: &pb.DeleteMessages{
-			PeerId: conv.ChannelID(v.ChannelId), Ids: v.Messages}}})
+		ch := conv.ChannelID(v.ChannelId)
+		if m.channelPts(b, ch, v.Pts, v.PtsCount, check) {
+			b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_DeleteMessages{DeleteMessages: &pb.DeleteMessages{
+				PeerId: ch, Ids: v.Messages}}})
+		}
 	case *tl.UpdateReadChannelInbox:
+		ch := conv.ChannelID(v.ChannelId)
 		b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_ReadInbox{ReadInbox: &pb.ReadInbox{
-			PeerId: conv.ChannelID(v.ChannelId), MaxId: v.MaxId, StillUnread: v.StillUnreadCount}}})
+			PeerId: ch, MaxId: v.MaxId, StillUnread: v.StillUnreadCount}}})
+		m.setChannelPts(b, ch, v.Pts)
 	case *tl.UpdateReadChannelOutbox:
 		b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_ReadOutbox{ReadOutbox: &pb.ReadOutbox{
 			PeerId: conv.ChannelID(v.ChannelId), MaxId: v.MaxId}}})
+	case *tl.UpdateChannelTooLong:
+		b.chanGaps = append(b.chanGaps, conv.ChannelID(v.ChannelId))
 	case *tl.UpdateMessageID:
 		m.mu.Lock()
 		m.sentIDs[v.RandomId] = v.Id
@@ -449,6 +549,9 @@ func (m *Manager) difference(ctx context.Context) {
 			b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_Reset_{Reset_: &pb.ResetDialogs{}}})
 		}
 		m.flush(b)
+		for _, ch := range b.chanGaps {
+			m.channelDifference(ctx, ch)
+		}
 		if !more {
 			return
 		}
@@ -457,7 +560,9 @@ func (m *Manager) difference(ctx context.Context) {
 
 func (m *Manager) diffContent(b *batch, msgs []tl.MessageClass, other []tl.UpdateClass, users []tl.UserClass,
 	chats []tl.ChatClass) {
-	b.b.Peers = append(b.b.Peers, conv.Peers(users, chats)...)
+	peers := conv.Peers(users, chats)
+	m.RememberPeers(peers)
+	b.b.Peers = append(b.b.Peers, peers...)
 	for _, msg := range conv.Messages(msgs) {
 		b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_NewMessage{NewMessage: msg}})
 	}

@@ -173,7 +173,18 @@ impl Store {
                     touched.push(*peer_id);
                 }
                 DomainUpdate::Reset => {}
+                DomainUpdate::ResetChannel { peer_id } => {
+                    tx.execute("DELETE FROM messages WHERE peer_id = ?1", params![peer_id])?;
+                    touched.push(*peer_id);
+                }
             }
+        }
+        for (ch, pts) in &b.channel_states {
+            tx.execute(
+                "INSERT INTO update_state (channel_id, pts) VALUES (?1, ?2)
+                 ON CONFLICT(channel_id) DO UPDATE SET pts = ?2",
+                params![ch, pts],
+            )?;
         }
         if let Some(s) = b.state {
             tx.execute(
@@ -300,6 +311,13 @@ impl Store {
             .optional()?)
     }
 
+    /// pts каналов для StartRequest.
+    pub fn channel_states(&self) -> Result<Vec<(i64, i32)>, StoreError> {
+        let mut st = self.conn().prepare_cached("SELECT channel_id, pts FROM update_state WHERE channel_id != 0")?;
+        let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+        Ok(v)
+    }
+
     /// Путь к скачанному аватару текущего фото собеседника.
     pub fn set_avatar_path(&self, peer_id: i64, path: &str) -> Result<(), StoreError> {
         self.conn().execute("UPDATE peers SET photo_ref = ?2 WHERE id = ?1", params![peer_id, path])?;
@@ -334,7 +352,7 @@ mod tests {
     }
 
     fn batch(updates: Vec<DomainUpdate>, pts: i32) -> UpdatesBatch {
-        UpdatesBatch { updates, peers: vec![], state: Some(UpdateState { pts, qts: 0, seq: 0, date: 1 }) }
+        UpdatesBatch { updates, peers: vec![], state: Some(UpdateState { pts, qts: 0, seq: 0, date: 1 }), channel_states: vec![] }
     }
 
     #[test]
@@ -380,11 +398,16 @@ mod tests {
         s.apply_batch(&batch(vec![DomainUpdate::EditMessage(Message { edit_date: 9, ..msg(10, 3, 103, "правка", false) })], 23))
             .unwrap();
         s.apply_batch(&batch(vec![DomainUpdate::DeleteMessages { peer_id: 0, ids: vec![4, 6] }], 24)).unwrap();
+        let mut cb = batch(vec![], 25);
+        cb.channel_states = vec![(-1_000_000_000_007, 40)];
+        s.apply_batch(&cb).unwrap();
+        assert_eq!(s.channel_states().unwrap(), vec![(-1_000_000_000_007, 40)]);
+        assert_eq!(s.update_state().unwrap().unwrap().pts, 25, "строка канала не затирает общее состояние");
         let h = s.history(10, None, 100).unwrap();
         assert_eq!(h.len(), 19);
         assert_eq!(h.iter().find(|m| m.id == 3).unwrap().text, "правка");
         assert_eq!(s.dialog_rows(0, 10).unwrap()[0].dialog.unread_count, 0);
-        assert_eq!(s.update_state().unwrap().unwrap().pts, 24);
+        assert_eq!(s.update_state().unwrap().unwrap().pts, 25);
     }
 
     #[test]

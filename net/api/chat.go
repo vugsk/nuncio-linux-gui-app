@@ -70,6 +70,10 @@ func (s *Service) loadDialogs(ctx context.Context, id uint64, c *pb.LoadDialogs)
 			out.Dialogs = append(out.Dialogs, x)
 		}
 	}
+	// pts каналов из списка: состояние для getChannelDifference, Rust хранит его в базе.
+	if cs := s.upd.NoteDialogs(out.Dialogs, out.Peers); len(cs) > 0 {
+		s.emit(&pb.Event{Body: &pb.Event_Updates{Updates: &pb.UpdatesBatch{State: s.upd.State(), ChannelStates: cs}}})
+	}
 	s.log.Printf("диалоги: %d (всего %d)", len(out.Dialogs), out.Total)
 	return payload(id, out)
 }
@@ -102,6 +106,7 @@ func (s *Service) loadHistory(ctx context.Context, id uint64, c *pb.LoadHistory)
 	default:
 		return resultErrorKind(id, pb.Error_INTERNAL, fmt.Sprintf("неожиданный ответ %T", v))
 	}
+	s.upd.RememberPeers(out.Peers)
 	return payload(id, out)
 }
 

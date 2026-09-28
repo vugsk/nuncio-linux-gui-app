@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -402,6 +403,41 @@ func (m *Manager) transferAuth(ctx context.Context, dc int) error {
 	}
 	return nil
 }
+
+// Keep поддерживает соединение с основным DC, пока жив ctx: после обрыва —
+// переподключение с экспоненциальной задержкой и разбросом (1, 2, 4 … 60 с,
+// ±20 %), Сетевой слой, раздел 7. Успешное подключение сообщается через OnConn
+// (Connected), после него поток обновлений запрашивает разницу.
+func (m *Manager) Keep(ctx context.Context) {
+	go func() {
+		delay := KeepMinDelay
+		for ctx.Err() == nil {
+			c, err := m.connect(ctx, m.Home())
+			if err != nil {
+				jitter := time.Duration(float64(delay) * (0.8 + 0.4*rand.Float64()))
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(jitter):
+				}
+				delay = min(delay*2, KeepMaxDelay)
+				continue
+			}
+			delay = KeepMinDelay
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.sess.Done():
+			}
+		}
+	}()
+}
+
+// Задержки переподключения (переменные — для тестов).
+var (
+	KeepMinDelay = time.Second
+	KeepMaxDelay = 60 * time.Second
+)
 
 // Ping — проверка связи с DC без initConnection (ping — служебная функция MTProto).
 func (m *Manager) Ping(ctx context.Context, dc int) (time.Duration, error) {

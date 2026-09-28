@@ -92,10 +92,16 @@ fn batch_from(b: proto::UpdatesBatch) -> UpdatesBatch {
                 U::ReadInbox(r) => DomainUpdate::ReadInbox { peer_id: r.peer_id, max_id: r.max_id, still_unread: r.still_unread },
                 U::ReadOutbox(r) => DomainUpdate::ReadOutbox { peer_id: r.peer_id, max_id: r.max_id },
                 U::Reset(_) => DomainUpdate::Reset,
+                U::ResetChannel(r) => DomainUpdate::ResetChannel { peer_id: r.peer_id },
             })
         })
         .collect();
-    UpdatesBatch { updates, peers: b.peers.into_iter().map(peer_from).collect(), state: b.state.map(state_from) }
+    UpdatesBatch {
+        updates,
+        peers: b.peers.into_iter().map(peer_from).collect(),
+        state: b.state.map(state_from),
+        channel_states: b.channel_states.into_iter().map(|c| (c.peer_id, c.pts)).collect(),
+    }
 }
 
 pub fn command_to(id: u64, cmd: Command) -> proto::Command {
@@ -315,6 +321,7 @@ mod tests {
                 }],
                 peers: vec![proto::Peer { id: -1_000_000_000_005, name: "канал".into(), ..Default::default() }],
                 state: Some(proto::UpdateState { pts: 9, ..Default::default() }),
+                channel_states: vec![proto::ChannelState { peer_id: -1_000_000_000_005, pts: 3 }],
             })),
         };
         match event_from(ev) {

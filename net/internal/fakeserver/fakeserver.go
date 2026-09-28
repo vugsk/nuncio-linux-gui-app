@@ -61,6 +61,7 @@ type Options struct {
 // Server — поддельный сервер.
 type Server struct {
 	ln   net.Listener
+	addr string
 	opt  Options
 	priv *rsa.PrivateKey
 	fp   uint64
@@ -93,12 +94,13 @@ func Start(opt Options) (*Server, error) {
 	s := &Server{ln: ln, opt: opt, priv: priv, keys: map[uint64][]byte{}, calls: map[string]int{},
 		conns: map[*conn]bool{}}
 	s.fp = fingerprint(&priv.PublicKey)
-	go s.accept()
+	s.addr = ln.Addr().String()
+	go s.accept(ln)
 	return s, nil
 }
 
 // Addr — адрес для transport.Dial.
-func (s *Server) Addr() string { return s.ln.Addr().String() }
+func (s *Server) Addr() string { return s.addr }
 
 // PublicKey — модуль (256 байт) и экспонента для core.AddRSAKey.
 func (s *Server) PublicKey() ([]byte, uint32) {
@@ -116,7 +118,35 @@ func (s *Server) Calls(method string) int {
 }
 
 // Close останавливает сервер.
-func (s *Server) Close() error { return s.ln.Close() }
+func (s *Server) Close() error {
+	s.mu.Lock()
+	ln := s.ln
+	s.mu.Unlock()
+	return ln.Close()
+}
+
+// Stop — «выключить сеть»: закрыть приём и все соединения. Restart — включить
+// снова на том же адресе (ключи и аккаунт сохраняются).
+func (s *Server) Stop() {
+	s.mu.Lock()
+	_ = s.ln.Close()
+	for c := range s.conns {
+		_ = c.c.Close()
+	}
+	s.mu.Unlock()
+}
+
+func (s *Server) Restart() error {
+	ln, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.ln = ln
+	s.mu.Unlock()
+	go s.accept(ln)
+	return nil
+}
 
 func tlBytes(b []byte) []byte {
 	var e tlbin.Encoder
@@ -131,9 +161,9 @@ func fingerprint(k *rsa.PublicKey) uint64 {
 	return binary.LittleEndian.Uint64(h[12:20])
 }
 
-func (s *Server) accept() {
+func (s *Server) accept(ln net.Listener) {
 	for {
-		c, err := s.ln.Accept()
+		c, err := ln.Accept()
 		if err != nil {
 			return
 		}

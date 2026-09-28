@@ -2,6 +2,9 @@ package api
 
 import (
 	"testing"
+	"time"
+
+	"nuncio/net/dc"
 
 	pb "nuncio/net/gen"
 	"nuncio/net/internal/fakeserver"
@@ -115,5 +118,36 @@ func TestResumeWithStoredState(t *testing.T) {
 	login(t, h)
 	if h.s.upd.State().GetPts() != 3 {
 		t.Fatalf("pts после входа %d", h.s.upd.State().GetPts())
+	}
+}
+
+// «Выключили сеть на N секунд»: соединение восстанавливается само, пропущенные
+// сообщения приходят через getDifference, без потерь и дублей.
+func TestReconnectAfterOutage(t *testing.T) {
+	dc.KeepMinDelay, dc.KeepMaxDelay = 50*time.Millisecond, 400*time.Millisecond
+	acc := chatAccount()
+	h := newHarness(t, acc)
+	login(t, h)
+	h.srv.Stop()
+	h.next(func(e *pb.Event) bool {
+		return e.GetConnection().GetState() == pb.ConnectionState_WAITING_NETWORK
+	})
+	var want []int32
+	for i := 0; i < 3; i++ { // пока сети нет, сервер «копит» сообщения
+		want = append(want, h.srv.PushMessage(100, "без сети", true))
+	}
+	time.Sleep(time.Second)
+	if err := h.srv.Restart(); err != nil {
+		t.Fatal(err)
+	}
+	h.next(func(e *pb.Event) bool { return e.GetConnection().GetState() == pb.ConnectionState_CONNECTED })
+	got, st := newMessages(t, h, 3)
+	for i, m := range got {
+		if m.GetId() != want[i] {
+			t.Fatalf("после восстановления: %v, ожидались %v", got, want)
+		}
+	}
+	if st.GetPts() != want[2] {
+		t.Fatalf("pts %d", st.GetPts())
 	}
 }

@@ -23,7 +23,7 @@ use domain::{Backend, BackendError, Next};
 use prost::Message;
 
 /// Версия client.proto, которую понимает эта сборка (сверяется с Go).
-pub const PROTO_VERSION: u32 = 3;
+pub const PROTO_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeError {
@@ -109,6 +109,7 @@ pub struct StartParams {
     pub cache_dir: String,
     /// Состояние обновлений из базы (О-5); `None` — новый вход.
     pub update_state: Option<UpdateState>,
+    pub channel_states: Vec<(i64, i32)>,
 }
 
 static STARTED: AtomicBool = AtomicBool::new(false);
@@ -140,6 +141,7 @@ impl GoBackend {
             keyring_app: p.keyring_app.clone(),
             update_state: p.update_state.map(map::state_to),
             cache_dir: p.cache_dir.clone(),
+            channel_states: p.channel_states.iter().map(|&(peer_id, pts)| proto::ChannelState { peer_id, pts }).collect(),
         }
         .encode_to_vec();
         // SAFETY: указатель и длина описывают живой срез на время вызова; Go копирует вход.

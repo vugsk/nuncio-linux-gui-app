@@ -373,6 +373,8 @@ fn start_network(d: &mut Domain) {
         return;
     };
     let update_state = d.db.as_ref().and_then(|db| db.call(|s| s.update_state())).and_then(Result::ok).flatten();
+    let channel_states =
+        d.db.as_ref().and_then(|db| db.call(|s| s.channel_states())).and_then(Result::ok).unwrap_or_default();
     let params = StartParams {
         api_id: creds.api_id,
         api_hash: creds.api_hash,
@@ -388,6 +390,7 @@ fn start_network(d: &mut Domain) {
         keyring_app: std::env::var("NUNCIO_KEYRING_APP").unwrap_or_default(),
         cache_dir: d.paths.cache.display().to_string(),
         update_state,
+        channel_states,
     };
     match GoBackend::start(&params) {
         Ok(b) => {

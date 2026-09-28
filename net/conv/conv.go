@@ -245,5 +245,8 @@ func Dialog(d tl.DialogClass) *pb.Dialog {
 	if v.FolderId != nil {
 		out.Folder = *v.FolderId
 	}
+	if v.Pts != nil {
+		out.Pts = *v.Pts
+	}
 	return out
 }

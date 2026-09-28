@@ -32,6 +32,13 @@ message StartRequest {
   // Состояние обновлений из базы Rust (О-5); пусто — Go возьмёт updates.getState.
   UpdateState update_state = 14;
   string cache_dir = 15;         // ~/.cache/nuncio: аватары и медиа (пишет Go)
+  repeated ChannelState channel_states = 16;  // pts каналов из базы Rust
+}
+
+// pts канала (у каждого канала и супергруппы свой поток обновлений).
+message ChannelState {
+  int64 peer_id = 1;             // помеченный id канала
+  int32 pts = 2;
 }
 
 // Состояние обновлений (pts/qts/seq/date); Rust пишет его одной транзакцией с событиями.
@@ -83,6 +90,7 @@ message Message {
 }
 
 message Dialog {
+  int32 pts = 8;                 // pts канала (для каналов и супергрупп)
   int64 peer_id = 1;
   int32 top_message = 2;
   int32 unread_count = 3;
@@ -100,7 +108,12 @@ message DomainUpdate {
     ReadInbox read_inbox = 4;
     ReadOutbox read_outbox = 5;
     ResetDialogs reset = 6;      // разница слишком велика: перечитать диалоги
+    ResetChannel reset_channel = 7;  // разница канала слишком велика: перечитать его историю
   }
+}
+
+message ResetChannel {
+  int64 peer_id = 1;
 }
 
 message DeleteMessages {
@@ -125,6 +138,7 @@ message UpdatesBatch {
   repeated DomainUpdate updates = 1;
   repeated Peer peers = 2;
   UpdateState state = 3;         // новое состояние: писать в той же транзакции
+  repeated ChannelState channel_states = 4;  // изменившиеся pts каналов — в той же транзакции
 }
 
 message ProxySettings {

@@ -126,6 +126,8 @@ pub enum DomainUpdate {
     ReadOutbox { peer_id: i64, max_id: i32 },
     /// Разница слишком велика: перечитать диалоги.
     Reset,
+    /// Разница канала слишком велика: его история устарела.
+    ResetChannel { peer_id: i64 },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -133,6 +135,8 @@ pub struct UpdatesBatch {
     pub updates: Vec<DomainUpdate>,
     pub peers: Vec<Peer>,
     pub state: Option<UpdateState>,
+    /// pts каналов (помеченный id → pts) — в той же транзакции.
+    pub channel_states: Vec<(i64, i32)>,
 }
 
 /// Команда сетевому слою.

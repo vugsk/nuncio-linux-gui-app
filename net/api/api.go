@@ -36,7 +36,7 @@ import (
 
 // ProtoVersion — версия client.proto, которую понимает эта сборка.
 // Rust передаёт свою в StartRequest; несовпадение — ошибка старта.
-const ProtoVersion = 3
+const ProtoVersion = 4
 
 // QueueSize — предел очереди событий (обратное давление, правило 5).
 const QueueSize = 1024
@@ -79,15 +79,16 @@ type Service struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 
-	req     *pb.StartRequest
-	m       *dc.Manager
-	auth    *auth.Client
-	upd     *updates.Manager
-	resumed bool // первый READY после старта — из файла сессии
-	log     *log.Logger
-	logFile io.Closer
-	ready   bool // связка ключей открыта, сессия восстановлена
-	booting bool
+	req      *pb.StartRequest
+	m        *dc.Manager
+	auth     *auth.Client
+	upd      *updates.Manager
+	resumed  bool               // первый READY после старта — из файла сессии
+	keepStop context.CancelFunc // поддержание соединения, пока вошли
+	log      *log.Logger
+	logFile  io.Closer
+	ready    bool // связка ключей открыта, сессия восстановлена
+	booting  bool
 }
 
 // New создаёт незапущенный сервис.
@@ -272,13 +273,25 @@ func (s *Service) emitAuth(st auth.State) {
 		s.resumed = true
 		s.mu.Unlock()
 		if resumed && s.req.GetUpdateState().GetPts() != 0 {
+			s.upd.SetChannels(s.req.GetChannelStates())
 			s.upd.Start(s.req.GetUpdateState())
 		} else {
 			s.upd.Start(nil)
 		}
+		s.mu.Lock()
+		if s.keepStop == nil {
+			kctx, cancel := context.WithCancel(s.ctx)
+			s.keepStop = cancel
+			s.m.Keep(kctx)
+		}
+		s.mu.Unlock()
 	case auth.StepLoggedOut:
 		s.mu.Lock()
 		s.resumed = true
+		if s.keepStop != nil {
+			s.keepStop()
+			s.keepStop = nil
+		}
 		s.mu.Unlock()
 		s.upd.Stop()
 	}
