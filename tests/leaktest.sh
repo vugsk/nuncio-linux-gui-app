@@ -36,17 +36,25 @@ from Xlib import X, display
 from Xlib.ext import xtest
 
 pid, passes = sys.argv[1], int(sys.argv[2])
+PID = int(pid)
 d = display.Display()
 root = d.screen().root
 
 def find(w):
-    name = w.get_wm_name()
-    if name and "nuncio" in name.lower():
-        return w
+    # Окно нашего процесса (_NET_WM_PID): другое окно nuncio в том же Xvfb
+    # иначе перехватило бы ввод.
+    atom = d.intern_atom("_NET_WM_PID")
+    try:
+        prop = w.get_full_property(atom, X.AnyPropertyType)
+        if prop and int(prop.value[0]) == PID:
+            return w
+    except Exception:
+        pass
     for c in w.query_tree().children:
         r = find(c)
         if r:
             return r
+    return None
 
 win = find(root)
 pos = win.translate_coords(root, 0, 0)

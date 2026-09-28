@@ -25,6 +25,7 @@ env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" SLINT_BACKEND=winit-software NUNCI
   NUNCIO_TEST_DC="127.0.0.1:$PORT" NUNCIO_TEST_RSA="$T/key" NUNCIO_KEYRING_APP=nuncio-composertest \
   NUNCIO_KEYRING_COLLECTION=session NUNCIO_WINDOW_SIZE=1100x800 NUNCIO_BENCH_OPEN=0 \
   "$T/app" > "$T/app.log" 2>&1 &
+APP=$!
 until grep -q "шаг READY" "$T/home/state/net.log" 2>/dev/null; do sleep 0.2; done
 sleep 3
 
@@ -36,18 +37,25 @@ import json, os, subprocess, sys, time
 from Xlib import X, XK, display
 from Xlib.ext import xtest
 
-t, phase = sys.argv[1], sys.argv[2]
+t, phase, PID = sys.argv[1], sys.argv[2], int(sys.argv[3])
 d = display.Display()
 root = d.screen().root
 
 def find(w):
-    name = w.get_wm_name()
-    if name and "nuncio" in name.lower():
-        return w
+    # Окно нашего процесса (_NET_WM_PID): другое окно nuncio в том же Xvfb
+    # иначе перехватило бы ввод.
+    atom = d.intern_atom("_NET_WM_PID")
+    try:
+        prop = w.get_full_property(atom, X.AnyPropertyType)
+        if prop and int(prop.value[0]) == PID:
+            return w
+    except Exception:
+        pass
     for c in w.query_tree().children:
         r = find(c)
         if r:
             return r
+    return None
 
 win = find(root)
 g = win.get_geometry()
@@ -129,13 +137,13 @@ elif phase == "3":
     key("Return")
     time.sleep(2)
 PY
-run() { DISPLAY="$DISPLAY_NUM" python3 "$T/x.py" "$T" "$1"; }
+run() { DISPLAY="$DISPLAY_NUM" python3 "$T/x.py" "$T" "$1" "$APP"; }
 run 1
 setxkbmap -display "$DISPLAY_NUM" -layout ru; sleep 0.5
 run 2
 setxkbmap -display "$DISPLAY_NUM" -layout us; sleep 0.5
 run 3
-kill -TERM "$(pgrep -f "$T/app")" 2>/dev/null || true
+kill -TERM $APP 2>/dev/null || true
 sleep 1
 kill -TERM $SRV; wait $SRV 2>/dev/null || true
 

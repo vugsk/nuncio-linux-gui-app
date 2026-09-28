@@ -26,22 +26,29 @@ env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" SLINT_BACKEND=winit-software NUNCI
   NUNCIO_TEST_DC="127.0.0.1:$PORT" NUNCIO_TEST_RSA="$T/key" NUNCIO_KEYRING_APP=nuncio-scrolltest \
   NUNCIO_KEYRING_COLLECTION=session NUNCIO_WINDOW_SIZE=1100x800 NUNCIO_BENCH_OPEN=0 \
   "$T/app" > "$T/app.log" 2>&1 &
+APP=$!
 until grep -q "шаг READY" "$T/home/state/net.log" 2>/dev/null; do sleep 0.2; done
 sleep 4
 
-DISPLAY="$DISPLAY_NUM" python3 - "$T" <<'PY'
+DISPLAY="$DISPLAY_NUM" python3 - "$T" "$APP" <<'PY'
 import sqlite3, subprocess, sys, time
 from Xlib import X, display
 from Xlib.ext import xtest
 
-t = sys.argv[1]
+t, PID = sys.argv[1], int(sys.argv[2])
 d = display.Display()
 root = d.screen().root
 
 def find(w):
-    name = w.get_wm_name()
-    if name and "nuncio" in name.lower():
-        return w
+    # Окно нашего процесса (_NET_WM_PID): другое окно nuncio в том же Xvfb
+    # иначе перехватило бы ввод.
+    atom = d.intern_atom("_NET_WM_PID")
+    try:
+        prop = w.get_full_property(atom, X.AnyPropertyType)
+        if prop and int(prop.value[0]) == PID:
+            return w
+    except Exception:
+        pass
     for c in w.query_tree().children:
         r = find(c)
         if r:
@@ -119,7 +126,7 @@ shot("4-bottom-again")
 print("ИТОГ:", "прокрутка и окно в порядке" if ok else "ОШИБКА")
 sys.exit(0 if ok else 1)
 PY
-kill -TERM "$(pgrep -f "$T/app")" 2>/dev/null || true
+kill -TERM $APP 2>/dev/null || true
 sleep 1
 grep -E "ошибка|panic|ERROR" "$T/app.log" "$T/home/state/"*.log | head -5 || true
 echo "результат: $T"

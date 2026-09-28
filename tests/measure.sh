@@ -20,6 +20,8 @@ for size in 1100x800 1900x1000; do
       NUNCIO_WINDOW_SIZE="$size" NUNCIO_BENCH_OPEN="$OPEN" NUNCIO_BENCH_FRAMES=60 \
       "$ROOT/target/release/nuncio" > "$T/app.log" 2>&1 &
     APP=$!
+    # Процесс завершается при любом выходе из скрипта (иначе останется работать на копии данных).
+    trap 'kill -TERM $APP 2>/dev/null || true' EXIT
     for _ in $(seq 80); do
       grep -q "кадр:" "$T/home/state/nuncio.log" 2>/dev/null && break
       sleep 0.5
