@@ -64,6 +64,8 @@ fn message_from(m: proto::Message) -> Message {
         service: m.service,
         random_id: m.random_id,
         edit_date: m.edit_date,
+        send_state: 0,
+        send_error: String::new(),
     }
 }
 

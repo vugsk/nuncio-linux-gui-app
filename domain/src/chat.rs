@@ -31,6 +31,16 @@ pub enum DbOp {
     ReloadRows,
     /// Перечитать окно истории открытого чата (результат — `set_history`).
     ReloadHistory { peer_id: i64, limit: usize },
+    /// Очередь отправки (О-9).
+    Enqueue { peer_id: i64, text: String, reply_to: i32, random_id: i64 },
+    /// Истёкшие — в «ошибку», готовые — в `outbox_ready` (результат — `set_outbox_ready`).
+    PumpOutbox,
+    OutboxSending { local_id: i64 },
+    OutboxDone { local_id: i64, sent: Option<Message> },
+    OutboxRequeue { local_id: i64, next_try: i64 },
+    OutboxFail { local_id: i64, error: String },
+    OutboxRetry { local_id: i64 },
+    OutboxDelete { local_id: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,13 +57,16 @@ pub enum ChatIntent {
     Send,
     LoadOlder,
     Tick(i64),
+    /// «Повторить» и «Удалить» у неотправленного (Чт-6).
+    RetrySend(i64),
+    DeleteUnsent(i64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pending {
     Dialogs,
     History { peer_id: i64, older: bool },
-    Send,
+    Outbox { local_id: i64 },
     Avatar { peer_id: i64 },
     Other,
 }
@@ -174,7 +187,10 @@ impl ChatModel {
     pub fn intent(&mut self, i: ChatIntent) -> Vec<ChatEffect> {
         let mut out = Vec::new();
         match i {
-            ChatIntent::Tick(now) => self.now = now,
+            ChatIntent::Tick(now) => {
+                self.now = now;
+                out.push(ChatEffect::Db(DbOp::PumpOutbox));
+            }
             ChatIntent::OpenChat(peer_id) => {
                 if self.open == Some(peer_id) {
                     return out;
@@ -206,16 +222,29 @@ impl ChatModel {
             }
             ChatIntent::ComposerEdited(t) => self.composer = t,
             ChatIntent::Send => {
+                // Сразу в очередь (О-9): сообщение видно в чате как «отправляется».
                 let text = self.composer.trim().to_string();
                 let Some(peer_id) = self.open else { return out };
-                if text.is_empty() || self.sending {
+                if text.is_empty() {
                     return out;
                 }
-                let Some(peer) = self.peer_ref(peer_id) else { return out };
-                self.sending = true;
+                self.composer.clear();
                 self.error = None;
                 let random_id = self.random_id();
-                self.send(Command::SendMessage { peer, text, random_id }, Pending::Send, &mut out);
+                out.push(ChatEffect::Db(DbOp::Enqueue { peer_id, text, reply_to: 0, random_id }));
+                out.push(ChatEffect::Db(DbOp::ReloadHistory { peer_id, limit: self.history_limit }));
+                out.push(ChatEffect::Db(DbOp::ReloadRows));
+                out.push(ChatEffect::Db(DbOp::PumpOutbox));
+            }
+            ChatIntent::RetrySend(local_id) => {
+                out.push(ChatEffect::Db(DbOp::OutboxRetry { local_id }));
+                self.reload_open(&mut out);
+                out.push(ChatEffect::Db(DbOp::PumpOutbox));
+            }
+            ChatIntent::DeleteUnsent(local_id) => {
+                out.push(ChatEffect::Db(DbOp::OutboxDelete { local_id }));
+                self.reload_open(&mut out);
+                out.push(ChatEffect::Db(DbOp::ReloadRows));
             }
             ChatIntent::LoadOlder => {
                 let Some(peer_id) = self.open else { return out };
@@ -233,9 +262,34 @@ impl ChatModel {
         out
     }
 
+    fn reload_open(&self, out: &mut Vec<ChatEffect>) {
+        if let Some(peer_id) = self.open {
+            out.push(ChatEffect::Db(DbOp::ReloadHistory { peer_id, limit: self.history_limit }));
+        }
+    }
+
+    /// Результат `PumpOutbox`: готовые к отправке (по одному на чат).
+    pub fn set_outbox_ready(&mut self, items: Vec<crate::outbox::OutboxItem>) -> Vec<ChatEffect> {
+        let mut out = Vec::new();
+        for it in items {
+            if self.pending.values().any(|p| *p == Pending::Outbox { local_id: it.local_id }) {
+                continue;
+            }
+            let peer = PeerRef { id: it.peer_id, access_hash: it.access_hash };
+            out.push(ChatEffect::Db(DbOp::OutboxSending { local_id: it.local_id }));
+            self.send(Command::SendMessage { peer, text: it.text, random_id: it.random_id },
+                Pending::Outbox { local_id: it.local_id }, &mut out);
+        }
+        if !out.is_empty() {
+            self.reload_open(&mut out);
+        }
+        out
+    }
+
     pub fn event(&mut self, e: &Event) -> Vec<ChatEffect> {
         let mut out = Vec::new();
         match e {
+            Event::Connection(crate::model::ConnState::Connected) => out.push(ChatEffect::Db(DbOp::PumpOutbox)),
             Event::Updates(b) => {
                 out.push(ChatEffect::Db(DbOp::ApplyBatch(b.clone())));
                 out.push(ChatEffect::Db(DbOp::ReloadRows));
@@ -319,23 +373,33 @@ impl ChatModel {
                     self.error = Some(e.text.clone());
                 }
             }
-            Pending::Send => {
-                self.sending = false;
+            Pending::Outbox { local_id } => {
+                use crate::model::ErrorKind;
                 match (&r.error, &r.payload) {
                     (None, Payload::Sent(m)) => {
-                        self.composer.clear();
-                        // Сообщение уже пришло пачкой обновлений; на случай иного пути — сохраняем.
-                        if m.id != 0 {
-                            out.push(ChatEffect::Db(DbOp::SaveHistory { messages: vec![m.clone()], peers: vec![] }));
-                        }
-                        if let Some(peer_id) = self.open {
-                            out.push(ChatEffect::Db(DbOp::ReloadHistory { peer_id, limit: self.history_limit }));
-                        }
-                        out.push(ChatEffect::Db(DbOp::ReloadRows));
+                        out.push(ChatEffect::Db(DbOp::OutboxDone { local_id, sent: Some(m.clone()) }));
                     }
-                    (Some(e), _) => self.error = Some(e.text.clone()),
-                    _ => {}
+                    (None, _) => out.push(ChatEffect::Db(DbOp::OutboxDone { local_id, sent: None })),
+                    // Первая попытка уже дошла (тот же random_id): дубля нет, сообщение придёт обновлением.
+                    (Some(e), _) if e.text == "RANDOM_ID_DUPLICATE" => {
+                        out.push(ChatEffect::Db(DbOp::OutboxDone { local_id, sent: None }));
+                    }
+                    (Some(e), _) if e.kind == ErrorKind::Flood => out.push(ChatEffect::Db(DbOp::OutboxRequeue {
+                        local_id,
+                        next_try: self.now + i64::from(e.retry_after.max(1)),
+                    })),
+                    (Some(e), _)
+                        if matches!(e.kind, ErrorKind::Network | ErrorKind::Cancelled | ErrorKind::Internal)
+                            || e.code == 500 || e.code == -500 =>
+                    {
+                        // Сеть: остаётся в очереди, повтор по подключению или таймеру.
+                        out.push(ChatEffect::Db(DbOp::OutboxRequeue { local_id, next_try: self.now + 5 }));
+                    }
+                    (Some(e), _) => out.push(ChatEffect::Db(DbOp::OutboxFail { local_id, error: e.text.clone() })),
                 }
+                self.reload_open(out);
+                out.push(ChatEffect::Db(DbOp::ReloadRows));
+                out.push(ChatEffect::Db(DbOp::PumpOutbox));
             }
             Pending::Avatar { peer_id } => {
                 self.avatars_inflight = self.avatars_inflight.saturating_sub(1);
@@ -442,25 +506,59 @@ mod tests {
     }
 
     #[test]
-    fn send_uses_unique_random_ids_and_clears_on_success() {
-        let mut m = ChatModel::new(1, "ru", 0);
+    fn send_goes_through_outbox() {
+        use crate::outbox::OutboxItem;
+        let mut m = ChatModel::new(1, "ru", 100);
         m.set_rows(vec![row(10, 0, 1, 0)]);
         m.intent(ChatIntent::OpenChat(10));
         m.intent(ChatIntent::ComposerEdited("   ".into()));
-        assert!(sends(&m.intent(ChatIntent::Send)).is_empty(), "пустое не отправляется");
+        assert!(m.intent(ChatIntent::Send).is_empty(), "пустое не отправляется");
         m.intent(ChatIntent::ComposerEdited(" привет ".into()));
-        let (id, cmd) = sends(&m.intent(ChatIntent::Send))[0].clone();
-        let Command::SendMessage { text, random_id: r1, .. } = cmd else { panic!() };
+        let fx = m.intent(ChatIntent::Send);
+        let Some(ChatEffect::Db(DbOp::Enqueue { peer_id: 10, text, random_id: r1, .. })) = fx.first() else {
+            panic!("{fx:?}")
+        };
         assert_eq!(text, "привет");
-        assert!(sends(&m.intent(ChatIntent::Send)).is_empty(), "двойное нажатие во время отправки");
-        m.event(&Event::Result(CommandResult { cmd_id: id, error: Some(ErrorInfo { kind: ErrorKind::Network, code: 0,
-            text: "нет сети".into(), retry_after: 0 }), payload: Payload::None }));
-        assert_eq!((m.sending, m.composer.as_str()), (false, " привет "), "текст не теряется при ошибке");
-        let (id, cmd) = sends(&m.intent(ChatIntent::Send))[0].clone();
-        let Command::SendMessage { random_id: r2, .. } = cmd else { panic!() };
-        assert_ne!(r1, r2);
-        m.event(&ok(id, Payload::Sent(Message { peer_id: 10, id: 5, out: true, ..Default::default() })));
-        assert!(m.composer.is_empty());
+        assert!(m.composer.is_empty(), "поле очищается сразу");
+        assert!(fx.contains(&ChatEffect::Db(DbOp::PumpOutbox)));
+        m.intent(ChatIntent::ComposerEdited("ещё".into()));
+        let Some(ChatEffect::Db(DbOp::Enqueue { random_id: r2, .. })) = m.intent(ChatIntent::Send).first().cloned() else {
+            panic!()
+        };
+        assert_ne!(*r1, r2);
+
+        // Очередь: отправка готовых, повтор одного и того же не дублируется.
+        let item = |local_id: i64| OutboxItem { local_id, peer_id: 10, access_hash: 30, random_id: 5, text: "привет".into(), reply_to: 0 };
+        let fx = m.set_outbox_ready(vec![item(1)]);
+        assert_eq!(fx[0], ChatEffect::Db(DbOp::OutboxSending { local_id: 1 }));
+        let (id, cmd) = sends(&fx)[0].clone();
+        assert_eq!(cmd, Command::SendMessage { peer: PeerRef { id: 10, access_hash: 30 }, text: "привет".into(), random_id: 5 });
+        assert!(sends(&m.set_outbox_ready(vec![item(1)])).is_empty(), "уже отправляется");
+
+        let err = |id: u64, kind: ErrorKind, code: i32, text: &str| {
+            Event::Result(CommandResult { cmd_id: id, error: Some(ErrorInfo { kind, code, text: text.into(), retry_after: 7 }),
+                payload: Payload::None })
+        };
+        // Сеть — снова в очередь.
+        let fx = m.event(&err(id, ErrorKind::Network, 0, "нет сети"));
+        assert!(fx.contains(&ChatEffect::Db(DbOp::OutboxRequeue { local_id: 1, next_try: 105 })));
+        // FLOOD_WAIT — через retry_after.
+        let (id, _) = sends(&m.set_outbox_ready(vec![item(1)]))[0].clone();
+        assert!(m.event(&err(id, ErrorKind::Flood, 420, "FLOOD_WAIT")).contains(&ChatEffect::Db(DbOp::OutboxRequeue { local_id: 1, next_try: 107 })));
+        // Постоянная ошибка — «не отправлено».
+        let (id, _) = sends(&m.set_outbox_ready(vec![item(1)]))[0].clone();
+        assert!(m.event(&err(id, ErrorKind::Rpc, 403, "CHAT_WRITE_FORBIDDEN")).contains(&ChatEffect::Db(DbOp::OutboxFail {
+            local_id: 1, error: "CHAT_WRITE_FORBIDDEN".into() })));
+        // Дубль random_id — первая попытка дошла.
+        let (id, _) = sends(&m.set_outbox_ready(vec![item(1)]))[0].clone();
+        assert!(m.event(&err(id, ErrorKind::Rpc, 400, "RANDOM_ID_DUPLICATE")).contains(&ChatEffect::Db(DbOp::OutboxDone { local_id: 1, sent: None })));
+        // Успех.
+        let (id, _) = sends(&m.set_outbox_ready(vec![item(2)]))[0].clone();
+        let sent = Message { peer_id: 10, id: 9, out: true, ..Default::default() };
+        assert!(m.event(&ok(id, Payload::Sent(sent.clone()))).contains(&ChatEffect::Db(DbOp::OutboxDone { local_id: 2, sent: Some(sent) })));
+        // Подключение и таймер будят очередь.
+        assert!(m.event(&Event::Connection(crate::model::ConnState::Connected)).contains(&ChatEffect::Db(DbOp::PumpOutbox)));
+        assert!(m.intent(ChatIntent::Tick(200)).contains(&ChatEffect::Db(DbOp::PumpOutbox)));
     }
 
     #[test]

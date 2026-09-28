@@ -8,6 +8,7 @@ pub mod chatstore;
 pub mod config;
 pub mod login;
 pub mod model;
+pub mod outbox;
 pub mod phone;
 pub mod store;
 pub mod timefmt;

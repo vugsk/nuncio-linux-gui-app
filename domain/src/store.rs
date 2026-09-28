@@ -83,6 +83,13 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE messages ADD COLUMN random_id INTEGER NOT NULL DEFAULT 0;
     CREATE INDEX dialogs_order ON dialogs (folder, pinned DESC, top_date DESC);
     "#,
+    // 3 (В5): очередь отправки (О-9, О-12): состояние, ответ, время следующей попытки.
+    r#"
+    ALTER TABLE outbox ADD COLUMN reply_to INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE outbox ADD COLUMN state INTEGER NOT NULL DEFAULT 0;     -- 0 в очереди, 1 отправляется, 2 ошибка
+    ALTER TABLE outbox ADD COLUMN next_try INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX outbox_peer ON outbox (peer_id, local_id);
+    "#,
 ];
 
 /// Текущая версия схемы.

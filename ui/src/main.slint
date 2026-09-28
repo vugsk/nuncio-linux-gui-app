@@ -35,6 +35,11 @@ export struct MessageItem {
     edited: bool,
     read: bool,         // своё прочитано собеседником
     first-in-series: bool,
+    // Очередь отправки (Чт-6): 0 отправлено, 1 в очереди, 2 отправляется, 3 не отправлено.
+    send-state: int,
+    local-id: string,
+    send-error: string, // причина «не отправлено» (уже на языке интерфейса)
+    last-read: bool,    // последнее своё и прочитано — «прочитано» видно всегда (Чт-6)
 }
 
 export global Chat {
@@ -60,6 +65,8 @@ export global Chat {
     callback send();
     callback composer-edited(string);
     callback load-older();
+    callback retry-send(string);
+    callback delete-unsent(string);
     in-out property <bool> confirm-logout;
     callback log-out();
 }
@@ -271,52 +278,124 @@ component DialogList inherits Rectangle {
     }
 }
 
+// Время и галочки — только при наведении, снаружи пузыря (Чт-4, Чт-5);
+// «изм.», очередь отправки и «прочитано» у последнего своего — всегда (Чт-6).
+component Meta inherits HorizontalLayout {
+    in property <MessageItem> item;
+    in property <bool> hover;
+    spacing: 3px;
+    alignment: end;
+    if root.item.send-state == 1 || root.item.send-state == 2: Path {
+        // часы
+        width: 11px;
+        height: 11px;
+        y: 2px;
+        stroke: Theme.text-muted;
+        stroke-width: 1.2px;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 6 1 A 5 5 0 1 1 5.99 1 Z M 6 3 L 6 6 L 8 7.5";
+    }
+    if root.item.send-state == 3: Rectangle {
+        width: 14px;
+        height: 14px;
+        y: 1px;
+        border-radius: 7px;
+        background: Theme.error;
+        Text { text: "!"; color: #1e1e1e; font-size: 10px; font-weight: 700; }
+    }
+    if root.hover && root.item.send-state == 0: Text {
+        text: root.item.time;
+        color: Theme.text-muted;
+        font-size: 10px;
+        vertical-alignment: bottom;
+    }
+    if root.item.out && root.item.send-state == 0 && (root.hover || root.item.last-read): Text {
+        text: root.item.read ? "✓✓" : "✓";
+        color: root.item.read ? Theme.link : Theme.text-muted;
+        font-size: 10px;
+        vertical-alignment: bottom;
+    }
+}
+
 component Bubble inherits HorizontalLayout {
     in property <MessageItem> item;
+    in property <bool> hover;
     alignment: item.out ? end : start;
     padding-left: 12px;
     padding-right: 12px;
-    Rectangle {
-        max-width: min(480px, root.width * 0.75);
-        background: root.item.out ? Theme.accent : Theme.row-bg;
-        border-radius: 10px;
-        border-width: 1px;
-        border-color: root.item.out ? Theme.accent-border : Theme.card-border;
-        VerticalLayout {
-            padding: 8px;
-            padding-left: 10px;
-            padding-right: 10px;
+    spacing: 6px;
+    if root.item.out: VerticalLayout {
+        alignment: start;
+        padding-top: bubble-box.height - 18px;
+        Meta { item: root.item; hover: root.hover; }
+    }
+    VerticalLayout {
+        spacing: 3px;
+        bubble-box := Rectangle {
+            max-width: min(480px, root.width * 0.75);
+            background: root.item.send-state == 3 ? #3a2530 : root.item.out ? Theme.accent : Theme.row-bg;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: root.item.send-state == 3 ? Theme.error : root.item.out ? Theme.accent-border : Theme.card-border;
+            VerticalLayout {
+                padding: 8px;
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 2px;
+                if root.item.sender != "" && root.item.first-in-series: Text {
+                    text: root.item.sender;
+                    color: root.item.sender-color;
+                    font-size: 12px;
+                    font-weight: 600;
+                }
+                if root.item.media != "": Text {
+                    text: root.item.media;
+                    color: Theme.link;
+                    font-size: 13px;
+                    font-italic: true;
+                }
+                if root.item.text != "": Text {
+                    text: root.item.text;
+                    color: Theme.text;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+                if root.item.edited: Text {
+                    text: @tr("edited");
+                    color: Theme.text-muted;
+                    font-size: 10px;
+                    horizontal-alignment: right;
+                }
+            }
+        }
+        if root.item.send-state == 1 || root.item.send-state == 2: Text {
+            text: @tr("sending…");
+            color: Theme.text-muted;
+            font-size: 10px;
+            horizontal-alignment: root.item.out ? right : left;
+        }
+        if root.item.send-state == 3: VerticalLayout {
             spacing: 2px;
-            if root.item.sender != "" && root.item.first-in-series: Text {
-                text: root.item.sender;
-                color: root.item.sender-color;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            if root.item.media != "": Text {
-                text: root.item.media;
-                color: Theme.link;
-                font-size: 13px;
-                font-italic: true;
-            }
-            if root.item.text != "": Text {
-                text: root.item.text;
-                color: Theme.text;
-                font-size: 13px;
+            Text {
+                text: root.item.send-error;
+                color: Theme.error;
+                font-size: 10px;
+                horizontal-alignment: right;
                 wrap: word-wrap;
             }
             HorizontalLayout {
                 alignment: end;
-                spacing: 4px;
-                if root.item.edited: Text { text: @tr("edited"); color: Theme.text-muted; font-size: 10px; }
-                Text { text: root.item.time; color: #9fb0c0; font-size: 10px; }
-                if root.item.out: Text {
-                    text: root.item.read ? "✓✓" : "✓";
-                    color: #9fb0c0;
-                    font-size: 10px;
-                }
+                spacing: 12px;
+                Link { text: @tr("Retry"); font-size: 11px; clicked => { Chat.retry-send(root.item.local-id); } }
+                Link { text: @tr("Delete"); font-size: 11px; clicked => { Chat.delete-unsent(root.item.local-id); } }
             }
         }
+    }
+    if !root.item.out: VerticalLayout {
+        alignment: start;
+        padding-top: bubble-box.height - 18px;
+        Meta { item: root.item; hover: root.hover; }
     }
 }
 
@@ -357,7 +436,11 @@ component MessageRow inherits VerticalLayout {
             }
         }
     }
-    if !root.item.service: Bubble { item: root.item; }
+    if !root.item.service: Rectangle {
+        height: bubble.preferred-height;
+        hover-area := TouchArea { }
+        bubble := Bubble { width: 100%; item: root.item; hover: hover-area.has-hover; }
+    }
 }
 
 component ChatPane inherits Rectangle {

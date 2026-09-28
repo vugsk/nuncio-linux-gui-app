@@ -241,6 +241,8 @@ fn chat_model(open: Option<i64>) -> domain::chat::ChatModel {
             msg(6, 1, true, 1200, "Собираю сейчас, ссылка ниже"),
             Message { edit_date: 5, ..msg(7, 1, true, 1100, "Готово, проверяйте") },
             Message { media: "photo".into(), ..msg(8, 8, false, 600, "Вид с балкона") },
+            Message { send_state: 1, ..msg(-1, 1, true, 30, "тест очереди отправки") },
+            Message { send_state: 3, send_error: "expired".into(), ..msg(-2, 1, true, 20, "не ушло, нет связи") },
         ];
         let senders = std::collections::HashMap::from([(7, "Пётр".to_string()), (8, "Мария".to_string())]);
         m.set_history(id, h, senders);

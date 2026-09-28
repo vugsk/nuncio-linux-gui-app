@@ -104,7 +104,8 @@ fn peer_from_row(r: &Row, o: usize) -> rusqlite::Result<Peer> {
     })
 }
 
-const MSG_COLS: &str = "peer_id, id, date, sender_id, text, reply_to, media_ref, out, service, edit_date, random_id";
+const MSG_COLS: &str =
+    "peer_id, id, date, sender_id, text, reply_to, media_ref, out, service, edit_date, random_id, send_state";
 
 fn message_from_row(r: &Row, o: usize) -> rusqlite::Result<Message> {
     Ok(Message {
@@ -119,6 +120,8 @@ fn message_from_row(r: &Row, o: usize) -> rusqlite::Result<Message> {
         service: r.get(o + 8)?,
         edit_date: r.get(o + 9)?,
         random_id: r.get(o + 10)?,
+        send_state: r.get(o + 11)?,
+        send_error: String::new(),
     })
 }
 
@@ -281,11 +284,21 @@ impl Store {
 
     /// Окно истории: `limit` сообщений до `before` (не включая), по возрастанию id.
     pub fn history(&self, peer_id: i64, before: Option<i32>, limit: usize) -> Result<Vec<Message>, StoreError> {
+        // Отправленные сообщения идут по id; локальные (очередь, id < 0) — в конце
+        // по времени постановки: порядок как у отправки.
         let mut st = self.conn().prepare_cached(&format!(
-            "SELECT {MSG_COLS} FROM messages WHERE peer_id = ?1 AND id < ?2 ORDER BY id DESC LIMIT ?3"
+            "SELECT {}, COALESCE(o.error, '') FROM messages m
+             LEFT JOIN outbox o ON o.local_id = -m.id AND m.id < 0
+             WHERE m.peer_id = ?1 AND ((m.id > 0 AND m.id < ?2) OR (m.id < 0 AND ?2 = 2147483647))
+             ORDER BY (m.id < 0) DESC, CASE WHEN m.id < 0 THEN m.id ELSE -m.id END ASC LIMIT ?3",
+            MSG_COLS.split(", ").map(|c| format!("m.{c}")).collect::<Vec<_>>().join(", ")
         ))?;
         let mut v: Vec<Message> = st
-            .query_map(params![peer_id, before.unwrap_or(i32::MAX), limit as i64], |r| message_from_row(r, 0))?
+            .query_map(params![peer_id, before.unwrap_or(i32::MAX), limit as i64], |r| {
+                let mut m = message_from_row(r, 0)?;
+                m.send_error = r.get(12)?;
+                Ok(m)
+            })?
             .collect::<Result<_, _>>()?;
         v.reverse();
         Ok(v)

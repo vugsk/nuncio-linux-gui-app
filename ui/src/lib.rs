@@ -395,6 +395,22 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
         let i = i.clone();
         chat.on_log_out(move || i(Intent::LogOut));
     }
+    {
+        let s = send.clone();
+        chat.on_retry_send(move |id| {
+            if let Ok(id) = id.parse() {
+                s(Action::Chat(ChatIntent::RetrySend(id)));
+            }
+        });
+    }
+    {
+        let s = send.clone();
+        chat.on_delete_unsent(move |id| {
+            if let Ok(id) = id.parse() {
+                s(Action::Chat(ChatIntent::DeleteUnsent(id)));
+            }
+        });
+    }
 
     let shell = app.global::<Shell>();
     {

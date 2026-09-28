@@ -149,6 +149,24 @@ impl Domain {
                         }
                     }
                     ChatEffect::Db(DbOp::ReloadRows) => rows = true,
+                    ChatEffect::Db(DbOp::PumpOutbox) => {
+                        let now = now();
+                        let ready = self.db.as_ref().and_then(|db| {
+                            db.call(move |s| {
+                                s.outbox_expire(now, domain::outbox::TTL_SECS)?;
+                                s.outbox_ready(now)
+                            })
+                        });
+                        match ready {
+                            Some(Ok(items)) => {
+                                if let Some(chat) = self.chat.as_mut() {
+                                    queue.extend(chat.set_outbox_ready(items));
+                                }
+                            }
+                            Some(Err(e)) => log::error!("очередь отправки: {e}"),
+                            None => {}
+                        }
+                    }
                     ChatEffect::Db(DbOp::ReloadHistory { peer_id, limit }) => history = Some((peer_id, limit)),
                     ChatEffect::Db(op) => self.db_write(op),
                 }
@@ -210,7 +228,19 @@ impl Domain {
 
     fn db_write(&self, op: DbOp) {
         let Some(db) = &self.db else { return };
+        let self_id = self.chat.as_ref().map(|c| c.self_id).unwrap_or(0);
+        let now = now();
         let res = db.call(move |s| match op {
+            DbOp::Enqueue { peer_id, text, reply_to, random_id } => {
+                s.outbox_enqueue(peer_id, &text, reply_to, random_id, self_id, now).map(|_| ())
+            }
+            DbOp::OutboxSending { local_id } => s.outbox_sending(local_id),
+            DbOp::OutboxDone { local_id, sent } => s.outbox_done(local_id, sent.as_ref()),
+            DbOp::OutboxRequeue { local_id, next_try } => s.outbox_requeue(local_id, next_try),
+            DbOp::OutboxFail { local_id, error } => s.outbox_fail(local_id, &error),
+            DbOp::OutboxRetry { local_id } => s.outbox_retry(local_id, now),
+            DbOp::OutboxDelete { local_id } => s.outbox_delete(local_id),
+            DbOp::PumpOutbox => Ok(()),
             DbOp::SaveDialogs { dialogs, messages, peers } => s.save_dialogs(&dialogs, &messages, &peers),
             DbOp::SaveHistory { messages, peers } => s.save_history(&messages, &peers),
             DbOp::ApplyBatch(b) => s.apply_batch(&b).map(|_| ()),
@@ -423,11 +453,21 @@ fn pump(b: Arc<dyn Backend>) {
 fn domain_loop(mut d: Domain, rx: mpsc::Receiver<Msg>) {
     d.publish(Some(d.model.lang.clone()));
     while !d.quit {
-        let wait = if d.model.needs_tick() { Duration::from_secs(1) } else { Duration::from_secs(30) };
+        let wait = if d.model.needs_tick() {
+            Duration::from_secs(1)
+        } else if d.chat.is_some() {
+            Duration::from_secs(10) // очередь отправки и время в списке
+        } else {
+            Duration::from_secs(30)
+        };
         match rx.recv_timeout(wait) {
             Ok(msg) => d.handle(msg),
             Err(RecvTimeoutError::Timeout) => {
                 d.model.now = now();
+                if let Some(c) = d.chat.as_mut() {
+                    let fx = c.intent(domain::chat::ChatIntent::Tick(d.model.now));
+                    d.run_chat(fx);
+                }
                 d.publish(None);
             }
             Err(RecvTimeoutError::Disconnected) => break,
@@ -495,6 +535,12 @@ fn main() {
     };
     match Store::open(&paths.database()) {
         Ok(s) => {
+            // После сбоя «отправляется» → «в очередь» (тот же random_id, дубля не будет).
+            match s.outbox_recover() {
+                Ok(n) if n > 0 => log::info!("очередь отправки: {n} сообщений возвращены в очередь"),
+                Err(e) => log::error!("очередь отправки: {e}"),
+                _ => {}
+            }
             d.db = Some(DbThread::spawn(s));
             start_network(&mut d);
         }

@@ -94,6 +94,10 @@ pub struct Message {
     pub service: String,
     pub random_id: i64,
     pub edit_date: i64,
+    /// Очередь отправки (О-9): 0 отправлено, 1 в очереди, 2 отправляется, 3 ошибка.
+    pub send_state: i32,
+    /// Причина ошибки отправки (`expired` — истёк срок, О-12).
+    pub send_error: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

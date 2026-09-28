@@ -70,6 +70,27 @@ pub fn service_label(kind: &str, ru: bool) -> &'static str {
     }
 }
 
+/// Причина «не отправлено» (Чт-6) на языке интерфейса.
+pub fn send_error_label(err: &str, ru: bool) -> String {
+    match (err, ru) {
+        ("", _) => String::new(),
+        ("expired", true) => "Не отправлено: истёк срок".into(),
+        ("expired", false) => "Not sent: expired".into(),
+        ("CHAT_WRITE_FORBIDDEN" | "CHAT_RESTRICTED" | "USER_BANNED_IN_CHANNEL", true) => {
+            "Не отправлено: нет прав писать в этот чат".into()
+        }
+        ("CHAT_WRITE_FORBIDDEN" | "CHAT_RESTRICTED" | "USER_BANNED_IN_CHANNEL", false) => {
+            "Not sent: you can't write here".into()
+        }
+        ("MESSAGE_TOO_LONG", true) => "Не отправлено: слишком длинное сообщение".into(),
+        ("MESSAGE_TOO_LONG", false) => "Not sent: message is too long".into(),
+        ("PEER_ID_INVALID" | "USER_IS_BLOCKED" | "YOU_BLOCKED_USER", true) => "Не отправлено: чат недоступен".into(),
+        ("PEER_ID_INVALID" | "USER_IS_BLOCKED" | "YOU_BLOCKED_USER", false) => "Not sent: chat unavailable".into(),
+        (e, true) => format!("Не отправлено: {e}"),
+        (e, false) => format!("Not sent: {e}"),
+    }
+}
+
 /// Имя собеседника: своё — «Избранное» (Дз-12), удалённый — «Удалённый аккаунт».
 pub fn peer_name(p: &Peer, ru: bool) -> String {
     if p.is_self {
@@ -252,6 +273,8 @@ pub fn message_items(
     let ru = lang == "ru";
     let mut out = Vec::with_capacity(history.len());
     let mut prev: Option<&Message> = None;
+    // Последнее своё отправленное: у него «прочитано» видно всегда (Чт-6).
+    let last_out = history.iter().rev().find(|m| m.out && m.send_state == 0).map(|m| m.id);
     for msg in history {
         let new_day = prev.is_none_or(|p| timefmt::day_key(p.date) != timefmt::day_key(msg.date));
         let first = new_day
@@ -274,6 +297,10 @@ pub fn message_items(
             edited: msg.edit_date != 0,
             read: msg.out && msg.id <= read_out,
             first_in_series: first,
+            send_state: msg.send_state,
+            local_id: if msg.id < 0 { (-i64::from(msg.id)).to_string().into() } else { "".into() },
+            send_error: send_error_label(&msg.send_error, ru).into(),
+            last_read: Some(msg.id) == last_out && msg.id <= read_out,
         });
         prev = Some(msg);
     }

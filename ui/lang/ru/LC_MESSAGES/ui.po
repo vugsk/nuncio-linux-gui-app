@@ -300,3 +300,9 @@ msgstr "Отправить"
 
 msgid "Write a message…"
 msgstr "Написать сообщение…"
+
+msgid "sending…"
+msgstr "отправляется…"
+
+msgid "Delete"
+msgstr "Удалить"
