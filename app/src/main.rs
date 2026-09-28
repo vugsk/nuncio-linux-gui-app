@@ -163,8 +163,17 @@ impl Domain {
                 for r in &list {
                     self.decode_avatar(&r.avatar_path);
                 }
+                if self.chat.as_ref().is_some_and(|c| c.rows.len() != list.len()) {
+                    log::info!("список: {} диалогов из базы", list.len());
+                }
                 if let Some(chat) = self.chat.as_mut() {
+                    // Для замеров (В4): открыть n-й диалог, как только список загружен.
+                    let bench = std::env::var("NUNCIO_BENCH_OPEN").ok().and_then(|v| v.parse::<usize>().ok());
+                    let target = bench.and_then(|n| list.get(n).map(|r| r.peer.id));
                     queue.extend(chat.set_rows(list));
+                    if let (Some(id), None) = (target, chat.open) {
+                        queue.extend(chat.intent(domain::chat::ChatIntent::OpenChat(id)));
+                    }
                 }
             }
             if let Some((peer_id, limit)) = history {
@@ -457,6 +466,13 @@ fn main() {
     let model = LoginModel::new(lang, &country, cfg.proxy.clone(), now());
 
     let app = ui::App::new().expect("не удалось создать окно (нужен доступный бэкенд Slint)");
+    // Для замеров (В4): размер окна «ШxВ».
+    if let Some((w, h)) = std::env::var("NUNCIO_WINDOW_SIZE").ok().and_then(|v| {
+        let (w, h) = v.split_once('x')?;
+        Some((w.parse().ok()?, h.parse().ok()?))
+    }) {
+        app.window().set_size(slint::PhysicalSize::new(w, h));
+    }
     let (tx, rx) = mpsc::channel();
     *TX.lock().unwrap() = Some(tx);
     ui::bind(&app, |a| send(Msg::Action(a)));
@@ -505,6 +521,26 @@ fn main() {
             .expect("не удалось запустить поток сигналов");
     }
 
+    // Для замеров (В4, метод П-5): полный кадр через take_snapshot().
+    let _bench = std::env::var("NUNCIO_BENCH_FRAMES").ok().and_then(|v| v.parse::<usize>().ok()).map(|n| {
+        let weak = app.as_weak();
+        let t = slint::Timer::default();
+        t.start(slint::TimerMode::SingleShot, Duration::from_secs(35), move || {
+            let Some(app) = weak.upgrade() else { return };
+            let mut ms: Vec<f64> = (0..n)
+                .map(|_| {
+                    let t0 = std::time::Instant::now();
+                    let _ = app.window().take_snapshot();
+                    t0.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            ms.sort_by(f64::total_cmp);
+            let avg = ms.iter().sum::<f64>() / ms.len().max(1) as f64;
+            let p95 = ms[(ms.len() * 95 / 100).min(ms.len() - 1)];
+            log::info!("кадр: среднее {avg:.1} мс, p95 {p95:.1} мс, максимум {:.1} мс ({n} кадров)", ms[ms.len() - 1]);
+        });
+        t
+    });
     app.run().expect("окно завершилось с ошибкой");
     send(Msg::Stop);
     let _ = domain.join();
