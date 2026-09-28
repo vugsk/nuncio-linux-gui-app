@@ -28,6 +28,7 @@ type Account struct {
 	FirstName  string    // для ответа users.getUsers
 	Terms      string    // текст условий при регистрации
 	QRDC       int       // 0 — QR подтверждается в том же DC; иначе loginTokenMigrateTo на этот DC
+	AutoQR     bool      // QR «сканируется» сразу (вход без человека в сквозных проверках)
 	Contacts   []Contact // собеседники-пользователи с историей (диалоги)
 
 	mu         sync.Mutex
@@ -41,6 +42,25 @@ type Account struct {
 	pts        int32
 	msgs       []fakeMsg
 	seeded     bool
+	randoms    map[int64]int32
+}
+
+// Dump — все сообщения аккаунта (для сверки в тесте kill -9).
+type DumpMsg struct {
+	ID   int32  `json:"id"`
+	Peer int64  `json:"peer"`
+	Out  bool   `json:"out"`
+	Text string `json:"text"`
+}
+
+func (a *Account) Dump() []DumpMsg {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]DumpMsg, 0, len(a.msgs))
+	for _, m := range a.msgs {
+		out = append(out, DumpMsg{ID: m.id, Peer: m.peer, Out: m.out, Text: m.text})
+	}
+	return out
 }
 
 func (a *Account) seed() {
@@ -303,7 +323,7 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 			}
 		}
 		tok := randomToken()
-		a.tokens[string(tok)] = qrToken{key: key}
+		a.tokens[string(tok)] = qrToken{key: key, confirmed: a.AutoQR}
 		return &tl.AuthLoginToken{Expires: int32(time.Now().Unix() + 30), Token: tok}, nil
 	case *tl.AuthImportLoginTokenRequest:
 		q, ok := a.tokens[string(r.Token)]
@@ -404,9 +424,17 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 		default:
 			return nil, &rpcErr{400, "PEER_ID_INVALID"}
 		}
+		// Как настоящий сервер: повтор random_id не создаёт второе сообщение.
+		if a.randoms == nil {
+			a.randoms = map[int64]int32{}
+		}
+		if _, dup := a.randoms[r.RandomId]; dup {
+			return nil, &rpcErr{400, "RANDOM_ID_DUPLICATE"}
+		}
 		a.pts++
 		m := fakeMsg{id: int32(len(a.msgs) + 1), peer: peer, out: true, text: r.Message, date: int32(time.Now().Unix())}
 		a.msgs = append(a.msgs, m)
+		a.randoms[r.RandomId] = m.id
 		return &tl.UpdateShortSentMessage{Out: true, Id: m.id, Pts: a.pts, PtsCount: 1, Date: m.date}, nil
 	case *tl.HelpGetCountriesListRequest:
 		ru, en := "Россия", "Russia"

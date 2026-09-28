@@ -230,11 +230,7 @@ impl ChatModel {
                 }
                 self.composer.clear();
                 self.error = None;
-                let random_id = self.random_id();
-                out.push(ChatEffect::Db(DbOp::Enqueue { peer_id, text, reply_to: 0, random_id }));
-                out.push(ChatEffect::Db(DbOp::ReloadHistory { peer_id, limit: self.history_limit }));
-                out.push(ChatEffect::Db(DbOp::ReloadRows));
-                out.push(ChatEffect::Db(DbOp::PumpOutbox));
+                out = self.enqueue_text(peer_id, text);
             }
             ChatIntent::RetrySend(local_id) => {
                 out.push(ChatEffect::Db(DbOp::OutboxRetry { local_id }));
@@ -260,6 +256,17 @@ impl ChatModel {
             }
         }
         out
+    }
+
+    /// Поставить текст в очередь отправки (О-9).
+    pub fn enqueue_text(&mut self, peer_id: i64, text: String) -> Vec<ChatEffect> {
+        let random_id = self.random_id();
+        vec![
+            ChatEffect::Db(DbOp::Enqueue { peer_id, text, reply_to: 0, random_id }),
+            ChatEffect::Db(DbOp::ReloadHistory { peer_id, limit: self.history_limit }),
+            ChatEffect::Db(DbOp::ReloadRows),
+            ChatEffect::Db(DbOp::PumpOutbox),
+        ]
     }
 
     fn reload_open(&self, out: &mut Vec<ChatEffect>) {

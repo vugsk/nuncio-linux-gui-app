@@ -79,15 +79,18 @@ var (
 	keyErr  error
 )
 
-// Start запускает сервер на 127.0.0.1. Ключ RSA-2048 один на процесс: ядро
-// принимает не больше 16 дополнительных ключей, а тестов с серверами больше.
-func Start(opt Options) (*Server, error) {
+// Start запускает сервер на 127.0.0.1 (порт выбирает система).
+func Start(opt Options) (*Server, error) { return StartAt("127.0.0.1:0", opt) }
+
+// StartAt запускает сервер на заданном адресе. Ключ RSA-2048 один на процесс:
+// ядро принимает не больше 16 дополнительных ключей, а тестов с серверами больше.
+func StartAt(addr string, opt Options) (*Server, error) {
 	keyOnce.Do(func() { keyPriv, keyErr = rsa.GenerateKey(rand.Reader, 2048) })
 	priv, err := keyPriv, keyErr
 	if err != nil {
 		return nil, err
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}

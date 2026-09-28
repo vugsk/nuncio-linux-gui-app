@@ -158,6 +158,14 @@ func (s *Service) initNetwork() {
 	app := dc.App{APIID: r.GetApiId(), APIHash: r.GetApiHash(), DeviceModel: r.GetDeviceModel(),
 		SystemVersion: r.GetSystemVersion(), AppVersion: r.GetAppVersion(), SystemLangCode: r.GetSystemLangCode(),
 		LangCode: r.GetLangCode()}
+	if s.Addrs == nil {
+		if addrs, err := testServer(); err != nil {
+			s.log.Printf("NUNCIO_TEST_DC: %v", err)
+		} else if addrs != nil {
+			s.log.Printf("проверочный сервер вместо Telegram")
+			s.Addrs = addrs
+		}
+	}
 	var a *auth.Client
 	s.m = dc.New(dc.Options{
 		App: app, Addrs: s.Addrs, TestDCs: r.GetTestServers(),

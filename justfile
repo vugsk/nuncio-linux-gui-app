@@ -73,6 +73,13 @@ net:
 nettest *args: tl core
     cd net && go run ./cmd/nettest {{args}}
 
+# Сквозные проверки против поддельного Telegram (Xvfb на DISPLAY_NUM, по умолчанию :99):
+# kill -9 посреди записи (Р-8) и очередь отправки без сети. Не входят в test: долгие.
+e2e:
+    cargo build --release
+    tests/killtest.sh 5 300 40
+    tests/offlinetest.sh 10 15
+
 # Проверки качества (раздел 4 заметки о сборке).
 lint:
     cargo clippy --all-targets -- -D warnings

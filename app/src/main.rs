@@ -57,6 +57,7 @@ struct Domain {
     chat: Option<ChatModel>,
     avatars: HashMap<String, SharedPixelBuffer<Rgba8Pixel>>,
     bad_avatars: HashSet<String>,
+    bench_sent: bool,
 }
 
 impl Domain {
@@ -188,7 +189,19 @@ impl Domain {
                     // Для замеров (В4): открыть n-й диалог, как только список загружен.
                     let bench = std::env::var("NUNCIO_BENCH_OPEN").ok().and_then(|v| v.parse::<usize>().ok());
                     let target = bench.and_then(|n| list.get(n).map(|r| r.peer.id));
+                    // Для проверки kill -9 (В5): n сообщений в очередь первому собеседнику.
+                    let bench_send = std::env::var("NUNCIO_BENCH_SEND").ok().and_then(|v| v.parse::<usize>().ok());
+                    let first_user = list.iter().find(|r| r.peer.id > 0 && !r.peer.is_self).map(|r| r.peer.id);
                     queue.extend(chat.set_rows(list));
+                    if let (Some(n), Some(peer), false) = (bench_send, first_user, self.bench_sent) {
+                        self.bench_sent = true;
+                        let queued = self.db.as_ref().and_then(|db| db.call(|s| s.outbox_len())).and_then(Result::ok);
+                        if queued == Some(0) {
+                            for i in 1..=n {
+                                queue.extend(chat.enqueue_text(peer, format!("исходящее {i}")));
+                            }
+                        }
+                    }
                     if let (Some(id), None) = (target, chat.open) {
                         queue.extend(chat.intent(domain::chat::ChatIntent::OpenChat(id)));
                     }
@@ -532,6 +545,7 @@ fn main() {
         chat: None,
         avatars: HashMap::new(),
         bad_avatars: HashSet::new(),
+        bench_sent: false,
     };
     match Store::open(&paths.database()) {
         Ok(s) => {
