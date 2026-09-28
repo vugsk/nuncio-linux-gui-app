@@ -118,7 +118,8 @@ func (s *Service) sendMessage(ctx context.Context, id uint64, c *pb.SendMessage)
 	if err != nil {
 		return resultError(id, err)
 	}
-	req := &tl.MessagesSendMessageRequest{Peer: peer, Message: c.GetText(), RandomId: c.GetRandomId()}
+	req := &tl.MessagesSendMessageRequest{Peer: peer, Message: c.GetText(), RandomId: c.GetRandomId(),
+		Entities: conv.InputEntities(c.GetEntities())}
 	if c.GetReplyTo() != 0 {
 		r := c.GetReplyTo()
 		req.ReplyTo = &tl.InputReplyToMessage{ReplyToMsgId: r}
@@ -133,7 +134,7 @@ func (s *Service) sendMessage(ctx context.Context, id uint64, c *pb.SendMessage)
 		return resultErrorKind(id, pb.Error_INTERNAL, fmt.Sprintf("неожиданный ответ %T", v))
 	}
 	sent := &pb.Message{PeerId: c.GetPeer().GetId(), Text: c.GetText(), RandomId: c.GetRandomId(),
-		FromId: s.auth.UserID(), Out: true, ReplyTo: c.GetReplyTo()}
+		FromId: s.auth.UserID(), Out: true, ReplyTo: c.GetReplyTo(), Entities: c.GetEntities()}
 	s.upd.Process(ctx, u, sent)
 	if sent.Id == 0 {
 		sent.Id = s.upd.SentID(c.GetRandomId())

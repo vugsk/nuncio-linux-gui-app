@@ -36,7 +36,7 @@ import (
 
 // ProtoVersion — версия client.proto, которую понимает эта сборка.
 // Rust передаёт свою в StartRequest; несовпадение — ошибка старта.
-const ProtoVersion = 5
+const ProtoVersion = 6
 
 // QueueSize — предел очереди событий (обратное давление, правило 5).
 const QueueSize = 1024

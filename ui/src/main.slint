@@ -28,6 +28,13 @@ export struct RichSeg {
     text: string,
     image: image,
     emoji: bool,
+    // Форматирование (Дз-15): начертание, линии, моноширинный, ссылка.
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    strike: bool,
+    mono: bool,
+    link: string,
 }
 
 export struct RichLine {
@@ -111,6 +118,11 @@ export global Chat {
     callback jump-bottom();
     callback jump-to(string);
     callback thumb-release(float);
+    in property <string> mono-family: "monospace";
+    callback open-link(string);
+    // Ссылка под текстом, который не совпадает с адресом: сначала спросить.
+    in-out property <string> confirm-link;
+    callback open-link-now(string);
     callback retry-send(string);
     callback delete-unsent(string);
     in-out property <bool> confirm-logout;
@@ -424,6 +436,40 @@ component Meta inherits HorizontalLayout {
     }
 }
 
+// Текстовый сегмент со стилем: начертание, подчёркивание и зачёркивание
+// линиями (у Text их нет), моноширинный с подложкой, ссылка — цветом и кликом.
+component RichText inherits Rectangle {
+    in property <RichSeg> seg;
+    width: t.preferred-width;
+    background: seg.mono ? #ffffff12 : transparent;
+    border-radius: 3px;
+    t := Text {
+        x: 0;
+        height: parent.height;
+        text: root.seg.text;
+        color: root.seg.link != "" ? Theme.link : Theme.text;
+        font-size: 13px;
+        font-weight: root.seg.bold ? 700 : 400;
+        font-italic: root.seg.italic;
+        font-family: root.seg.mono ? Chat.mono-family : "";
+        vertical-alignment: center;
+    }
+    if root.seg.underline || root.seg.link != "": Rectangle {
+        y: parent.height / 2 + 7px;
+        height: 1px;
+        background: t.color;
+    }
+    if root.seg.strike: Rectangle {
+        y: parent.height / 2;
+        height: 1px;
+        background: t.color;
+    }
+    if root.seg.link != "": TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Chat.open-link(root.seg.link); }
+    }
+}
+
 component Bubble inherits VerticalLayout {
     in property <MessageItem> item;
     in property <bool> hover;
@@ -503,12 +549,7 @@ component Bubble inherits VerticalLayout {
                             // Эмодзи 18 px в ячейке 20 px (спайк О-14).
                             padding: seg.emoji ? 1px : 0px;
                             if seg.emoji: Image { source: seg.image; width: 18px; height: 18px; }
-                            if !seg.emoji: Text {
-                                text: seg.text;
-                                color: Theme.text;
-                                font-size: 13px;
-                                vertical-alignment: center;
-                            }
+                            if !seg.emoji: RichText { seg: seg; }
                         }
                     }
                 }
@@ -1062,6 +1103,16 @@ export component MainScreen inherits Rectangle {
         border-width: 1px;
         border-color: Theme.card-border;
         toast-text := Text { text: Chat.toast; color: Theme.text; font-size: 12px; }
+    }
+    if Chat.confirm-link != "": Modal {
+        width: 100%;
+        height: 100%;
+        Confirm {
+            text: @tr("Open this link?\n{}", Chat.confirm-link);
+            ok-text: @tr("Open");
+            ok => { Chat.open-link-now(Chat.confirm-link); Chat.confirm-link = ""; }
+            cancel => { Chat.confirm-link = ""; }
+        }
     }
     // Нс-6: выход с подтверждением — удаляются сессия, ключ, база и кэш.
     if Chat.confirm-logout: Modal {

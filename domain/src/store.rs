@@ -106,6 +106,11 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (peer_id, lo)
     ) WITHOUT ROWID;
     "#,
+    // 6 (В5): форматирование в очереди (Дз-15); у messages столбец entities есть
+    // с первой схемы. Формат — строки `вид смещение длина url`.
+    r#"
+    ALTER TABLE outbox ADD COLUMN entities TEXT NOT NULL DEFAULT '';
+    "#,
 ];
 
 /// Текущая версия схемы.

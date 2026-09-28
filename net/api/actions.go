@@ -25,7 +25,12 @@ func (s *Service) editMessage(ctx context.Context, id uint64, c *pb.EditMessage)
 		return resultError(id, err)
 	}
 	text := c.GetText()
-	v, err := s.m.Invoke(ctx, &tl.MessagesEditMessageRequest{Peer: peer, Id: c.GetId(), Message: &text})
+	// Пустой (не nil) список сущностей — правка снимает форматирование.
+	ents := conv.InputEntities(c.GetEntities())
+	if ents == nil {
+		ents = []tl.MessageEntityClass{}
+	}
+	v, err := s.m.Invoke(ctx, &tl.MessagesEditMessageRequest{Peer: peer, Id: c.GetId(), Message: &text, Entities: ents})
 	if err != nil {
 		return resultError(id, err)
 	}

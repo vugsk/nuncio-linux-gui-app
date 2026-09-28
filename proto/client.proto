@@ -90,6 +90,31 @@ message Message {
   int64 fwd_from_id = 12;        // «Переслано от» (Чт-3): помеченный id или 0
   string fwd_from_name = 13;     // имя, если id скрыт настройками приватности
   bool pinned = 14;
+  repeated MessageEntity entities = 15;
+}
+
+// Форматирование текста (Дз-15). Смещения — в единицах UTF-16, как в Telegram.
+message MessageEntity {
+  enum Kind {
+    OTHER = 0;
+    BOLD = 1;
+    ITALIC = 2;
+    UNDERLINE = 3;
+    STRIKE = 4;
+    CODE = 5;
+    PRE = 6;
+    TEXT_URL = 7;   // ссылка под текстом: url
+    URL = 8;        // ссылка — сам текст
+    EMAIL = 9;
+    MENTION = 10;
+    HASHTAG = 11;
+    SPOILER = 12;
+    BLOCKQUOTE = 13;
+  }
+  Kind kind = 1;
+  int32 offset = 2;
+  int32 length = 3;
+  string url = 4;
 }
 
 message Dialog {
@@ -230,12 +255,14 @@ message SendMessage {
   string text = 2;
   int64 random_id = 3;           // идемпотентность повтора (О-9)
   int32 reply_to = 4;
+  repeated MessageEntity entities = 5;
 }
 
 message EditMessage {
   PeerRef peer = 1;
   int32 id = 2;
   string text = 3;
+  repeated MessageEntity entities = 4;
 }
 
 // Удаление: в группах и личных чатах revoke — «удалить и у собеседника».

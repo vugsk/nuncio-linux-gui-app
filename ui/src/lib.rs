@@ -383,7 +383,7 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
     }
     {
         let s = send.clone();
-        chat.on_send(move || s(Action::Chat(ChatIntent::Send)));
+        chat.on_send(move || s(Action::Chat(ChatIntent::Send(Vec::new()))));
     }
     {
         let s = send.clone();
@@ -455,6 +455,17 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
                 s(Action::Chat(ChatIntent::JumpTo(id)));
             }
         });
+        let a = app.as_weak();
+        chat.on_open_link(move |url| match url.strip_prefix('?') {
+            Some(hidden) => {
+                if let Some(app) = a.upgrade() {
+                    app.global::<Chat>().set_confirm_link(hidden.into());
+                }
+            }
+            None => open_link(&url),
+        });
+        chat.on_open_link_now(|url| open_link(&url));
+        chat.set_mono_family(richtext::mono_family().into());
         let s = send.clone();
         chat.on_thumb_release(move |f| s(Action::Chat(ChatIntent::JumpPermille((f * 1000.0) as i32))));
     }
@@ -510,6 +521,19 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
 }
 
 /// Переключает язык интерфейса (Вх-8): `ru` или `en` (исходные строки — английские).
+/// Ссылка из сообщения — во внешней программе. Только http(s) и почта;
+/// адрес в журнал не пишется.
+fn open_link(url: &str) {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:")) {
+        log::info!("ссылка не открыта: неподдерживаемая схема");
+        return;
+    }
+    if let Err(e) = std::process::Command::new("xdg-open").arg(url).spawn() {
+        log::warn!("xdg-open: {e}");
+    }
+}
+
 pub fn apply_language(lang: &str) {
     // Для английского перевода нет: строки в разметке уже английские.
     let _ = slint::select_bundled_translation(if lang == "ru" { "ru" } else { "" });

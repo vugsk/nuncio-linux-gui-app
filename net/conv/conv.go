@@ -222,6 +222,7 @@ func Message(m tl.MessageClass) *pb.Message {
 			}
 		}
 		out.Pinned = v.Pinned
+		out.Entities = Entities(v.Entities)
 		return out
 	case *tl.MessageService:
 		out := &pb.Message{PeerId: PeerID(v.PeerId), Id: v.Id, Date: int64(v.Date), Out: v.Out,
@@ -255,6 +256,75 @@ func Dialog(d tl.DialogClass) *pb.Dialog {
 	}
 	if v.Pts != nil {
 		out.Pts = *v.Pts
+	}
+	return out
+}
+
+// Entities — форматирование сообщения в доменное (Дз-15). Смещения в UTF-16,
+// как у Telegram; перевод в байты делает интерфейс.
+func Entities(es []tl.MessageEntityClass) []*pb.MessageEntity {
+	var out []*pb.MessageEntity
+	add := func(k pb.MessageEntity_Kind, off, n int32, url string) {
+		out = append(out, &pb.MessageEntity{Kind: k, Offset: off, Length: n, Url: url})
+	}
+	for _, e := range es {
+		switch v := e.(type) {
+		case *tl.MessageEntityBold:
+			add(pb.MessageEntity_BOLD, v.Offset, v.Length, "")
+		case *tl.MessageEntityItalic:
+			add(pb.MessageEntity_ITALIC, v.Offset, v.Length, "")
+		case *tl.MessageEntityUnderline:
+			add(pb.MessageEntity_UNDERLINE, v.Offset, v.Length, "")
+		case *tl.MessageEntityStrike:
+			add(pb.MessageEntity_STRIKE, v.Offset, v.Length, "")
+		case *tl.MessageEntityCode:
+			add(pb.MessageEntity_CODE, v.Offset, v.Length, "")
+		case *tl.MessageEntityPre:
+			add(pb.MessageEntity_PRE, v.Offset, v.Length, "")
+		case *tl.MessageEntityTextUrl:
+			add(pb.MessageEntity_TEXT_URL, v.Offset, v.Length, v.Url)
+		case *tl.MessageEntityUrl:
+			add(pb.MessageEntity_URL, v.Offset, v.Length, "")
+		case *tl.MessageEntityEmail:
+			add(pb.MessageEntity_EMAIL, v.Offset, v.Length, "")
+		case *tl.MessageEntityMention:
+			add(pb.MessageEntity_MENTION, v.Offset, v.Length, "")
+		case *tl.MessageEntityHashtag:
+			add(pb.MessageEntity_HASHTAG, v.Offset, v.Length, "")
+		case *tl.MessageEntitySpoiler:
+			add(pb.MessageEntity_SPOILER, v.Offset, v.Length, "")
+		case *tl.MessageEntityBlockquote:
+			add(pb.MessageEntity_BLOCKQUOTE, v.Offset, v.Length, "")
+		}
+	}
+	return out
+}
+
+// InputEntities — форматирование для sendMessage и editMessage. Ссылки,
+// упоминания и хештеги в тексте сервер находит сам, их не отправляем.
+func InputEntities(es []*pb.MessageEntity) []tl.MessageEntityClass {
+	var out []tl.MessageEntityClass
+	for _, e := range es {
+		o, n := e.GetOffset(), e.GetLength()
+		if n <= 0 || o < 0 {
+			continue
+		}
+		switch e.GetKind() {
+		case pb.MessageEntity_BOLD:
+			out = append(out, &tl.MessageEntityBold{Offset: o, Length: n})
+		case pb.MessageEntity_ITALIC:
+			out = append(out, &tl.MessageEntityItalic{Offset: o, Length: n})
+		case pb.MessageEntity_UNDERLINE:
+			out = append(out, &tl.MessageEntityUnderline{Offset: o, Length: n})
+		case pb.MessageEntity_STRIKE:
+			out = append(out, &tl.MessageEntityStrike{Offset: o, Length: n})
+		case pb.MessageEntity_CODE:
+			out = append(out, &tl.MessageEntityCode{Offset: o, Length: n})
+		case pb.MessageEntity_PRE:
+			out = append(out, &tl.MessageEntityPre{Offset: o, Length: n})
+		case pb.MessageEntity_TEXT_URL:
+			out = append(out, &tl.MessageEntityTextUrl{Offset: o, Length: n, Url: e.GetUrl()})
+		}
 	}
 	return out
 }

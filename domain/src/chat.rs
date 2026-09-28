@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::chatstore::DialogRow;
 use crate::history::{Anchor, Span, Window};
 use crate::model::{
-    Command, CommandResult, Dialog, Event, Message, Payload, Peer, PeerRef, UpdatesBatch,
+    Command, CommandResult, Dialog, Entity, Event, Message, Payload, Peer, PeerRef, UpdatesBatch,
 };
 
 /// Сколько диалогов держать в списке (окно модели; остальные — из базы по требованию, В5).
@@ -38,7 +38,7 @@ pub enum DbOp {
     /// Перечитать окно истории открытого чата (результат — `set_history`).
     ReloadHistory { peer_id: i64, anchor: Anchor, before: usize, after: usize },
     /// Очередь отправки (О-9).
-    Enqueue { peer_id: i64, text: String, reply_to: i32, random_id: i64 },
+    Enqueue { peer_id: i64, text: String, entities: Vec<Entity>, reply_to: i32, random_id: i64 },
     /// Поиск собеседников в базе (результат — `set_picker_results`).
     SearchPeers { query: String },
     SavePeers(Vec<Peer>),
@@ -108,7 +108,8 @@ pub enum ChatIntent {
     OpenChat(i64),
     CloseChat,
     ComposerEdited(String),
-    Send,
+    /// Отправить текст поля с форматированием (Дз-15), смещения в UTF-16.
+    Send(Vec<Entity>),
     /// Вид дошёл до края окна: сдвинуть окно (или подгрузить с сервера).
     NeedOlder,
     NeedNewer,
@@ -202,6 +203,10 @@ pub struct ChatModel {
     /// Собеседники вне списка диалогов (новый чат из диалога выбора).
     pub extra_peers: HashMap<i64, Peer>,
     pub composer: String,
+    /// Содержимое, которое модель кладёт в поле сама (правка, очистка после
+    /// отправки), и его номер: интерфейс заменяет поле, когда номер меняется.
+    pub composer_entities: Vec<Entity>,
+    pub composer_seq: u64,
     pub sending: bool,
     pub error: Option<String>,
     pub dialogs_loading: bool,
@@ -425,7 +430,7 @@ impl ChatModel {
                 self.pinned.clear();
                 self.pinned_index = 0;
                 self.quotes.clear();
-                self.composer.clear();
+                self.fill_composer(String::new(), Vec::new());
                 self.error = None;
                 self.window = Window::default();
                 self.first_requested = false;
@@ -456,23 +461,23 @@ impl ChatModel {
                 self.history.clear();
             }
             ChatIntent::ComposerEdited(t) => self.composer = t,
-            ChatIntent::Send => {
+            ChatIntent::Send(entities) => {
                 // Сразу в очередь (О-9): сообщение видно в чате как «отправляется».
-                let text = self.composer.trim().to_string();
+                let (text, entities) = trim_with_entities(&self.composer, entities);
                 let Some(peer_id) = self.open else { return out };
                 if text.is_empty() {
                     return out;
                 }
-                self.composer.clear();
+                self.fill_composer(String::new(), Vec::new());
                 self.error = None;
                 match std::mem::take(&mut self.compose) {
                     Compose::Edit { id, .. } => {
                         if let Some(peer) = self.peer_ref(peer_id) {
-                            self.send(Command::EditMessage { peer, id, text }, Pending::Action, &mut out);
+                            self.send(Command::EditMessage { peer, id, text, entities }, Pending::Action, &mut out);
                         }
                     }
-                    Compose::Reply { id, .. } => out = self.enqueue_reply(peer_id, text, id),
-                    Compose::Plain => out = self.enqueue_text(peer_id, text),
+                    Compose::Reply { id, .. } => out = self.enqueue_reply(peer_id, text, entities, id),
+                    Compose::Plain => out = self.enqueue_reply(peer_id, text, entities, 0),
                 }
             }
             ChatIntent::RetrySend(local_id) => {
@@ -494,12 +499,12 @@ impl ChatModel {
             ChatIntent::Edit(id) => {
                 if let Some(m) = self.history_msg(id).filter(|m| m.out && m.id > 0).cloned() {
                     self.compose = Compose::Edit { id, original: m.text.clone() };
-                    self.composer = m.text;
+                    self.fill_composer(m.text, m.entities);
                 }
             }
             ChatIntent::CancelCompose => {
                 if matches!(self.compose, Compose::Edit { .. }) {
-                    self.composer.clear();
+                    self.fill_composer(String::new(), Vec::new());
                 }
                 self.compose = Compose::Plain;
             }
@@ -672,12 +677,18 @@ impl ChatModel {
 
     /// Поставить текст в очередь отправки (О-9).
     pub fn enqueue_text(&mut self, peer_id: i64, text: String) -> Vec<ChatEffect> {
-        self.enqueue_reply(peer_id, text, 0)
+        self.enqueue_reply(peer_id, text, Vec::new(), 0)
     }
 
-    fn enqueue_reply(&mut self, peer_id: i64, text: String, reply_to: i32) -> Vec<ChatEffect> {
+    fn fill_composer(&mut self, text: String, entities: Vec<Entity>) {
+        self.composer = text;
+        self.composer_entities = entities;
+        self.composer_seq += 1;
+    }
+
+    fn enqueue_reply(&mut self, peer_id: i64, text: String, entities: Vec<Entity>, reply_to: i32) -> Vec<ChatEffect> {
         let random_id = self.random_id();
-        let mut out = vec![ChatEffect::Db(DbOp::Enqueue { peer_id, text, reply_to, random_id })];
+        let mut out = vec![ChatEffect::Db(DbOp::Enqueue { peer_id, text, entities, reply_to, random_id })];
         if self.open == Some(peer_id) {
             // Своё сообщение видно сразу: к концу истории.
             self.set_jump(Jump::Bottom);
@@ -733,7 +744,8 @@ impl ChatModel {
             }
             let peer = PeerRef { id: it.peer_id, access_hash: it.access_hash };
             out.push(ChatEffect::Db(DbOp::OutboxSending { local_id: it.local_id }));
-            self.send(Command::SendMessageReply { peer, text: it.text, random_id: it.random_id, reply_to: it.reply_to },
+            self.send(Command::SendMessageReply { peer, text: it.text, random_id: it.random_id, reply_to: it.reply_to,
+                entities: it.entities },
                 Pending::Outbox { local_id: it.local_id }, &mut out);
         }
         if !out.is_empty() {
@@ -899,6 +911,26 @@ impl ChatModel {
     }
 }
 
+/// Пробелы по краям отправляемого текста убираются, смещения форматирования
+/// (UTF-16) сдвигаются и обрезаются по новому тексту.
+pub fn trim_with_entities(text: &str, entities: Vec<Entity>) -> (String, Vec<Entity>) {
+    let lead = text.len() - text.trim_start().len();
+    let t = text.trim();
+    let shift = text[..lead].encode_utf16().count() as i32;
+    let len = t.encode_utf16().count() as i32;
+    let es = entities
+        .into_iter()
+        .filter_map(|mut e| {
+            let start = (e.offset - shift).max(0);
+            let end = (e.offset + e.length - shift).min(len);
+            e.offset = start;
+            e.length = end - start;
+            (e.length > 0).then_some(e)
+        })
+        .collect();
+    (t.to_string(), es)
+}
+
 /// Первая строка сообщения для цитаты (или вид вложения словом).
 pub fn snippet(m: &Message) -> String {
     let line = m.text.lines().next().unwrap_or("").trim();
@@ -950,6 +982,24 @@ mod tests {
 
     fn ok(id: u64, payload: Payload) -> Event {
         Event::Result(CommandResult { cmd_id: id, error: None, payload })
+    }
+
+    #[test]
+    fn entities_survive_trim_and_storage() {
+        use crate::model::{decode_entities, encode_entities, EntityKind};
+        let e = |kind, offset, length| Entity { kind, offset, length, url: String::new() };
+        // «  жирный 👍 » — пробелы по краям уходят, смещения (UTF-16) сдвигаются.
+        let (t, es) = trim_with_entities("  жирный 👍 ", vec![e(EntityKind::Bold, 2, 6), e(EntityKind::Italic, 9, 3)]);
+        assert_eq!(t, "жирный 👍");
+        assert_eq!(es, vec![e(EntityKind::Bold, 0, 6), e(EntityKind::Italic, 7, 2)], "эмодзи — 2 единицы UTF-16");
+        let link = Entity { kind: EntityKind::TextUrl, offset: 1, length: 4, url: "https://a.b/c d".into() };
+        let all = vec![e(EntityKind::Code, 0, 3), link];
+        assert_eq!(decode_entities(&encode_entities(&all)), all);
+        let mut s = crate::store::Store::in_memory().unwrap();
+        s.outbox_enqueue(&crate::outbox::Outgoing { peer_id: 7, text: "код и ссылка", entities: &all, reply_to: 0, random_id: 9 }, 1, 100).unwrap();
+        assert_eq!(s.outbox_ready(100).unwrap()[0].entities, all);
+        let w = s.history_window(7, crate::history::Anchor::Latest, 10, 0).unwrap();
+        assert_eq!(w.messages[0].entities, all, "локальная строка очереди тоже с форматированием");
     }
 
     #[test]
@@ -1090,9 +1140,9 @@ mod tests {
         m.set_rows(vec![row(10, 0, 1, 0)]);
         m.intent(ChatIntent::OpenChat(10));
         m.intent(ChatIntent::ComposerEdited("   ".into()));
-        assert!(m.intent(ChatIntent::Send).is_empty(), "пустое не отправляется");
+        assert!(m.intent(ChatIntent::Send(vec![])).is_empty(), "пустое не отправляется");
         m.intent(ChatIntent::ComposerEdited(" привет ".into()));
-        let fx = m.intent(ChatIntent::Send);
+        let fx = m.intent(ChatIntent::Send(vec![]));
         let Some(ChatEffect::Db(DbOp::Enqueue { peer_id: 10, text, random_id: r1, .. })) = fx.first() else {
             panic!("{fx:?}")
         };
@@ -1100,18 +1150,18 @@ mod tests {
         assert!(m.composer.is_empty(), "поле очищается сразу");
         assert!(fx.contains(&ChatEffect::Db(DbOp::PumpOutbox)));
         m.intent(ChatIntent::ComposerEdited("ещё".into()));
-        let Some(ChatEffect::Db(DbOp::Enqueue { random_id: r2, .. })) = m.intent(ChatIntent::Send).first().cloned() else {
+        let Some(ChatEffect::Db(DbOp::Enqueue { random_id: r2, .. })) = m.intent(ChatIntent::Send(vec![])).first().cloned() else {
             panic!()
         };
         assert_ne!(*r1, r2);
 
         // Очередь: отправка готовых, повтор одного и того же не дублируется.
-        let item = |local_id: i64| OutboxItem { local_id, peer_id: 10, access_hash: 30, random_id: 5, text: "привет".into(), reply_to: 0 };
+        let item = |local_id: i64| OutboxItem { local_id, peer_id: 10, access_hash: 30, random_id: 5, text: "привет".into(), reply_to: 0, entities: vec![] };
         let fx = m.set_outbox_ready(vec![item(1)]);
         assert_eq!(fx[0], ChatEffect::Db(DbOp::OutboxSending { local_id: 1 }));
         let (id, cmd) = sends(&fx)[0].clone();
         assert_eq!(cmd, Command::SendMessageReply { peer: PeerRef { id: 10, access_hash: 30 }, text: "привет".into(),
-            random_id: 5, reply_to: 0 });
+            random_id: 5, reply_to: 0, entities: vec![] });
         assert!(sends(&m.set_outbox_ready(vec![item(1)])).is_empty(), "уже отправляется");
 
         let err = |id: u64, kind: ErrorKind, code: i32, text: &str| {
@@ -1197,7 +1247,7 @@ mod tests {
         m.intent(ChatIntent::Reply(1));
         assert_eq!(m.compose, Compose::Reply { id: 1, author: "p10".into(), snippet: "вопрос".into() });
         m.intent(ChatIntent::ComposerEdited("ок".into()));
-        let fx = m.intent(ChatIntent::Send);
+        let fx = m.intent(ChatIntent::Send(vec![]));
         assert!(matches!(&fx[0], ChatEffect::Db(DbOp::Enqueue { reply_to: 1, .. })), "ответ через очередь с reply_to");
         assert_eq!(m.compose, Compose::Plain);
         // Правка только своего: чужое не берётся.
@@ -1206,8 +1256,9 @@ mod tests {
         m.intent(ChatIntent::Edit(2));
         assert_eq!(m.composer, "мой ответ");
         m.intent(ChatIntent::ComposerEdited("исправлено".into()));
-        let (_, cmd) = sends(&m.intent(ChatIntent::Send))[0].clone();
-        assert_eq!(cmd, Command::EditMessage { peer: PeerRef { id: 10, access_hash: 30 }, id: 2, text: "исправлено".into() });
+        let (_, cmd) = sends(&m.intent(ChatIntent::Send(vec![])))[0].clone();
+        assert_eq!(cmd, Command::EditMessage { peer: PeerRef { id: 10, access_hash: 30 }, id: 2, text: "исправлено".into(),
+            entities: vec![] });
         m.intent(ChatIntent::Edit(2));
         m.intent(ChatIntent::CancelCompose);
         assert!(m.composer.is_empty(), "отмена правки очищает поле");

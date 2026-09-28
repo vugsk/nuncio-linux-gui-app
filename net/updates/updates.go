@@ -352,6 +352,16 @@ func (m *Manager) applyOnce(ctx context.Context, u tl.UpdatesClass, sent *pb.Mes
 		if m.checkPts(b, v.Pts, v.PtsCount) && sent != nil {
 			sent.Id, sent.Date, sent.Out = v.Id, int64(v.Date), true
 			sent.Media = mediaKindShort(v.Media)
+			// Сервер дописывает найденное сам (ссылки, упоминания): объединяем без повторов.
+			for _, e := range conv.Entities(v.Entities) {
+				dup := false
+				for _, o := range sent.Entities {
+					dup = dup || (o.GetKind() == e.GetKind() && o.GetOffset() == e.GetOffset() && o.GetLength() == e.GetLength())
+				}
+				if !dup {
+					sent.Entities = append(sent.Entities, e)
+				}
+			}
 			b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_NewMessage{NewMessage: sent}})
 		}
 		m.setDate(b, v.Date)

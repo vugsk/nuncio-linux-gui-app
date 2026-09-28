@@ -257,6 +257,21 @@ fn chat_model(open: Option<i64>) -> domain::chat::ChatModel {
     m
 }
 
+/// Сообщение со всеми видами форматирования (Дз-15).
+fn formatted(mut m: domain::model::Message) -> domain::model::Message {
+    use domain::model::{Entity, EntityKind};
+    let text = "жирный курсив подчёркнутый зачёркнутый код ссылка example.com";
+    let u16 = |s: &str| s.encode_utf16().count() as i32;
+    let e = |kind, w: &str, url: &str| Entity { kind, offset: u16(&text[..text.find(w).unwrap()]), length: u16(w),
+        url: url.into() };
+    m.text = text.into();
+    m.entities = vec![e(EntityKind::Bold, "жирный", ""), e(EntityKind::Italic, "курсив", ""),
+        e(EntityKind::Underline, "подчёркнутый", ""), e(EntityKind::Strike, "зачёркнутый", ""),
+        e(EntityKind::Code, "код", ""), e(EntityKind::TextUrl, "ссылка", "https://example.org"),
+        e(EntityKind::Url, "example.com", "")];
+    m
+}
+
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| "snapshots".into());
     std::fs::create_dir_all(&dir).unwrap();
@@ -313,6 +328,7 @@ fn main() {
                     msg(5, false, "Флаги тоже: 🇷🇺 🇩🇪 🇯🇵 и семья 👨‍👩‍👧‍👦 и радуга 🏳️‍🌈, а ещё длинная строка, чтобы проверить перенос по словам вместе с картинками 🚀🚀🚀 до конца пузыря"),
                     msg(6, true, "Строка 1 ✈️\nСтрока 2 без эмодзи\n1️⃣ 2️⃣ 3️⃣"),
                     msg(7, false, "обычное сообщение без эмодзи: 1 # *"),
+                    formatted(msg(8, true, "")),
                 ]), Default::default());
             }
             _ => {}

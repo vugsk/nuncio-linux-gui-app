@@ -2,7 +2,7 @@
 
 use domain::model::{
     AuthState, AuthStep, CodeInfo, Command, CommandResult, ConnState, Country, CountryCode, Dialog, DomainUpdate,
-    ErrorInfo, ErrorKind, Event, Message, Payload, Peer, PeerKind, PeerRef, ProxyKind, ProxySettings,
+    Entity, EntityKind, ErrorInfo, ErrorKind, Event, Message, Payload, Peer, PeerKind, PeerRef, ProxyKind, ProxySettings,
     StartupErrorKind, UpdateState, UpdatesBatch, User,
 };
 
@@ -69,7 +69,16 @@ fn message_from(m: proto::Message) -> Message {
         fwd_from_id: m.fwd_from_id,
         fwd_from_name: m.fwd_from_name,
         pinned: m.pinned,
+        entities: m.entities.into_iter().map(entity_from).collect(),
     }
+}
+
+fn entity_from(e: proto::MessageEntity) -> Entity {
+    Entity { kind: EntityKind::from_code(e.kind), offset: e.offset, length: e.length, url: e.url }
+}
+
+fn entity_to(e: Entity) -> proto::MessageEntity {
+    proto::MessageEntity { kind: e.kind.code(), offset: e.offset, length: e.length, url: e.url }
 }
 
 fn dialog_from(d: proto::Dialog) -> Dialog {
@@ -142,6 +151,7 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
             text,
             random_id,
             reply_to: 0,
+            entities: Vec::new(),
         }),
         Command::MarkRead { peer, max_id } => C::MarkRead(proto::MarkRead { peer: Some(peer_ref_to(peer)), max_id }),
         Command::DownloadAvatar { peer, photo_id, dc } => C::DownloadAvatar(proto::DownloadAvatar {
@@ -149,14 +159,16 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
             photo_id,
             dc,
         }),
-        Command::SendMessageReply { peer, text, random_id, reply_to } => C::SendMessage(proto::SendMessage {
+        Command::SendMessageReply { peer, text, random_id, reply_to, entities } => C::SendMessage(proto::SendMessage {
             peer: Some(peer_ref_to(peer)),
             text,
             random_id,
             reply_to,
+            entities: entities.into_iter().map(entity_to).collect(),
         }),
-        Command::EditMessage { peer, id, text } => {
-            C::EditMessage(proto::EditMessage { peer: Some(peer_ref_to(peer)), id, text })
+        Command::EditMessage { peer, id, text, entities } => {
+            C::EditMessage(proto::EditMessage { peer: Some(peer_ref_to(peer)), id, text,
+                entities: entities.into_iter().map(entity_to).collect() })
         }
         Command::DeleteMessages { peer, ids, revoke } => {
             C::DeleteMessages(proto::DeleteMessagesCmd { peer: Some(peer_ref_to(peer)), ids, revoke })

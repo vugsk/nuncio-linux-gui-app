@@ -102,6 +102,74 @@ pub struct Message {
     pub fwd_from_id: i64,
     pub fwd_from_name: String,
     pub pinned: bool,
+    /// Форматирование (Дз-15), смещения в UTF-16.
+    pub entities: Vec<Entity>,
+}
+
+/// Вид форматирования (как `MessageEntity` в client.proto).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum EntityKind {
+    #[default]
+    Other,
+    Bold,
+    Italic,
+    Underline,
+    Strike,
+    Code,
+    Pre,
+    TextUrl,
+    Url,
+    Email,
+    Mention,
+    Hashtag,
+    Spoiler,
+    Blockquote,
+}
+
+impl EntityKind {
+    pub const ALL: [EntityKind; 14] = [
+        EntityKind::Other, EntityKind::Bold, EntityKind::Italic, EntityKind::Underline, EntityKind::Strike,
+        EntityKind::Code, EntityKind::Pre, EntityKind::TextUrl, EntityKind::Url, EntityKind::Email,
+        EntityKind::Mention, EntityKind::Hashtag, EntityKind::Spoiler, EntityKind::Blockquote,
+    ];
+
+    pub fn code(self) -> i32 {
+        Self::ALL.iter().position(|k| *k == self).unwrap_or(0) as i32
+    }
+
+    pub fn from_code(c: i32) -> Self {
+        Self::ALL.get(c as usize).copied().unwrap_or_default()
+    }
+}
+
+/// Участок форматирования: смещение и длина в единицах UTF-16, как в Telegram.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Hash)]
+pub struct Entity {
+    pub kind: EntityKind,
+    pub offset: i32,
+    pub length: i32,
+    pub url: String,
+}
+
+/// Сущности в строку для базы: по строке на сущность, `вид смещение длина url`
+/// (url последним: в нём могут быть пробелы, но не переводы строк).
+pub fn encode_entities(es: &[Entity]) -> String {
+    es.iter()
+        .map(|e| format!("{} {} {} {}", e.kind.code(), e.offset, e.length, e.url.replace('\n', "")))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn decode_entities(s: &str) -> Vec<Entity> {
+    s.lines()
+        .filter_map(|l| {
+            let mut it = l.splitn(4, ' ');
+            let kind = EntityKind::from_code(it.next()?.parse().ok()?);
+            let offset = it.next()?.parse().ok()?;
+            let length = it.next()?.parse().ok()?;
+            Some(Entity { kind, offset, length, url: it.next().unwrap_or("").to_string() })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -171,8 +239,8 @@ pub enum Command {
     SendMessage { peer: PeerRef, text: String, random_id: i64 },
     MarkRead { peer: PeerRef, max_id: i32 },
     DownloadAvatar { peer: PeerRef, photo_id: i64, dc: i32 },
-    SendMessageReply { peer: PeerRef, text: String, random_id: i64, reply_to: i32 },
-    EditMessage { peer: PeerRef, id: i32, text: String },
+    SendMessageReply { peer: PeerRef, text: String, random_id: i64, reply_to: i32, entities: Vec<Entity> },
+    EditMessage { peer: PeerRef, id: i32, text: String, entities: Vec<Entity> },
     DeleteMessages { peer: PeerRef, ids: Vec<i32>, revoke: bool },
     /// Пересылка нескольким адресатам (Дз-16): random_id на каждое сообщение и адресата.
     Forward { from: PeerRef, ids: Vec<i32>, targets: Vec<(PeerRef, Vec<i64>)> },

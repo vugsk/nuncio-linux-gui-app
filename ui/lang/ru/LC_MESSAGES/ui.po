@@ -366,3 +366,9 @@ msgstr "Новые сообщения"
 
 msgid "Scroll to bottom"
 msgstr "Вниз"
+
+msgid "Open this link?\n{}"
+msgstr "Открыть ссылку?\n{}"
+
+msgid "Open"
+msgstr "Открыть"

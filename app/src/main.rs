@@ -284,8 +284,9 @@ impl Domain {
         let self_id = self.chat.as_ref().map(|c| c.self_id).unwrap_or(0);
         let now = now();
         let res = db.call(move |s| match op {
-            DbOp::Enqueue { peer_id, text, reply_to, random_id } => {
-                s.outbox_enqueue(peer_id, &text, reply_to, random_id, self_id, now).map(|_| ())
+            DbOp::Enqueue { peer_id, text, entities, reply_to, random_id } => {
+                let o = domain::outbox::Outgoing { peer_id, text: &text, entities: &entities, reply_to, random_id };
+                s.outbox_enqueue(&o, self_id, now).map(|_| ())
             }
             DbOp::OutboxSending { local_id } => s.outbox_sending(local_id),
             DbOp::OutboxDone { local_id, sent } => s.outbox_done(local_id, sent.as_ref()),

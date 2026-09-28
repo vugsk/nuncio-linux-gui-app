@@ -9,11 +9,11 @@ use std::rc::Rc;
 
 use domain::chat::{ChatIntent, ChatModel, Compose, Jump, PickerPurpose};
 use domain::chatstore::DialogRow;
-use domain::model::{Message, Peer, PeerKind};
+use domain::model::{Entity, EntityKind, Message, Peer, PeerKind};
 use domain::timefmt;
 use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
-use crate::richtext::{self, Metrics, Seg};
+use crate::richtext::{self, Fonts, Span, Style};
 use crate::scroller::Scroller;
 use crate::{avatar, App, Chat, DialogItem, MessageItem, PickerItem, RichLine, RichSeg};
 
@@ -315,11 +315,66 @@ pub struct ChatRenderer {
 /// переиспользуются: пока текст и ширина те же, строка списка не меняется.
 #[derive(Default)]
 struct RichCache {
-    metrics: Option<Option<Metrics>>,
+    fonts: Fonts,
     width: i32,
     lines: HashMap<String, ModelRc<RichLine>>,
     big: HashMap<String, ModelRc<Image>>,
     emoji: HashMap<String, Image>,
+}
+
+/// Стиль по виду сущности (None — вид без оформления: упоминания, спойлеры и т. п.).
+fn entity_style(k: EntityKind) -> Option<Style> {
+    let p = Style::PLAIN;
+    Some(match k {
+        EntityKind::Bold => Style { bold: true, ..p },
+        EntityKind::Italic => Style { italic: true, ..p },
+        EntityKind::Underline => Style { underline: true, ..p },
+        EntityKind::Strike => Style { strike: true, ..p },
+        EntityKind::Code | EntityKind::Pre => Style { mono: true, ..p },
+        EntityKind::TextUrl | EntityKind::Url | EntityKind::Email => Style { link: 0, ..p },
+        _ => return None,
+    })
+}
+
+/// Байтовое смещение по смещению UTF-16.
+fn utf16_to_byte(text: &str, off: i32) -> usize {
+    let mut u = 0i32;
+    for (b, c) in text.char_indices() {
+        if u >= off {
+            return b;
+        }
+        u += c.len_utf16() as i32;
+    }
+    text.len()
+}
+
+/// Сущности Telegram (UTF-16) — в стили раскладки (байты) и таблицу ссылок.
+/// Ссылка под другим текстом помечается `?`: перед открытием спросить.
+pub fn spans_from_entities(text: &str, entities: &[Entity]) -> (Vec<Span>, Vec<String>) {
+    let mut spans = Vec::new();
+    let mut links = Vec::new();
+    for e in entities {
+        let Some(mut style) = entity_style(e.kind) else { continue };
+        let start = utf16_to_byte(text, e.offset);
+        let end = utf16_to_byte(text, e.offset + e.length);
+        if start >= end {
+            continue;
+        }
+        if style.link >= 0 {
+            let shown = &text[start..end];
+            let url = match e.kind {
+                EntityKind::TextUrl if shown.trim() == e.url => e.url.clone(),
+                EntityKind::TextUrl => format!("?{}", e.url),
+                EntityKind::Email => format!("mailto:{shown}"),
+                _ if shown.contains("://") => shown.to_string(),
+                _ => format!("https://{shown}"),
+            };
+            style.link = links.len() as i32;
+            links.push(url);
+        }
+        spans.push(Span { start, end, style });
+    }
+    (spans, links)
 }
 
 /// Ширина текста в пузыре по ширине ленты: пузырь не шире min(480, 75 %),
@@ -338,22 +393,26 @@ impl RichCache {
         img
     }
 
-    /// Заполняет `rich`, `lines`, `big_emoji` у обычного сообщения с эмодзи.
-    fn enrich(&mut self, it: &mut MessageItem, view: i32) {
-        if it.service || it.text.is_empty() || !richtext::has_emoji(&it.text) {
+    /// Заполняет `rich`, `lines`, `big_emoji`: сообщение с эмодзи или
+    /// форматированием раскладывается в строки из сегментов.
+    fn enrich(&mut self, it: &mut MessageItem, msg: &Message, view: i32) {
+        let styled = msg.entities.iter().any(|e| entity_style(e.kind).is_some());
+        if it.service || it.text.is_empty() || (!styled && !richtext::has_emoji(&it.text)) {
             return;
         }
         let text = it.text.to_string();
-        if let Some(es) = richtext::only_emoji(&text) {
-            if let Some(m) = self.big.get(&text) {
-                it.big_emoji = m.clone();
+        if !styled {
+            if let Some(es) = richtext::only_emoji(&text) {
+                if let Some(m) = self.big.get(&text) {
+                    it.big_emoji = m.clone();
+                    return;
+                }
+                let imgs: Vec<Image> = es.iter().map(|e| self.emoji(e)).collect();
+                let m = ModelRc::from(Rc::new(VecModel::from(imgs)));
+                self.big.insert(text, m.clone());
+                it.big_emoji = m;
                 return;
             }
-            let imgs: Vec<Image> = es.iter().map(|e| self.emoji(e)).collect();
-            let m = ModelRc::from(Rc::new(VecModel::from(imgs)));
-            self.big.insert(text, m.clone());
-            it.big_emoji = m;
-            return;
         }
         if view <= 0 {
             return; // ширина ещё неизвестна: пока обычным текстом
@@ -364,33 +423,54 @@ impl RichCache {
         }
         if self.lines.len() > 4000 {
             self.lines.clear(); // окно истории ограничено; кэш не растёт без края
+            self.fonts.trim_cache();
         }
-        if let Some(m) = self.lines.get(&text) {
+        let key = format!("{}\u{0}{}", text, domain::model::encode_entities(&msg.entities));
+        if let Some(m) = self.lines.get(&key) {
             it.rich = true;
             it.lines = m.clone();
             return;
         }
-        let Some(metrics) = self.metrics.get_or_insert_with(|| Metrics::system(13.0)) else {
-            return; // нет системного шрифта: обычным текстом
-        };
-        let lines = richtext::layout(&text, text_width(view), metrics);
+        let (spans, links) = spans_from_entities(&text, &msg.entities);
+        let lines = richtext::layout(&text, &spans, text_width(view), &self.fonts);
+        let m = self.rich_lines(lines, &links);
+        self.lines.insert(key, m.clone());
+        it.rich = true;
+        it.lines = m;
+    }
+
+    /// Строки раскладки — в модель Slint.
+    pub fn rich_lines(&mut self, lines: Vec<richtext::Line>, links: &[String]) -> ModelRc<RichLine> {
         let rows: Vec<RichLine> = lines
             .into_iter()
             .map(|l| RichLine {
                 segs: ModelRc::from(Rc::new(VecModel::from(
-                    l.into_iter()
-                        .map(|s| match s {
-                            Seg::Text(t) => RichSeg { text: t.into(), image: Image::default(), emoji: false },
-                            Seg::Emoji(e) => RichSeg { text: "".into(), image: self.emoji(&e), emoji: true },
+                    l.segs
+                        .into_iter()
+                        .map(|s| {
+                            let st = s.style;
+                            RichSeg {
+                                image: if s.emoji { self.emoji(&s.text) } else { Image::default() },
+                                text: if s.emoji { "".into() } else { s.text.into() },
+                                emoji: s.emoji,
+                                bold: st.bold,
+                                italic: st.italic,
+                                underline: st.underline,
+                                strike: st.strike,
+                                mono: st.mono,
+                                link: usize::try_from(st.link)
+                                    .ok()
+                                    .and_then(|i| links.get(i))
+                                    .cloned()
+                                    .unwrap_or_default()
+                                    .into(),
+                            }
                         })
                         .collect::<Vec<_>>(),
                 ))),
             })
             .collect();
-        let m = ModelRc::from(Rc::new(VecModel::from(rows)));
-        self.lines.insert(text, m.clone());
-        it.rich = true;
-        it.lines = m;
+        ModelRc::from(Rc::new(VecModel::from(rows)))
     }
 }
 
@@ -487,8 +567,8 @@ impl ChatRenderer {
             peer: m.open_peer() };
         let mut items = message_items(&m.history, &cx);
         let mut divider = m.unread_mark;
-        for it in &mut items {
-            self.rich.enrich(it, m.view_width);
+        for (it, msg) in items.iter_mut().zip(&m.history) {
+            self.rich.enrich(it, msg, m.view_width);
             if divider.is_some_and(|mark| it.key > mark && !it.out) {
                 it.unread_divider = true;
                 divider = None;
@@ -723,22 +803,50 @@ mod tests {
         let mut c = RichCache::default();
         let item = |t: &str| MessageItem { text: t.into(), ..Default::default() };
         let mut a = item("привет 👋 мир");
-        c.enrich(&mut a, 700);
+        c.enrich(&mut a, &Message::default(), 700);
         assert!(a.rich && a.lines.row_count() == 1);
         let mut b = item("привет 👋 мир");
-        c.enrich(&mut b, 700);
+        c.enrich(&mut b, &Message::default(), 700);
         assert!(a == b, "тот же текст и ширина — та же модель строк (строка списка не меняется)");
         let mut narrow = item("привет 👋 мир ".repeat(8).trim());
-        c.enrich(&mut narrow, 200);
+        c.enrich(&mut narrow, &Message::default(), 200);
         assert!(narrow.lines.row_count() > 1, "узкая лента — перенос");
         let mut big = item("🔥 🔥");
-        c.enrich(&mut big, 700);
+        c.enrich(&mut big, &Message::default(), 700);
         assert!(!big.rich && big.big_emoji.row_count() == 2);
         let mut plain = item("без эмодзи 1 #");
-        c.enrich(&mut plain, 700);
+        c.enrich(&mut plain, &Message::default(), 700);
         assert!(!plain.rich && plain.big_emoji.row_count() == 0);
         assert_eq!(text_width(1000), 460.0);
         assert_eq!(text_width(400), 280.0);
+    }
+
+    #[test]
+    fn entities_become_styles_and_links() {
+        let text = "жирный 👍 и ссылка тут и example.com";
+        let u16 = |s: &str| s.encode_utf16().count() as i32;
+        let at = |s: &str| u16(&text[..text.find(s).unwrap()]);
+        let e = |kind, from: &str, len: &str, url: &str| Entity { kind, offset: at(from), length: u16(len), url: url.into() };
+        let es = vec![
+            e(EntityKind::Bold, "жирный", "жирный 👍", ""),
+            e(EntityKind::TextUrl, "ссылка", "ссылка", "https://evil.example"),
+            e(EntityKind::Url, "example.com", "example.com", ""),
+            e(EntityKind::Mention, "тут", "тут", ""),
+        ];
+        let (spans, links) = spans_from_entities(text, &es);
+        assert_eq!(spans.len(), 3, "упоминание без оформления");
+        assert_eq!(&text[spans[0].start..spans[0].end], "жирный 👍", "эмодзи — две единицы UTF-16");
+        assert!(spans[0].style.bold);
+        assert_eq!(links, vec!["?https://evil.example".to_string(), "https://example.com".to_string()],
+            "скрытая ссылка — с подтверждением, голый адрес — со схемой");
+        let mut c = RichCache::default();
+        let msg = Message { text: text.into(), entities: es, ..Default::default() };
+        let mut it = MessageItem { text: text.into(), ..Default::default() };
+        c.enrich(&mut it, &msg, 1000);
+        assert!(it.rich, "форматированное — сегментами");
+        let segs = it.lines.row_data(0).unwrap().segs;
+        assert!((0..segs.row_count()).any(|i| segs.row_data(i).unwrap().bold));
+        assert!((0..segs.row_count()).any(|i| segs.row_data(i).unwrap().link == "?https://evil.example"));
     }
 
     #[test]

@@ -6,7 +6,7 @@
 
 use rusqlite::{params, OptionalExtension};
 
-use crate::model::{Message, PeerKind};
+use crate::model::{decode_entities, encode_entities, Entity, Message, PeerKind};
 use crate::store::{Store, StoreError};
 
 /// Срок жизни сообщения в очереди по умолчанию (О-12): сутки.
@@ -25,6 +25,7 @@ pub struct OutboxItem {
     pub random_id: i64,
     pub text: String,
     pub reply_to: i32,
+    pub entities: Vec<Entity>,
 }
 
 fn msg_state(outbox_state: i32) -> i32 {
@@ -35,22 +36,25 @@ fn msg_state(outbox_state: i32) -> i32 {
     }
 }
 
+/// Что поставить в очередь.
+#[derive(Debug, Clone, Copy)]
+pub struct Outgoing<'a> {
+    pub peer_id: i64,
+    pub text: &'a str,
+    pub entities: &'a [Entity],
+    pub reply_to: i32,
+    pub random_id: i64,
+}
+
 impl Store {
     /// Поставить сообщение в очередь: строка очереди и локальное сообщение в чате.
-    pub fn outbox_enqueue(
-        &mut self,
-        peer_id: i64,
-        text: &str,
-        reply_to: i32,
-        random_id: i64,
-        self_id: i64,
-        now: i64,
-    ) -> Result<i64, StoreError> {
+    pub fn outbox_enqueue(&mut self, o: &Outgoing, self_id: i64, now: i64) -> Result<i64, StoreError> {
+        let Outgoing { peer_id, text, entities, reply_to, random_id } = *o;
         let tx = self.conn_mut().transaction()?;
         tx.execute(
-            "INSERT INTO outbox (peer_id, random_id, content, queued_at, reply_to, state, next_try)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, 0)",
-            params![peer_id, random_id, text.as_bytes(), now, reply_to],
+            "INSERT INTO outbox (peer_id, random_id, content, queued_at, reply_to, state, next_try, entities)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6)",
+            params![peer_id, random_id, text.as_bytes(), now, reply_to, encode_entities(entities)],
         )?;
         let local = tx.last_insert_rowid();
         let kind = match PeerKind::of(peer_id) {
@@ -60,9 +64,9 @@ impl Store {
         };
         tx.execute("INSERT OR IGNORE INTO peers (id, kind) VALUES (?1, ?2)", params![peer_id, kind])?;
         tx.execute(
-            "INSERT INTO messages (peer_id, id, date, sender_id, text, reply_to, out, random_id, send_state)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 1)",
-            params![peer_id, -local, now, self_id, text, reply_to, random_id],
+            "INSERT INTO messages (peer_id, id, date, sender_id, text, reply_to, out, random_id, send_state, entities)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 1, ?8)",
+            params![peer_id, -local, now, self_id, text, reply_to, random_id, encode_entities(entities)],
         )?;
         tx.commit()?;
         Ok(local)
@@ -72,7 +76,7 @@ impl Store {
     /// ничего не отправляется и время попытки наступило.
     pub fn outbox_ready(&self, now: i64) -> Result<Vec<OutboxItem>, StoreError> {
         let mut st = self.conn().prepare_cached(
-            "SELECT o.local_id, o.peer_id, COALESCE(p.access_hash, 0), o.random_id, o.content, o.reply_to
+            "SELECT o.local_id, o.peer_id, COALESCE(p.access_hash, 0), o.random_id, o.content, o.reply_to, o.entities
              FROM outbox o LEFT JOIN peers p ON p.id = o.peer_id
              WHERE o.state = 0 AND o.next_try <= ?1
                AND o.local_id = (SELECT MIN(local_id) FROM outbox x WHERE x.peer_id = o.peer_id AND x.state != 2)
@@ -89,6 +93,7 @@ impl Store {
                     random_id: r.get(3)?,
                     text: String::from_utf8_lossy(&content).into_owned(),
                     reply_to: r.get(5)?,
+                    entities: decode_entities(&r.get::<_, String>(6)?),
                 })
             })?
             .collect::<Result<_, _>>()?;
@@ -214,9 +219,9 @@ mod tests {
     #[test]
     fn queue_order_one_per_chat_and_done() {
         let mut s = store();
-        let a = s.outbox_enqueue(10, "первое", 0, 111, 1, 200).unwrap();
-        let b = s.outbox_enqueue(10, "второе", 5, 222, 1, 201).unwrap();
-        let c = s.outbox_enqueue(20, "другой чат", 0, 333, 1, 202).unwrap();
+        let a = s.outbox_enqueue(&Outgoing { peer_id: 10, text: "первое", entities: &[], reply_to: 0, random_id: 111 }, 1, 200).unwrap();
+        let b = s.outbox_enqueue(&Outgoing { peer_id: 10, text: "второе", entities: &[], reply_to: 5, random_id: 222 }, 1, 201).unwrap();
+        let c = s.outbox_enqueue(&Outgoing { peer_id: 20, text: "другой чат", entities: &[], reply_to: 0, random_id: 333 }, 1, 202).unwrap();
         // В истории: отправленное, потом очередь в порядке постановки.
         let h = s.history(10, None, 50).unwrap();
         let texts: Vec<_> = h.iter().map(|m| (m.text.as_str(), m.send_state)).collect();
@@ -240,7 +245,7 @@ mod tests {
     #[test]
     fn requeue_fail_retry_delete_expire_recover() {
         let mut s = store();
-        let a = s.outbox_enqueue(10, "x", 0, 1, 1, 100).unwrap();
+        let a = s.outbox_enqueue(&Outgoing { peer_id: 10, text: "x", entities: &[], reply_to: 0, random_id: 1 }, 1, 100).unwrap();
         s.outbox_sending(a).unwrap();
         s.outbox_requeue(a, 500).unwrap();
         assert!(s.outbox_ready(400).unwrap().is_empty(), "до следующей попытки");
@@ -257,7 +262,7 @@ mod tests {
         s.outbox_delete(a).unwrap();
         assert_eq!(s.history(10, None, 50).unwrap().len(), 1);
         // Восстановление после сбоя: «отправляется» → «в очереди», random_id прежний.
-        let b = s.outbox_enqueue(10, "y", 0, 42, 1, 2000).unwrap();
+        let b = s.outbox_enqueue(&Outgoing { peer_id: 10, text: "y", entities: &[], reply_to: 0, random_id: 42 }, 1, 2000).unwrap();
         s.outbox_sending(b).unwrap();
         assert_eq!(s.outbox_recover().unwrap(), 1);
         let r = s.outbox_ready(2000).unwrap();
@@ -269,7 +274,7 @@ mod tests {
     #[test]
     fn duplicate_random_id_is_rejected() {
         let mut s = store();
-        s.outbox_enqueue(10, "x", 0, 7, 1, 1).unwrap();
-        assert!(s.outbox_enqueue(10, "x", 0, 7, 1, 1).is_err(), "random_id уникален");
+        s.outbox_enqueue(&Outgoing { peer_id: 10, text: "x", entities: &[], reply_to: 0, random_id: 7 }, 1, 1).unwrap();
+        assert!(s.outbox_enqueue(&Outgoing { peer_id: 10, text: "x", entities: &[], reply_to: 0, random_id: 7 }, 1, 1).is_err(), "random_id уникален");
     }
 }

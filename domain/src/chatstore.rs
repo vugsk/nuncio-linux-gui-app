@@ -6,7 +6,10 @@
 
 use rusqlite::{params, OptionalExtension, Row, Transaction};
 
-use crate::model::{Dialog, DomainUpdate, Message, Peer, PeerKind, UpdateState, UpdatesBatch, CHANNEL_SHIFT};
+use crate::model::{
+    decode_entities, encode_entities, Dialog, DomainUpdate, Message, Peer, PeerKind, UpdateState, UpdatesBatch,
+    CHANNEL_SHIFT,
+};
 use crate::history;
 use crate::store::{Store, StoreError};
 
@@ -53,14 +56,15 @@ fn upsert_peer(tx: &Transaction, p: &Peer) -> rusqlite::Result<()> {
 pub(crate) fn insert_message(tx: &Transaction, m: &Message) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT INTO messages (peer_id, id, date, sender_id, text, reply_to, send_state, media_ref, out, service,
-                               edit_date, random_id, fwd_from_id, fwd_from_name, pinned)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                               edit_date, random_id, fwd_from_id, fwd_from_name, pinned, entities)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(peer_id, id) DO UPDATE SET text = excluded.text, media_ref = excluded.media_ref,
+           entities = excluded.entities,
            edit_date = excluded.edit_date, service = excluded.service, pinned = excluded.pinned,
            fwd_from_id = excluded.fwd_from_id, fwd_from_name = excluded.fwd_from_name,
            random_id = CASE WHEN excluded.random_id != 0 THEN excluded.random_id ELSE messages.random_id END",
         params![m.peer_id, m.id, m.date, m.from_id, m.text, m.reply_to, m.media, m.out, m.service, m.edit_date,
-            m.random_id, m.fwd_from_id, m.fwd_from_name, m.pinned],
+            m.random_id, m.fwd_from_id, m.fwd_from_name, m.pinned, encode_entities(&m.entities)],
     )?;
     Ok(())
 }
@@ -107,7 +111,7 @@ fn peer_from_row(r: &Row, o: usize) -> rusqlite::Result<Peer> {
 }
 
 pub(crate) const MSG_COLS: &str = "peer_id, id, date, sender_id, text, reply_to, media_ref, out, service, edit_date, random_id, \
-                        send_state, fwd_from_id, fwd_from_name, pinned";
+                        send_state, fwd_from_id, fwd_from_name, pinned, entities";
 
 pub(crate) fn message_from_row(r: &Row, o: usize) -> rusqlite::Result<Message> {
     Ok(Message {
@@ -127,6 +131,7 @@ pub(crate) fn message_from_row(r: &Row, o: usize) -> rusqlite::Result<Message> {
         fwd_from_id: r.get(o + 12)?,
         fwd_from_name: r.get(o + 13)?,
         pinned: r.get(o + 14)?,
+        entities: decode_entities(&r.get::<_, Option<String>>(o + 15)?.unwrap_or_default()),
     })
 }
 
@@ -331,7 +336,7 @@ impl Store {
         let mut v: Vec<Message> = st
             .query_map(params![peer_id, before.unwrap_or(i32::MAX), limit as i64], |r| {
                 let mut m = message_from_row(r, 0)?;
-                m.send_error = r.get(15)?;
+                m.send_error = r.get(16)?;
                 Ok(m)
             })?
             .collect::<Result<_, _>>()?;
