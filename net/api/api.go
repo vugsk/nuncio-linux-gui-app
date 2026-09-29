@@ -36,7 +36,7 @@ import (
 
 // ProtoVersion — версия client.proto, которую понимает эта сборка.
 // Rust передаёт свою в StartRequest; несовпадение — ошибка старта.
-const ProtoVersion = 6
+const ProtoVersion = 7
 
 // QueueSize — предел очереди событий (обратное давление, правило 5).
 const QueueSize = 1024
@@ -499,6 +499,14 @@ func (s *Service) handle(c command) (ev *pb.Event) {
 		return s.getContacts(ctx, c.id)
 	case *pb.Command_SearchPeers:
 		return s.searchPeers(ctx, c.id, b.SearchPeers)
+	case *pb.Command_LoadFolders:
+		return s.loadFolders(ctx, c.id)
+	case *pb.Command_SearchMessages:
+		return s.searchMessages(ctx, c.id, b.SearchMessages)
+	case *pb.Command_GetChatInfo:
+		return s.getChatInfo(ctx, c.id, b.GetChatInfo)
+	case *pb.Command_ChatAction:
+		return s.chatAction(ctx, c.id, b.ChatAction)
 	default:
 		return resultErrorKind(c.id, pb.Error_INTERNAL, "команда не поддерживается этой сборкой")
 	}

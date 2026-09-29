@@ -384,3 +384,108 @@ msgstr "Ссылка"
 
 msgid "Apply"
 msgstr "Применить"
+
+msgid "Mute"
+msgstr "Без звука"
+
+msgid "Unmute"
+msgstr "Включить звук"
+
+msgid "Archive"
+msgstr "В архив"
+
+msgid "Unarchive"
+msgstr "Вернуть из архива"
+
+msgid "Mark as read"
+msgstr "Пометить прочитанным"
+
+msgid "Mark as unread"
+msgstr "Пометить непрочитанным"
+
+msgid "Clear history"
+msgstr "Очистить историю"
+
+msgid "Delete chat"
+msgstr "Удалить чат"
+
+msgid "Leave channel"
+msgstr "Покинуть канал"
+
+msgid "Leave group"
+msgstr "Покинуть группу"
+
+msgid "Close search"
+msgstr "Закрыть поиск"
+
+msgid "Searching…"
+msgstr "Поиск…"
+
+msgid "Nothing found"
+msgstr "Ничего не найдено"
+
+msgid "No chats in this folder yet"
+msgstr "В этой папке пока нет чатов"
+
+msgid "Search in chat"
+msgstr "Поиск по чату"
+
+msgid "Info"
+msgstr "Сведения"
+
+msgid "Notifications"
+msgstr "Уведомления"
+
+msgid "on"
+msgstr "включены"
+
+msgid "off"
+msgstr "выключены"
+
+msgid "Members"
+msgstr "Участники"
+
+msgid "Media"
+msgstr "Медиа"
+
+msgid "Files"
+msgstr "Файлы"
+
+msgid "Links"
+msgstr "Ссылки"
+
+msgid "Voice"
+msgstr "Голосовые"
+
+msgid "Search members"
+msgstr "Поиск участников"
+
+msgid "Shared media will appear in the next version"
+msgstr "Общие медиа появятся в следующей версии"
+
+msgid "Block"
+msgstr "Заблокировать"
+
+msgid "Unblock"
+msgstr "Разблокировать"
+
+msgid "Any type"
+msgstr "Любой тип"
+
+msgid "Any date"
+msgstr "Любая дата"
+
+msgid "Day"
+msgstr "День"
+
+msgid "Week"
+msgstr "Неделя"
+
+msgid "Month"
+msgstr "Месяц"
+
+msgid "Year"
+msgstr "Год"
+
+msgid "Any sender"
+msgstr "Любой отправитель"

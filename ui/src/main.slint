@@ -21,6 +21,45 @@ export struct DialogItem {
     pinned: bool,
     selected: bool,
     out-state: int,    // своё последнее: 0 нет, 1 отправлено, 2 прочитано
+    // Меню диалога (Сп-4) и значки.
+    muted: bool,
+    archived: bool,
+    kind: int,         // 0 личный, 1 группа, 2 канал
+    is-self: bool,
+    unread-mark: bool,
+}
+
+// Пункт фильтра списка: 0 «Все чаты», 1 архив, 2 папка (id).
+export struct FolderItem {
+    kind: int,
+    id: int,
+    title: string,
+    unread: int,
+    selected: bool,
+}
+
+// Строка результатов поиска: заголовок раздела или чат, или сообщение.
+export struct SearchRow {
+    header: bool,
+    peer: string,
+    msg: string,
+    title: string,
+    text: string,
+    time: string,
+    initials: string,
+    color: color,
+    avatar: image,
+    has-avatar: bool,
+}
+
+export struct MemberItem {
+    id: string,
+    name: string,
+    initials: string,
+    color: color,
+    avatar: image,
+    has-avatar: bool,
+    role: string,
 }
 
 // Текст с эмодзи-картинками (О-14): строки из сегментов, разложенные в Rust.
@@ -124,6 +163,58 @@ export global Composer {
 
 export global Chat {
     in property <[DialogItem]> dialogs;
+    // Фильтр списка (Дз-8) и поиск в шапке (В6).
+    in property <string> filter-title;
+    in property <[FolderItem]> folders;
+    callback set-filter(int, int);
+    in-out property <bool> search-active;
+    in-out property <string> search-query;
+    in property <[SearchRow]> search-rows;
+    in property <bool> search-loading;
+    callback search-edited(string);
+    callback search-more();
+    callback open-result(string, string);
+    // Меню диалога и действия над чатом (Сп-4, Св-1).
+    callback dialog-action(string, int);
+    in property <bool> action-confirm;
+    in property <string> action-title;
+    in property <string> action-text;
+    in property <string> action-ok;
+    in property <bool> action-can-revoke;
+    in property <bool> action-revoke;
+    in property <string> action-revoke-text;
+    callback action-toggle-revoke();
+    callback action-confirmed();
+    callback action-cancel();
+    // Правая панель: 0 нет, 1 сведения, 2 поиск по чату.
+    in property <int> panel;
+    callback show-panel(int);
+    in property <string> info-status;
+    in property <string> info-about;
+    in property <string> info-username;
+    in property <int> info-kind;
+    in property <bool> info-muted;
+    in property <bool> info-archived;
+    in property <bool> info-blocked;
+    in property <bool> info-self;
+    in property <[MemberItem]> info-members;
+    callback members-edited(string);
+    in-out property <string> cs-query;
+    in property <[SearchRow]> cs-rows;
+    in property <string> cs-counter;
+    in property <int> cs-filter;
+    in property <int> cs-period;
+    in property <string> cs-from-name;
+    in property <[string]> cs-from-options;  // «Любой отправитель» и участники
+    in property <string> open-id;
+    in property <bool> cs-loading;
+    callback cs-edited(string);
+    callback cs-set-filter(int);
+    callback cs-set-period(int);
+    callback cs-set-from(string);
+    callback cs-step(int);
+    callback cs-open(string);
+    callback cs-more();
     in property <bool> dialogs-loading;
     // История: строки до опоры и от неё, линия опоры (своя прокрутка, scroller.rs).
     in property <[MessageItem]> above;
@@ -231,9 +322,31 @@ component Avatar inherits Rectangle {
     }
 }
 
+component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> danger;
+    callback clicked();
+    height: 32px;
+    border-radius: 4px;
+    background: t.has-hover ? Theme.row-bg : transparent;
+    accessible-role: button;
+    accessible-label: text;
+    t := TouchArea { clicked => { root.clicked(); } }
+    Text {
+        x: 10px;
+        height: parent.height;
+        text: root.text;
+        color: root.danger ? Theme.error : Theme.text;
+        font-size: 13px;
+        vertical-alignment: center;
+    }
+}
+
 component DialogRow inherits Rectangle {
     in property <DialogItem> item;
     callback clicked();
+    property <length> menu-x;
+    property <length> menu-y;
     height: 64px;
     background: item.selected ? Theme.row-selected : touch.has-hover ? Theme.row-bg : transparent;
     accessible-role: list-item;
@@ -241,6 +354,57 @@ component DialogRow inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.right && e.kind == PointerEventKind.up) {
+                root.menu-x = self.mouse-x;
+                root.menu-y = self.mouse-y;
+                menu.show();
+            }
+        }
+    }
+    // Меню диалога (Сп-4): три группы, опасные — внизу и красным.
+    menu := PopupWindow {
+        x: min(root.menu-x, root.width - 240px);
+        y: root.menu-y;
+        width: 230px;
+        Rectangle {
+            background: Theme.card-bg;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            VerticalLayout {
+                padding: 6px;
+                if !root.item.archived: MenuItem {
+                    text: root.item.pinned ? @tr("Unpin") : @tr("Pin");
+                    clicked => { Chat.dialog-action(root.item.id, root.item.pinned ? 5 : 4); }
+                }
+                if !root.item.is-self: MenuItem {
+                    text: root.item.muted ? @tr("Unmute") : @tr("Mute");
+                    clicked => { Chat.dialog-action(root.item.id, root.item.muted ? 1 : 0); }
+                }
+                if !root.item.is-self: MenuItem {
+                    text: root.item.archived ? @tr("Unarchive") : @tr("Archive");
+                    clicked => { Chat.dialog-action(root.item.id, root.item.archived ? 3 : 2); }
+                }
+                Rectangle { height: 1px; background: Theme.card-border; }
+                MenuItem {
+                    text: root.item.unread > 0 || root.item.unread-mark ? @tr("Mark as read") : @tr("Mark as unread");
+                    clicked => { Chat.dialog-action(root.item.id, root.item.unread > 0 || root.item.unread-mark ? 20 : 6); }
+                }
+                Rectangle { height: 1px; background: Theme.card-border; }
+                MenuItem { text: @tr("Clear history"); danger: true; clicked => { Chat.dialog-action(root.item.id, 7); } }
+                if root.item.kind == 0 && !root.item.is-self: MenuItem {
+                    text: @tr("Delete chat");
+                    danger: true;
+                    clicked => { Chat.dialog-action(root.item.id, 8); }
+                }
+                if root.item.kind != 0: MenuItem {
+                    text: root.item.kind == 2 ? @tr("Leave channel") : @tr("Leave group");
+                    danger: true;
+                    clicked => { Chat.dialog-action(root.item.id, 9); }
+                }
+            }
+        }
     }
     HorizontalLayout {
         padding-left: 8px;
@@ -265,6 +429,17 @@ component DialogRow inherits Rectangle {
                     font-size: 14px;
                     overflow: elide;
                     horizontal-stretch: 1;
+                }
+                // «Без звука» (Сп-3): перечёркнутый динамик.
+                if root.item.muted: Path {
+                    width: 12px;
+                    height: 12px;
+                    y: 4px;
+                    stroke: Theme.text-muted;
+                    stroke-width: 1.3px;
+                    viewbox-width: 12;
+                    viewbox-height: 12;
+                    commands: "M 1 4 L 4 4 L 7 1 L 7 11 L 4 8 L 1 8 Z M 9 4 L 12 8 M 12 4 L 9 8";
                 }
                 if root.item.out-state != 0: Text {
                     text: root.item.out-state == 2 ? "✓✓" : "✓";
@@ -301,7 +476,7 @@ component DialogRow inherits Rectangle {
                     min-width: 22px;
                     height: 20px;
                     border-radius: 10px;
-                    background: root.item.selected ? Theme.text : Theme.success;
+                    background: root.item.selected ? Theme.text : root.item.muted ? Theme.text-muted : Theme.success;
                     HorizontalLayout {
                         padding-left: 6px;
                         padding-right: 6px;
@@ -315,7 +490,14 @@ component DialogRow inherits Rectangle {
                         }
                     }
                 }
-                if root.item.unread == 0 && root.item.pinned: Path {
+                if root.item.unread == 0 && root.item.unread-mark: Rectangle {
+                    width: 14px;
+                    height: 14px;
+                    y: 3px;
+                    border-radius: 7px;
+                    background: root.item.muted ? Theme.text-muted : Theme.success;
+                }
+                if root.item.unread == 0 && !root.item.unread-mark && root.item.pinned: Path {
                     width: 12px;
                     height: 12px;
                     y: 4px;
@@ -330,8 +512,54 @@ component DialogRow inherits Rectangle {
     }
 }
 
+// Строка результатов поиска: заголовок раздела, чат или сообщение.
+component SearchResult inherits Rectangle {
+    in property <SearchRow> item;
+    callback clicked();
+    height: item.header ? 30px : 58px;
+    background: !item.header && t.has-hover ? Theme.row-bg : transparent;
+    t := TouchArea {
+        enabled: !root.item.header;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    if root.item.header: Text {
+        x: 12px;
+        text: root.item.title;
+        color: Theme.text-muted;
+        font-size: 11px;
+        font-weight: 600;
+        vertical-alignment: center;
+        height: parent.height;
+    }
+    if !root.item.header: HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        Avatar {
+            y: 8px;
+            size: 42px;
+            initials: root.item.initials;
+            tint: root.item.color;
+            source: root.item.avatar;
+            has-image: root.item.has-avatar;
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            HorizontalLayout {
+                spacing: 6px;
+                Text { text: root.item.title; color: Theme.text; font-size: 13px; overflow: elide; horizontal-stretch: 1; }
+                Text { text: root.item.time; color: Theme.text-muted; font-size: 11px; }
+            }
+            if root.item.text != "": Text { text: root.item.text; color: Theme.text-muted; font-size: 12px; overflow: elide; }
+        }
+    }
+}
+
 component DialogList inherits Rectangle {
     in-out property <bool> menu-open;
+    in-out property <bool> filter-open;
     background: Theme.window-bg;
     VerticalLayout {
         // Шапка списка: меню, фильтр папок (В6), поиск (В6), новый чат (В5).
@@ -358,16 +586,86 @@ component DialogList inherits Rectangle {
                     commands: "M 0 1 L 16 1 M 0 6 L 16 6 M 0 11 L 16 11";
                 }
             }
-            Text {
-                text: @tr("All chats");
-                color: Theme.text;
-                font-size: 14px;
-                font-weight: 600;
-                vertical-alignment: center;
+            // Фильтр папок (Дз-8): «Все чаты», папки, «Архив».
+            if !Chat.search-active: Rectangle {
                 horizontal-stretch: 1;
+                border-radius: Theme.radius;
+                background: filter-touch.has-hover ? Theme.row-bg : transparent;
+                accessible-role: button;
+                accessible-label: Chat.filter-title;
+                filter-touch := TouchArea { clicked => { root.filter-open = !root.filter-open; } }
+                HorizontalLayout {
+                    padding-left: 6px;
+                    spacing: 6px;
+                    alignment: start;
+                    Text {
+                        text: Chat.filter-title;
+                        color: Theme.text;
+                        font-size: 14px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Path {
+                        width: 10px;
+                        height: 6px;
+                        y: (parent.height - self.height) / 2;
+                        stroke: Theme.text-muted;
+                        stroke-width: 1.5px;
+                        viewbox-width: 10;
+                        viewbox-height: 6;
+                        commands: "M 1 1 L 5 5 L 9 1";
+                    }
+                }
+            }
+            // Поиск в шапке (Сп, Дз): поле заменяет фильтр, результаты — список.
+            if Chat.search-active: search-field := Field {
+                // Вся ширина шапки без кнопок меню и закрытия.
+                field-width: root.width - 112px;
+                placeholder: @tr("Search");
+                text <=> Chat.search-query;
+                init => { self.focus-input(); }
+                edited(t) => { Chat.search-edited(t); }
+                escape => { Chat.search-active = false; Chat.search-query = ""; Chat.search-edited(""); }
+            }
+            Rectangle {
+                width: 36px;
+                border-radius: Theme.radius;
+                background: search-touch.has-hover ? Theme.row-bg : transparent;
+                accessible-role: button;
+                accessible-label: Chat.search-active ? @tr("Close search") : @tr("Search");
+                search-touch := TouchArea {
+                    clicked => {
+                        if (Chat.search-active) {
+                            Chat.search-active = false;
+                            Chat.search-query = "";
+                            Chat.search-edited("");
+                        } else {
+                            Chat.search-active = true;
+                        }
+                    }
+                }
+                if !Chat.search-active: Path {
+                    width: 16px;
+                    height: 16px;
+                    stroke: Theme.text;
+                    stroke-width: 1.6px;
+                    viewbox-width: 16;
+                    viewbox-height: 16;
+                    commands: "M 6.5 1.5 A 5 5 0 1 1 6.49 1.5 Z M 10 10 L 15 15";
+                }
+                if Chat.search-active: Path {
+                    width: 12px;
+                    height: 12px;
+                    stroke: Theme.text-muted;
+                    stroke-width: 1.5px;
+                    viewbox-width: 12;
+                    viewbox-height: 12;
+                    commands: "M 1 1 L 11 11 M 11 1 L 1 11";
+                }
             }
             // «Новый чат» (Дз-11).
-            Rectangle {
+            if !Chat.search-active: Rectangle {
                 width: 44px;
                 border-radius: Theme.radius;
                 background: new-touch.has-hover ? Theme.accent-hover : Theme.accent;
@@ -387,19 +685,62 @@ component DialogList inherits Rectangle {
                 }
             }
         }
-        if Chat.dialogs.length == 0: Rectangle {
+        property <bool> searching: Chat.search-active && Chat.search-query != "";
+        if searching: Rectangle {
+            vertical-stretch: 1;
+            if Chat.search-rows.length == 0: Text {
+                text: Chat.search-loading ? @tr("Searching…") : @tr("Nothing found");
+                color: Theme.text-muted;
+                font-size: 13px;
+            }
+            ListView {
+                for r in Chat.search-rows: SearchResult { item: r; clicked => { Chat.open-result(r.peer, r.msg); } }
+                changed viewport-y => {
+                    if (self.content-y < self.visible-height - self.content-height + 200px) {
+                        Chat.search-more();
+                    }
+                }
+            }
+        }
+        if !searching && Chat.dialogs.length == 0: Rectangle {
             vertical-stretch: 1;
             Text {
-                text: Chat.dialogs-loading ? @tr("Loading…") : @tr("No chats yet");
+                text: Chat.dialogs-loading ? @tr("Loading…") : Chat.filter-title == @tr("All chats") ? @tr("No chats yet")
+                    : @tr("No chats in this folder yet");
                 color: Theme.text-muted;
                 font-size: 13px;
             }
         }
-        if Chat.dialogs.length > 0: ListView {
+        if !searching && Chat.dialogs.length > 0: ListView {
             vertical-stretch: 1;
             for d in Chat.dialogs: DialogRow {
                 item: d;
                 clicked => { Chat.open(d.id); }
+            }
+        }
+    }
+    if root.filter-open: Rectangle {
+        x: 56px;
+        y: 50px;
+        width: 250px;
+        height: filters.preferred-height;
+        background: Theme.card-bg;
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.card-border;
+        filters := VerticalLayout {
+            padding: 6px;
+            for f in Chat.folders: Rectangle {
+                height: 36px;
+                border-radius: 4px;
+                background: f.selected ? Theme.row-selected : ft.has-hover ? Theme.row-bg : transparent;
+                ft := TouchArea { clicked => { root.filter-open = false; Chat.set-filter(f.kind, f.id); } }
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    Text { text: f.title; color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                    if f.unread > 0: Text { text: f.unread; color: Theme.text-muted; font-size: 11px; vertical-alignment: center; }
+                }
             }
         }
     }
@@ -627,25 +968,6 @@ component Bubble inherits VerticalLayout {
     }
 }
 
-component MenuItem inherits Rectangle {
-    in property <string> text;
-    in property <bool> danger;
-    callback clicked();
-    height: 32px;
-    border-radius: 4px;
-    background: t.has-hover ? Theme.row-bg : transparent;
-    accessible-role: button;
-    accessible-label: text;
-    t := TouchArea { clicked => { root.clicked(); } }
-    Text {
-        x: 10px;
-        height: parent.height;
-        text: root.text;
-        color: root.danger ? Theme.error : Theme.text;
-        font-size: 13px;
-        vertical-alignment: center;
-    }
-}
 
 component MessageRow inherits VerticalLayout {
     in property <MessageItem> item;
@@ -963,11 +1285,36 @@ component ChatPane inherits Rectangle {
                     source: Chat.open-avatar;
                     has-image: Chat.open-has-avatar;
                 }
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 2px;
-                    Text { text: Chat.open-name; color: Theme.text; font-size: 14px; font-weight: 600; overflow: elide; }
-                    if Chat.open-status != "": Text { text: Chat.open-status; color: Theme.text-muted; font-size: 11px; }
+                // Название — сведения о чате (Дз-3, Св-1); лупа — поиск по чату (Дз-10).
+                Rectangle {
+                    horizontal-stretch: 1;
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Chat.show-panel(Chat.panel == 1 ? 0 : 1); }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        Text { text: Chat.open-name; color: Theme.text; font-size: 14px; font-weight: 600; overflow: elide; }
+                        if Chat.open-status != "": Text { text: Chat.open-status; color: Theme.text-muted; font-size: 11px; }
+                    }
+                }
+                Rectangle {
+                    width: 36px;
+                    border-radius: Theme.radius;
+                    background: Chat.panel == 2 ? Theme.row-selected : chat-search.has-hover ? Theme.row-bg : transparent;
+                    accessible-role: button;
+                    accessible-label: @tr("Search in chat");
+                    chat-search := TouchArea { clicked => { Chat.show-panel(Chat.panel == 2 ? 0 : 2); } }
+                    Path {
+                        width: 16px;
+                        height: 16px;
+                        stroke: Theme.text;
+                        stroke-width: 1.6px;
+                        viewbox-width: 16;
+                        viewbox-height: 16;
+                        commands: "M 6.5 1.5 A 5 5 0 1 1 6.49 1.5 Z M 10 10 L 15 15";
+                    }
                 }
             }
         }
@@ -1176,6 +1523,279 @@ component ChatPane inherits Rectangle {
     }
 }
 
+// Выпадающий выбор (фильтры поиска по чату): подпись и список вариантов.
+component Choice inherits Rectangle {
+    in property <string> label;
+    in property <[string]> options;
+    in property <int> selected;
+    callback chosen(int);
+    height: 30px;
+    width: t.preferred-width + 30px;
+    border-radius: 15px;
+    border-width: 1px;
+    border-color: Theme.card-border;
+    background: ct.has-hover ? Theme.row-bg : transparent;
+    ct := TouchArea { clicked => { pop.show(); } }
+    HorizontalLayout {
+        padding-left: 12px;
+        spacing: 6px;
+        t := Text { text: root.label; color: Theme.text; font-size: 12px; vertical-alignment: center; }
+        Path {
+            width: 8px;
+            height: 5px;
+            y: (parent.height - self.height) / 2;
+            stroke: Theme.text-muted;
+            stroke-width: 1.3px;
+            viewbox-width: 8;
+            viewbox-height: 5;
+            commands: "M 1 1 L 4 4 L 7 1";
+        }
+    }
+    pop := PopupWindow {
+        y: root.height + 4px;
+        width: 220px;
+        Rectangle {
+            background: Theme.card-bg;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            VerticalLayout {
+                padding: 6px;
+                for o[i] in root.options: Rectangle {
+                    height: 32px;
+                    border-radius: 4px;
+                    background: i == root.selected ? Theme.row-selected : ot.has-hover ? Theme.row-bg : transparent;
+                    ot := TouchArea { clicked => { root.chosen(i); } }
+                    Text {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        height: parent.height;
+                        text: o;
+                        color: Theme.text;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+}
+
+component PanelAction inherits Rectangle {
+    in property <string> text;
+    in property <bool> danger;
+    callback clicked();
+    height: 38px;
+    background: pt.has-hover ? Theme.row-bg : transparent;
+    pt := TouchArea { clicked => { root.clicked(); } }
+    Text {
+        x: 16px;
+        text: root.text;
+        color: root.danger ? Theme.error : Theme.text;
+        font-size: 13px;
+        vertical-alignment: center;
+        height: parent.height;
+    }
+}
+
+// Правая панель (Дз-3): сведения о чате (Св-1) или поиск по чату (Дз-10, Дз-18).
+component RightPanel inherits Rectangle {
+    // Вкладка сведений: 0 участники (у групп), 1 медиа, 2 файлы, 3 ссылки, 4 голосовые.
+    in-out property <int> tab: Chat.info-kind == 1 ? 0 : 1;
+    background: Theme.card-bg;
+    VerticalLayout {
+        Rectangle {
+            height: 52px;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 8px;
+                Text {
+                    text: Chat.panel == 1 ? @tr("Info") : @tr("Search in chat");
+                    color: Theme.text;
+                    font-size: 14px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Rectangle {
+                    width: 36px;
+                    accessible-role: button;
+                    accessible-label: @tr("Close");
+                    TouchArea { clicked => { Chat.show-panel(0); } }
+                    Path {
+                        width: 12px;
+                        height: 12px;
+                        stroke: Theme.text-muted;
+                        stroke-width: 1.5px;
+                        viewbox-width: 12;
+                        viewbox-height: 12;
+                        commands: "M 1 1 L 11 11 M 11 1 L 1 11";
+                    }
+                }
+            }
+        }
+        Rectangle { height: 1px; background: Theme.card-border; }
+        // Сведения.
+        if Chat.panel == 1: Flickable {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-top: 18px;
+                padding-bottom: 12px;
+                spacing: 10px;
+                HorizontalLayout {
+                    alignment: center;
+                    Avatar {
+                        size: 80px;
+                        initials: Chat.open-initials;
+                        tint: Chat.open-color;
+                        source: Chat.open-avatar;
+                        has-image: Chat.open-has-avatar;
+                    }
+                }
+                Text { text: Chat.open-name; color: Theme.text; font-size: 16px; font-weight: 600; horizontal-alignment: center; wrap: word-wrap; }
+                if Chat.info-status != "": Text { text: Chat.info-status; color: Theme.text-muted; font-size: 12px; horizontal-alignment: center; }
+                if Chat.info-about != "" || Chat.info-username != "": VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 4px;
+                    if Chat.info-about != "": Text { text: Chat.info-about; color: Theme.text; font-size: 13px; wrap: word-wrap; }
+                    if Chat.info-username != "": Text { text: Chat.info-username; color: Theme.link; font-size: 13px; }
+                }
+                if !Chat.info-self: Rectangle {
+                    height: 40px;
+                    TouchArea { clicked => { Chat.dialog-action(Chat.open-id, Chat.info-muted ? 1 : 0); } }
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        Text { text: @tr("Notifications"); color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+                        Text {
+                            text: Chat.info-muted ? @tr("off") : @tr("on");
+                            color: Chat.info-muted ? Theme.text-muted : Theme.link;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.card-border; }
+                // Вкладки: у групп первая — участники; у канала и личного её нет (Св-6).
+                HorizontalLayout {
+                    padding-left: 8px;
+                    spacing: 2px;
+                    if Chat.info-kind == 1: FmtButton { label: @tr("Members"); on: root.tab == 0; clicked => { root.tab = 0; } }
+                    FmtButton { label: @tr("Media"); on: root.tab == 1; clicked => { root.tab = 1; } }
+                    FmtButton { label: @tr("Files"); on: root.tab == 2; clicked => { root.tab = 2; } }
+                    FmtButton { label: @tr("Links"); on: root.tab == 3; clicked => { root.tab = 3; } }
+                    FmtButton { label: @tr("Voice"); on: root.tab == 4; clicked => { root.tab = 4; } }
+                }
+                if root.tab == 0 && Chat.info-kind == 1: VerticalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 4px;
+                    Field {
+                        field-width: 356px;
+                        placeholder: @tr("Search members");
+                        edited(t) => { Chat.members-edited(t); }
+                    }
+                    for m in Chat.info-members: HorizontalLayout {
+                        height: 44px;
+                        spacing: 10px;
+                        Avatar { y: 4px; size: 36px; initials: m.initials; tint: m.color; source: m.avatar; has-image: m.has-avatar; }
+                        Text { text: m.name; color: Theme.text; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                        if m.role != "": Text { text: m.role; color: Theme.text-muted; font-size: 11px; vertical-alignment: center; }
+                    }
+                }
+                if root.tab != 0 || Chat.info-kind != 1: Text {
+                    text: @tr("Shared media will appear in the next version");
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 1px; background: Theme.card-border; }
+                if !Chat.info-self: PanelAction {
+                    text: Chat.info-archived ? @tr("Unarchive") : @tr("Archive");
+                    clicked => { Chat.dialog-action(Chat.open-id, Chat.info-archived ? 3 : 2); }
+                }
+                PanelAction { text: @tr("Clear history"); danger: true; clicked => { Chat.dialog-action(Chat.open-id, 7); } }
+                if Chat.info-kind == 0 && !Chat.info-self: PanelAction {
+                    text: Chat.info-blocked ? @tr("Unblock") : @tr("Block");
+                    danger: !Chat.info-blocked;
+                    clicked => { Chat.dialog-action(Chat.open-id, Chat.info-blocked ? 11 : 10); }
+                }
+                if Chat.info-kind != 0: PanelAction {
+                    text: Chat.info-kind == 2 ? @tr("Leave channel") : @tr("Leave group");
+                    danger: true;
+                    clicked => { Chat.dialog-action(Chat.open-id, 9); }
+                }
+            }
+        }
+        // Поиск по чату (Дз-18): поле, стрелки и счётчик, фильтры, результаты.
+        if Chat.panel == 2: VerticalLayout {
+            vertical-stretch: 1;
+            padding: 12px;
+            spacing: 8px;
+            HorizontalLayout {
+                spacing: 6px;
+                Field {
+                    horizontal-stretch: 1;
+                    field-width: 250px;
+                    placeholder: @tr("Search");
+                    text <=> Chat.cs-query;
+                    init => { self.focus-input(); }
+                    edited(t) => { Chat.cs-edited(t); }
+                    accepted => { Chat.cs-step(1); }
+                    escape => { Chat.show-panel(0); }
+                }
+                FmtButton { label: "▲"; clicked => { Chat.cs-step(1); } }
+                FmtButton { label: "▼"; clicked => { Chat.cs-step(-1); } }
+            }
+            if Chat.cs-counter != "": Text { text: Chat.cs-counter; color: Theme.text-muted; font-size: 11px; }
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                Choice {
+                    label: [@tr("Any type"), @tr("Media"), @tr("Files"), @tr("Links"), @tr("Voice")][Chat.cs-filter];
+                    options: [@tr("Any type"), @tr("Media"), @tr("Files"), @tr("Links"), @tr("Voice")];
+                    selected: Chat.cs-filter;
+                    chosen(i) => { Chat.cs-set-filter(i); }
+                }
+                Choice {
+                    label: [@tr("Any date"), @tr("Day"), @tr("Week"), @tr("Month"), @tr("Year")][Chat.cs-period];
+                    options: [@tr("Any date"), @tr("Day"), @tr("Week"), @tr("Month"), @tr("Year")];
+                    selected: Chat.cs-period;
+                    chosen(i) => { Chat.cs-set-period(i); }
+                }
+                // Отправитель — в группах (Дз-18): 0 — любой, дальше участники.
+                if Chat.info-kind == 1: Choice {
+                    label: Chat.cs-from-name == "" ? @tr("Any sender") : Chat.cs-from-name;
+                    options: Chat.cs-from-options;
+                    selected: 0;
+                    chosen(i) => { Chat.cs-set-from(i == 0 ? "" : Chat.info-members[i - 1].id); }
+                }
+            }
+            Rectangle {
+                vertical-stretch: 1;
+                if Chat.cs-rows.length == 0 && (Chat.cs-query != "" || Chat.cs-filter != 0): Text {
+                    y: 12px;
+                    text: Chat.cs-loading ? @tr("Searching…") : @tr("Nothing found");
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                }
+                ListView {
+                    for r in Chat.cs-rows: SearchResult { item: r; clicked => { Chat.cs-open(r.msg); } }
+                    changed viewport-y => {
+                        if (self.content-y < self.visible-height - self.content-height + 200px) {
+                            Chat.cs-more();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component MainScreen inherits Rectangle {
     property <bool> narrow: root.width < 780px;
     background: Theme.window-bg;
@@ -1187,6 +1807,45 @@ export component MainScreen inherits Rectangle {
         if !root.narrow || Chat.has-open: ChatPane {
             narrow: root.narrow;
             horizontal-stretch: 1;
+        }
+        // Правая панель колонкой, если чату остаётся место; иначе — поверх чата.
+        if Chat.has-open && Chat.panel != 0 && !root.panel-over: Rectangle { width: 1px; background: Theme.card-border; }
+        if Chat.has-open && Chat.panel != 0 && !root.panel-over: RightPanel { width: 380px; }
+    }
+    property <bool> panel-over: root.width < 1140px;
+    if Chat.has-open && Chat.panel != 0 && root.panel-over: RightPanel {
+        x: root.width - self.width;
+        width: min(380px, root.width);
+        height: root.height;
+    }
+    // Подтверждение опасного действия над чатом (Сп-4): очистить, удалить, выйти, заблокировать.
+    if Chat.action-confirm: Modal {
+        width: 100%;
+        height: 100%;
+        Rectangle {
+            width: 380px;
+            height: act.preferred-height;
+            background: Theme.card-bg;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            act := VerticalLayout {
+                padding: 24px;
+                spacing: 14px;
+                Text { text: Chat.action-title; color: Theme.text; font-size: 15px; font-weight: 600; }
+                Text { text: Chat.action-text; color: Theme.text-muted; font-size: 13px; wrap: word-wrap; }
+                if Chat.action-can-revoke: HorizontalLayout {
+                    spacing: 10px;
+                    CheckBox { checked: Chat.action-revoke; toggled => { Chat.action-toggle-revoke(); } }
+                    Text { text: Chat.action-revoke-text; color: Theme.text; font-size: 13px; vertical-alignment: center; }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 12px;
+                    Button { button-width: 120px; primary: false; text: @tr("Cancel"); clicked => { Chat.action-cancel(); } }
+                    Button { button-width: 150px; text: Chat.action-ok; clicked => { Chat.action-confirmed(); } }
+                }
+            }
         }
     }
     // Диалог выбора (Дз-16): поиск, недавние и контакты; для пересылки — несколько адресатов.

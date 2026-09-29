@@ -73,6 +73,7 @@ message Peer {
   bool is_bot = 9;
   bool broadcast = 10;          // канал (не группа)
   bool min = 11;                // неполные сведения: access_hash не годится для запросов
+  bool contact = 12;            // в контактах (папки: «Контакты» / «Не контакты»)
 }
 
 message Message {
@@ -126,6 +127,43 @@ message Dialog {
   int32 folder = 5;
   int32 read_inbox_max_id = 6;
   int32 read_outbox_max_id = 7;
+  bool muted = 9;                // уведомления выключены
+  bool unread_mark = 10;         // помечен непрочитанным вручную
+}
+
+// Папка (dialogFilter). Состав вычисляется по правилам над диалогами;
+// id — помеченные. chatlist — папка по ссылке: только явные чаты.
+message Folder {
+  int32 id = 1;
+  string title = 2;
+  string emoticon = 3;
+  bool chatlist = 4;
+  bool contacts = 5;
+  bool non_contacts = 6;
+  bool groups = 7;
+  bool broadcasts = 8;
+  bool bots = 9;
+  bool exclude_muted = 10;
+  bool exclude_read = 11;
+  bool exclude_archived = 12;
+  repeated int64 pinned = 13;
+  repeated int64 include = 14;
+  repeated int64 exclude = 15;
+}
+
+// Сведения о чате для правой панели (Св-1).
+message ChatInfo {
+  int64 peer_id = 1;
+  string about = 2;              // описание или «о себе»
+  int32 members = 3;             // участников или подписчиков (0 — неизвестно)
+  repeated Member participants = 4;  // для групп (первая страница)
+  repeated Peer peers = 5;
+  bool blocked = 6;
+}
+
+message Member {
+  int64 user_id = 1;
+  int32 role = 2;                // 0 участник, 1 администратор, 2 создатель
 }
 
 message DomainUpdate {
@@ -138,7 +176,21 @@ message DomainUpdate {
     ResetDialogs reset = 6;      // разница слишком велика: перечитать диалоги
     ResetChannel reset_channel = 7;  // разница канала слишком велика: перечитать его историю
     Pinned pinned = 8;
+    FoldersChanged folders_changed = 9;   // папки изменены: перечитать список папок
+    PeerFolder peer_folder = 10;          // чат перенесён в архив или из архива
+    PeerSettings peer_settings = 11;      // уведомления, закрепление, пометка непрочитанным
+    ResetDialogs pinned_dialogs = 12;     // порядок закреплённых чатов изменился: перечитать диалоги
   }
+}
+
+message FoldersChanged {}
+message PeerFolder { int64 peer_id = 1; int32 folder = 2; }
+message PeerSettings {
+  int64 peer_id = 1;
+  // −1 — не менялось, 0 — нет, 1 — да.
+  int32 muted = 2;
+  int32 pinned = 3;
+  int32 unread_mark = 4;
 }
 
 // Закреплено или откреплено (Чт-14), в том числе на другом устройстве.
@@ -219,6 +271,10 @@ message Command {
     LoadMessages load_messages = 39;
     GetContacts get_contacts = 41;
     SearchPeers search_peers = 42;
+    LoadFolders load_folders = 43;
+    SearchMessages search_messages = 44;
+    GetChatInfo get_chat_info = 45;
+    ChatAction chat_action = 46;
     Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
   }
 }
@@ -404,7 +460,59 @@ message CommandResult {
     Sent sent = 105;
     FilePath file = 106;
     PeerList peers = 107;
+    FolderList folders = 108;
+    ChatInfo chat_info = 109;
   }
+}
+
+message FolderList { repeated Folder folders = 1; }
+
+message LoadFolders {}
+
+// Поиск сообщений: без peer — по всем чатам на сервере (messages.searchGlobal),
+// с peer — в чате (messages.search) с фильтрами (Дз-18).
+message SearchMessages {
+  enum Filter {
+    ALL = 0;
+    MEDIA = 1;     // фото и видео
+    FILES = 2;
+    LINKS = 3;
+    VOICE = 4;
+  }
+  PeerRef peer = 1;
+  string query = 2;
+  Filter filter = 3;
+  int64 min_date = 4;
+  int64 max_date = 5;
+  PeerRef from = 6;
+  int32 offset_id = 7;
+  int32 limit = 8;
+  // Глобальный поиск: продолжение страниц.
+  int32 offset_rate = 9;
+  PeerRef offset_peer = 10;
+}
+
+message GetChatInfo { PeerRef peer = 1; string members_query = 2; }
+
+// Действия над чатом (Сп-4, Св-1).
+message ChatAction {
+  enum Kind {
+    MUTE = 0;
+    UNMUTE = 1;
+    ARCHIVE = 2;
+    UNARCHIVE = 3;
+    PIN = 4;
+    UNPIN = 5;
+    MARK_UNREAD = 6;
+    CLEAR_HISTORY = 7;
+    DELETE_CHAT = 8;     // личный чат и группа: удалить у себя (revoke — у всех)
+    LEAVE = 9;           // выйти из группы или канала
+    BLOCK = 10;
+    UNBLOCK = 11;
+  }
+  PeerRef peer = 1;
+  Kind kind = 2;
+  bool revoke = 3;
 }
 
 message PeerList {
@@ -423,6 +531,7 @@ message History {
   repeated Message messages = 1;  // от новых к старым
   repeated Peer peers = 2;
   int32 total = 3;
+  int32 next_rate = 4;            // глобальный поиск: offset_rate следующей страницы (0 — конец)
 }
 
 message Sent {

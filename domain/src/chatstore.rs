@@ -7,11 +7,23 @@
 use rusqlite::{params, OptionalExtension, Row, Transaction};
 
 use crate::model::{
-    decode_entities, encode_entities, Dialog, DomainUpdate, Message, Peer, PeerKind, UpdateState, UpdatesBatch,
-    CHANNEL_SHIFT,
+    decode_entities, encode_entities, Dialog, DomainUpdate, Folder, Message, Peer, PeerKind, UpdateState,
+    UpdatesBatch, CHANNEL_SHIFT,
 };
 use crate::history;
 use crate::store::{Store, StoreError};
+
+/// Запрос пользователя — в выражение FTS5: каждое слово в кавычках
+/// (служебные знаки не работают) и как префикс, все слова обязательны.
+pub fn fts_query(query: &str) -> String {
+    query
+        .replace(['ё', 'Ё'], "е")
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| format!("\"{}\"*", w.replace('"', "")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// «Прочитано до ?2» в чате ?1: непрочитанных меньше на прочитанные входящие,
 /// до верха диалога — ноль. Уже прочитанное повторно не вычитается.
@@ -35,6 +47,7 @@ pub struct DialogRow {
 const F_SELF: i64 = 1;
 const F_BOT: i64 = 2;
 const F_BROADCAST: i64 = 4;
+const F_CONTACT: i64 = 8;
 
 fn upsert_peer(tx: &Transaction, p: &Peer) -> rusqlite::Result<()> {
     let kind = match p.kind {
@@ -43,7 +56,7 @@ fn upsert_peer(tx: &Transaction, p: &Peer) -> rusqlite::Result<()> {
         PeerKind::Channel => 2,
     };
     let flags = (if p.is_self { F_SELF } else { 0 }) | (if p.is_bot { F_BOT } else { 0 })
-        | (if p.broadcast { F_BROADCAST } else { 0 });
+        | (if p.broadcast { F_BROADCAST } else { 0 }) | (if p.contact { F_CONTACT } else { 0 });
     // У «min»-сведений access_hash не годится: старый не затираем. Пустое имя
     // (UserEmpty) тоже не затирает известное.
     tx.execute(
@@ -116,6 +129,7 @@ fn peer_from_row(r: &Row, o: usize) -> rusqlite::Result<Peer> {
         is_bot: flags & F_BOT != 0,
         broadcast: flags & F_BROADCAST != 0,
         min: false,
+        contact: flags & F_CONTACT != 0,
     })
 }
 
@@ -208,6 +222,19 @@ impl Store {
                     }
                     touched.push(*peer_id);
                 }
+                DomainUpdate::FoldersChanged | DomainUpdate::PinnedDialogs => {}
+                DomainUpdate::PeerFolder { peer_id, folder } => {
+                    tx.execute("UPDATE dialogs SET folder = ?2, pinned = 0 WHERE peer_id = ?1", params![peer_id, folder])?;
+                    touched.push(*peer_id);
+                }
+                DomainUpdate::PeerSettings { peer_id, muted, pinned, unread_mark } => {
+                    for (col, v) in [("muted", muted), ("pinned", pinned), ("unread_mark", unread_mark)] {
+                        if let Some(v) = v {
+                            tx.execute(&format!("UPDATE dialogs SET {col} = ?2 WHERE peer_id = ?1"), params![peer_id, v])?;
+                        }
+                    }
+                    touched.push(*peer_id);
+                }
                 DomainUpdate::ResetChannel { peer_id } => {
                     tx.execute("DELETE FROM messages WHERE peer_id = ?1", params![peer_id])?;
                     tx.execute("DELETE FROM history_ranges WHERE peer_id = ?1", params![peer_id])?;
@@ -268,13 +295,13 @@ impl Store {
                 .unwrap_or(0);
             tx.execute(
                 "INSERT INTO dialogs (peer_id, top_message_id, unread, pinned, folder, read_inbox_max, read_outbox_max,
-                                      top_date)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                                      top_date, muted, unread_mark)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(peer_id) DO UPDATE SET top_message_id = ?2, unread = ?3, pinned = ?4, folder = ?5,
                    read_inbox_max = ?6, read_outbox_max = ?7,
-                   top_date = CASE WHEN ?8 != 0 THEN ?8 ELSE dialogs.top_date END",
+                   top_date = CASE WHEN ?8 != 0 THEN ?8 ELSE dialogs.top_date END, muted = ?9, unread_mark = ?10",
                 params![d.peer_id, d.top_message, d.unread_count, d.pinned, d.folder, d.read_inbox_max_id,
-                    d.read_outbox_max_id, top_date],
+                    d.read_outbox_max_id, top_date, d.muted, d.unread_mark],
             )?;
         }
         tx.commit()?;
@@ -301,21 +328,22 @@ impl Store {
     }
 
     /// Список: сначала закреплённые, потом по времени последнего сообщения (Сп, раздел 3).
-    /// Папка 0 — основной список (архив, папка 1, — веха В6).
+    /// Папка 0 — основной список, 1 — архив; −1 — все (для папок-фильтров).
     pub fn dialog_rows(&self, folder: i32, limit: usize) -> Result<Vec<DialogRow>, StoreError> {
         let mut st = self.conn().prepare_cached(&format!(
             "SELECT d.peer_id, d.top_message_id, d.unread, d.pinned, d.folder, d.read_inbox_max, d.read_outbox_max,
                     d.top_date,
                     p.id, p.name, p.username, p.access_hash, p.photo_id, p.photo_dc, p.photo_ref, p.flags,
-                    m.{}
+                    m.{}, d.muted, d.unread_mark
              FROM dialogs d
              JOIN peers p ON p.id = d.peer_id
              LEFT JOIN messages m ON m.peer_id = d.peer_id AND m.id = d.top_message_id
-             WHERE d.folder = ?1
+             WHERE ?1 < 0 OR d.folder = ?1
              ORDER BY d.pinned DESC, d.top_date DESC, d.top_message_id DESC
              LIMIT ?2",
             MSG_COLS.replace(", ", ", m.")
         ))?;
+        let n = MSG_COLS.split(", ").count();
         let rows = st.query_map(params![folder, limit as i64], |r| {
             let dialog = Dialog {
                 peer_id: r.get(0)?,
@@ -325,6 +353,8 @@ impl Store {
                 folder: r.get(4)?,
                 read_inbox_max_id: r.get(5)?,
                 read_outbox_max_id: r.get(6)?,
+                muted: r.get(16 + n)?,
+                unread_mark: r.get(17 + n)?,
             };
             let peer = peer_from_row(r, 8)?;
             let last = match r.get::<_, Option<i64>>(16)? {
@@ -437,6 +467,91 @@ impl Store {
     pub fn mark_read_local(&self, peer_id: i64, max_id: i32) -> Result<(), StoreError> {
         self.conn().execute(MARK_READ_SQL, params![peer_id, max_id])?;
         Ok(())
+    }
+
+    /// История очищена (dialog = false) или чат удалён либо покинут: из базы.
+    pub fn drop_chat(&mut self, peer_id: i64, dialog: bool) -> Result<(), StoreError> {
+        let tx = self.conn_mut().transaction()?;
+        tx.execute("DELETE FROM messages WHERE peer_id = ?1 AND id > 0", params![peer_id])?;
+        tx.execute("DELETE FROM history_ranges WHERE peer_id = ?1", params![peer_id])?;
+        if dialog {
+            tx.execute("DELETE FROM dialogs WHERE peer_id = ?1", params![peer_id])?;
+        } else {
+            tx.execute("UPDATE dialogs SET unread = 0, unread_mark = 0 WHERE peer_id = ?1", params![peer_id])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Папки (порядок — как на сервере).
+    pub fn save_folders(&mut self, folders: &[Folder]) -> Result<(), StoreError> {
+        let tx = self.conn_mut().transaction()?;
+        tx.execute("DELETE FROM folders", [])?;
+        let ids = |v: &[i64]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+        for (pos, f) in folders.iter().enumerate() {
+            let flags = [f.chatlist, f.contacts, f.non_contacts, f.groups, f.broadcasts, f.bots, f.exclude_muted,
+                f.exclude_read, f.exclude_archived]
+                .iter()
+                .enumerate()
+                .fold(0i64, |acc, (i, b)| acc | (i64::from(*b) << i));
+            tx.execute(
+                "INSERT INTO folders (id, pos, title, emoticon, flags, pinned, include, exclude)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![f.id, pos as i64, f.title, f.emoticon, flags, ids(&f.pinned), ids(&f.include), ids(&f.exclude)],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn folders(&self) -> Result<Vec<Folder>, StoreError> {
+        let mut st = self.conn().prepare_cached(
+            "SELECT id, title, emoticon, flags, pinned, include, exclude FROM folders ORDER BY pos",
+        )?;
+        let ids = |s: String| -> Vec<i64> { s.split(',').filter_map(|x| x.parse().ok()).collect() };
+        let v = st
+            .query_map([], |r| {
+                let flags: i64 = r.get(3)?;
+                let bit = |i: u32| flags & (1 << i) != 0;
+                Ok(Folder {
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    emoticon: r.get(2)?,
+                    chatlist: bit(0),
+                    contacts: bit(1),
+                    non_contacts: bit(2),
+                    groups: bit(3),
+                    broadcasts: bit(4),
+                    bots: bit(5),
+                    exclude_muted: bit(6),
+                    exclude_read: bit(7),
+                    exclude_archived: bit(8),
+                    pinned: ids(r.get(4)?),
+                    include: ids(r.get(5)?),
+                    exclude: ids(r.get(6)?),
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(v)
+    }
+
+    /// Поиск по сообщениям в базе (FTS5): слова запроса — префиксы, все обязательны;
+    /// новые первыми. Очередь отправки (id < 0) не ищется.
+    pub fn search_local(&self, query: &str, limit: usize) -> Result<Vec<Message>, StoreError> {
+        let q = fts_query(query);
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut st = self.conn().prepare_cached(&format!(
+            "SELECT {} FROM messages_fts f
+             JOIN msg_keys k ON k.rid = f.rowid
+             JOIN messages m ON m.peer_id = k.peer_id AND m.id = k.id
+             WHERE messages_fts MATCH ?1 AND k.id > 0
+             ORDER BY m.date DESC LIMIT ?2",
+            MSG_COLS.split(", ").map(|c| format!("m.{c}")).collect::<Vec<_>>().join(", ")
+        ))?;
+        let v = st.query_map(params![q, limit as i64], |r| message_from_row(r, 0))?.collect::<Result<_, _>>()?;
+        Ok(v)
     }
 
     /// Самое старое сообщение истории в базе (для подгрузки вверх).
@@ -569,5 +684,59 @@ mod tests {
         assert_eq!(unread(&s), 5, "−1 не обнуляет счётчик");
         s.mark_read_local(10, 120).unwrap();
         assert_eq!(unread(&s), 0, "до верха — всё");
+    }
+
+    #[test]
+    fn local_search_prefix_words_and_speed() {
+        let mut s = Store::in_memory().unwrap();
+        let words = ["релиз", "сборка", "проверка", "Пятница", "отчёт", "встреча", "ёлка", "code", "Build", "test"];
+        let msgs: Vec<Message> = (1..=10_000)
+            .map(|i: i32| {
+                let t = format!("{} {} номер {i}", words[i as usize % 10], words[(i as usize / 10) % 10]);
+                msg(10 + i64::from(i % 50), i, i64::from(i), &t, false)
+            })
+            .collect();
+        let peers: Vec<Peer> = (10..60).map(|i| peer(i, "p")).collect();
+        s.save_history(&msgs, &peers, None).unwrap();
+        let t0 = std::time::Instant::now();
+        let r = s.search_local("рел", 100).unwrap();
+        let first = t0.elapsed();
+        assert_eq!(r.len(), 100);
+        assert!(r.windows(2).all(|w| w[0].date >= w[1].date), "новые первыми");
+        assert!(r.iter().all(|m| m.text.contains("релиз")), "префикс слова");
+        // Несколько слов — все обязательны; регистр и ё не мешают.
+        let r = s.search_local("пятница ЕЛКА", 100).unwrap();
+        assert!(!r.is_empty() && r.iter().all(|m| m.text.contains("Пятница") && m.text.contains("ёлка")));
+        assert!(s.search_local("\"*: OR", 10).unwrap().is_empty(), "служебные знаки не ломают запрос");
+        // Порог (План, В6): поиск по 10 000 сообщений — меньше 50 мс в отладочной сборке.
+        let t0 = std::time::Instant::now();
+        for q in ["сборка", "code test", "номер 99", "проверка отчёт"] {
+            s.search_local(q, 100).unwrap();
+        }
+        let avg = t0.elapsed() / 4;
+        eprintln!("поиск по 10 000 сообщений: первый {first:?}, средний {avg:?}");
+        assert!(avg < std::time::Duration::from_millis(50), "медленно: {avg:?}");
+    }
+
+    #[test]
+    fn folders_and_dialog_settings() {
+        let mut s = Store::in_memory().unwrap();
+        let f = Folder { id: 3, title: "Работа".into(), emoticon: "💼".into(), groups: true, exclude_read: true,
+            include: vec![10, -1_000_000_000_007], exclude: vec![20], pinned: vec![10], ..Default::default() };
+        s.save_folders(&[f.clone(), Folder { id: 4, chatlist: true, title: "Ссылка".into(), ..Default::default() }]).unwrap();
+        let back = s.folders().unwrap();
+        assert_eq!(back[0], f);
+        assert!(back[1].chatlist);
+        s.save_dialogs(&[Dialog { peer_id: 10, top_message: 1, muted: true, ..Default::default() }],
+            &[msg(10, 1, 100, "a", false)], &[peer(10, "Анна")]).unwrap();
+        let row = |s: &Store| s.dialog_rows(-1, 10).unwrap()[0].dialog.clone();
+        assert!(row(&s).muted);
+        s.apply_batch(&UpdatesBatch { updates: vec![
+            DomainUpdate::PeerSettings { peer_id: 10, muted: Some(false), pinned: Some(true), unread_mark: None },
+            DomainUpdate::PeerFolder { peer_id: 10, folder: 1 },
+        ], ..Default::default() }).unwrap();
+        let d = row(&s);
+        assert!(!d.muted && d.folder == 1 && !d.pinned, "в архиве закрепление снимается");
+        assert!(s.dialog_rows(0, 10).unwrap().is_empty(), "архив не в основном списке");
     }
 }

@@ -391,6 +391,7 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
         let s = send.clone();
         chat.on_jump_bottom(move || s(Action::Chat(ChatIntent::JumpBottom)));
     }
+    bind_lists(app, send.clone());
     {
         let i = i.clone();
         chat.on_log_out(move || i(Intent::LogOut));
@@ -519,6 +520,89 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
 }
 
 /// Переключает язык интерфейса (Вх-8): `ru` или `en` (исходные строки — английские).
+/// Тело обработчика с `?` и `return`: намерение или ничего.
+fn intent_of<T>(f: impl FnOnce() -> Option<T>) -> Option<T> {
+    f()
+}
+
+/// Папки, поиск, правая панель, действия над чатом (В6).
+fn bind_lists(app: &App, send: impl Fn(Action) + Clone + 'static) {
+    use domain::chatlist::{ListFilter, ListIntent as L, Panel, Period};
+    use domain::model::{ChatActionKind as K, SearchFilter};
+    let chat = app.global::<Chat>();
+    let li = move |s: &dyn Fn(Action), i: L| s(Action::Chat(ChatIntent::List(i)));
+    macro_rules! on {
+        ($setter:ident, |$($a:ident),*| $body:expr) => {{
+            let s = send.clone();
+            chat.$setter(move |$($a),*| {
+                let intent = intent_of(|| $body);
+                if let Some(i) = intent {
+                    li(&s, i);
+                }
+            });
+        }};
+    }
+    on!(on_set_filter, |kind, id| Some(L::SetFilter(match kind {
+        1 => ListFilter::Archive,
+        2 => ListFilter::Folder(id),
+        _ => ListFilter::All,
+    })));
+    on!(on_search_edited, |q| Some(L::SearchQuery(q.to_string())));
+    on!(on_search_more, | | Some(L::SearchMore));
+    on!(on_open_result, |peer, msg| peer.parse().ok().map(|peer_id| L::OpenResult {
+        peer_id,
+        message_id: msg.parse().unwrap_or(0),
+    }));
+    on!(on_dialog_action, |peer, kind| {
+        let peer_id: i64 = peer.parse().ok()?;
+        let kind = match kind {
+            0 => K::Mute,
+            1 => K::Unmute,
+            2 => K::Archive,
+            3 => K::Unarchive,
+            4 => K::Pin,
+            5 => K::Unpin,
+            6 => K::MarkUnread,
+            7 => K::ClearHistory,
+            8 => K::DeleteChat,
+            9 => K::Leave,
+            10 => K::Block,
+            11 => K::Unblock,
+            20 => return Some(L::MarkRead(peer_id)),
+            _ => return None,
+        };
+        Some(L::Action { peer_id, kind })
+    });
+    on!(on_action_toggle_revoke, | | Some(L::ToggleConfirmRevoke));
+    on!(on_action_confirmed, | | Some(L::ConfirmAction));
+    on!(on_action_cancel, | | Some(L::CancelAction));
+    on!(on_show_panel, |p| Some(L::ShowPanel(match p {
+        1 => Some(Panel::Info),
+        2 => Some(Panel::Search),
+        _ => None,
+    })));
+    on!(on_members_edited, |q| Some(L::MembersQuery(q.to_string())));
+    on!(on_cs_edited, |q| Some(L::ChatSearchQuery(q.to_string())));
+    on!(on_cs_set_filter, |f| Some(L::ChatSearchFilter(match f {
+        1 => SearchFilter::Media,
+        2 => SearchFilter::Files,
+        3 => SearchFilter::Links,
+        4 => SearchFilter::Voice,
+        _ => SearchFilter::All,
+    })));
+    on!(on_cs_set_period, |p| Some(L::ChatSearchPeriod(match p {
+        1 => Period::Day,
+        2 => Period::Week,
+        3 => Period::Month,
+        4 => Period::Year,
+        _ => Period::Any,
+    })));
+    on!(on_cs_set_from, |id| Some(L::ChatSearchFrom(id.parse().ok())));
+    on!(on_cs_step, |d| Some(L::ChatSearchStep(d)));
+    on!(on_cs_open, |id| id.parse().ok().map(L::ChatSearchOpen));
+    on!(on_cs_more, | | Some(L::ChatSearchMore));
+}
+
 /// Ссылка из сообщения — во внешней программе. Только http(s) и почта;
 /// адрес в журнал не пишется.
 fn open_link(url: &str) {

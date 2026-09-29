@@ -111,6 +111,51 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE outbox ADD COLUMN entities TEXT NOT NULL DEFAULT '';
     "#,
+    // 7 (В6): поиск по базе, папки, настройки диалогов.
+    // messages — WITHOUT ROWID, поэтому у каждого сообщения свой ключ в
+    // msg_keys, а индекс FTS5 без хранения текста удаляется по нему
+    // (contentless_delete). Индекс ведут триггеры: всегда согласован с таблицей.
+    // «ё» индексируется как «е» (remove_diacritics работает только для латиницы).
+    r#"
+    DROP TABLE messages_fts;
+    CREATE TABLE msg_keys (
+        rid     INTEGER PRIMARY KEY,
+        peer_id INTEGER NOT NULL,
+        id      INTEGER NOT NULL,
+        UNIQUE (peer_id, id)
+    );
+    CREATE VIRTUAL TABLE messages_fts USING fts5(text, content='', contentless_delete=1,
+        tokenize='unicode61 remove_diacritics 2');
+    CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+        INSERT INTO msg_keys (peer_id, id) VALUES (new.peer_id, new.id);
+        INSERT INTO messages_fts (rowid, text) VALUES (last_insert_rowid(), replace(replace(new.text, 'ё', 'е'), 'Ё', 'Е'));
+    END;
+    CREATE TRIGGER messages_au AFTER UPDATE OF text ON messages WHEN old.text != new.text BEGIN
+        DELETE FROM messages_fts WHERE rowid = (SELECT rid FROM msg_keys WHERE peer_id = new.peer_id AND id = new.id);
+        INSERT INTO messages_fts (rowid, text)
+            SELECT rid, replace(replace(new.text, 'ё', 'е'), 'Ё', 'Е') FROM msg_keys WHERE peer_id = new.peer_id AND id = new.id;
+    END;
+    CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+        DELETE FROM messages_fts WHERE rowid = (SELECT rid FROM msg_keys WHERE peer_id = old.peer_id AND id = old.id);
+        DELETE FROM msg_keys WHERE peer_id = old.peer_id AND id = old.id;
+    END;
+    INSERT INTO msg_keys (peer_id, id) SELECT peer_id, id FROM messages;
+    INSERT INTO messages_fts (rowid, text)
+        SELECT k.rid, replace(replace(m.text, 'ё', 'е'), 'Ё', 'Е') FROM msg_keys k
+        JOIN messages m ON m.peer_id = k.peer_id AND m.id = k.id;
+    ALTER TABLE dialogs ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE dialogs ADD COLUMN unread_mark INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE folders (
+        id       INTEGER PRIMARY KEY,
+        pos      INTEGER NOT NULL,
+        title    TEXT NOT NULL,
+        emoticon TEXT NOT NULL DEFAULT '',
+        flags    INTEGER NOT NULL DEFAULT 0,
+        pinned   TEXT NOT NULL DEFAULT '',   -- помеченные id через запятую
+        include  TEXT NOT NULL DEFAULT '',
+        exclude  TEXT NOT NULL DEFAULT ''
+    );
+    "#,
 ];
 
 /// Текущая версия схемы.
@@ -227,11 +272,14 @@ impl Store {
     /// Настройки приложения (не аккаунта) остаются.
     pub fn wipe_account(&mut self) -> Result<(), StoreError> {
         let tx = self.conn.transaction()?;
-        // Бесконтентная FTS5 очищается специальной командой, а не DELETE.
-        tx.execute("INSERT INTO messages_fts (messages_fts) VALUES ('delete-all')", [])?;
-        for t in ["messages", "dialogs", "peers", "outbox", "media", "update_state", "drafts"] {
+        // Сообщения первыми: триггер убирает их из индекса поиска и msg_keys;
+        // затем индекс очищается целиком на всякий случай.
+        for t in ["messages", "msg_keys", "dialogs", "peers", "outbox", "media", "update_state", "drafts", "folders",
+            "history_ranges"]
+        {
             tx.execute(&format!("DELETE FROM {t}"), [])?;
         }
+        tx.execute("INSERT INTO messages_fts (messages_fts) VALUES ('delete-all')", [])?;
         tx.execute("DELETE FROM settings WHERE key LIKE 'account.%'", [])?;
         tx.commit()?;
         self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
@@ -353,8 +401,11 @@ mod tests {
         s.set_setting("ui.lang", "en").unwrap();
         s.set_setting("account.user_id", "5").unwrap();
         s.conn().execute("INSERT INTO peers (id, kind, name) VALUES (1, 0, 'x')", []).unwrap();
-        s.conn().execute("INSERT INTO messages_fts (rowid, text) VALUES (1, 'привет мир')", []).unwrap();
+        s.conn().execute("INSERT INTO messages (peer_id, id, date, text) VALUES (1, 1, 1, 'привет мир')", []).unwrap();
         s.wipe_account().unwrap();
+        let n: i64 = s.conn().query_row("SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'привет'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "индекс поиска очищен");
         assert_eq!(s.setting("ui.lang").unwrap().as_deref(), Some("en"));
         assert_eq!(s.setting("account.user_id").unwrap(), None);
         let n: i64 = s.conn().query_row("SELECT count(*) FROM peers", [], |r| r.get(0)).unwrap();
@@ -362,14 +413,18 @@ mod tests {
     }
 
     #[test]
-    fn fts5_is_available() {
+    fn fts5_follows_messages() {
         let s = Store::in_memory().unwrap();
-        s.conn().execute("INSERT INTO messages_fts (rowid, text) VALUES (7, 'Привет, мир')", []).unwrap();
-        let id: i64 = s
-            .conn()
-            .query_row("SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'привет'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(id, 7);
+        let c = s.conn();
+        let hits = |q: &str| -> i64 {
+            c.query_row("SELECT count(*) FROM messages_fts WHERE messages_fts MATCH ?1", [q], |r| r.get(0)).unwrap()
+        };
+        c.execute("INSERT INTO messages (peer_id, id, date, text) VALUES (5, 7, 1, 'Привет, мир')", []).unwrap();
+        assert_eq!(hits("привет"), 1, "регистр и знаки не мешают");
+        c.execute("UPDATE messages SET text = 'пока' WHERE peer_id = 5 AND id = 7", []).unwrap();
+        assert_eq!((hits("привет"), hits("пока")), (0, 1), "правка переиндексирует");
+        c.execute("DELETE FROM messages WHERE peer_id = 5 AND id = 7", []).unwrap();
+        assert_eq!(hits("пока"), 0, "удаление убирает из индекса");
     }
 
     #[test]

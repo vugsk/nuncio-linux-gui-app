@@ -15,7 +15,7 @@ use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPix
 
 use crate::richtext::{self, Fonts, Span, Style};
 use crate::scroller::Scroller;
-use crate::{avatar, App, Chat, DialogItem, MessageItem, PickerItem, RichLine, RichSeg};
+use crate::{avatar, App, Chat, DialogItem, FolderItem, MemberItem, MessageItem, PickerItem, RichLine, RichSeg, SearchRow};
 
 /// Подписи на языке интерфейса (в Rust: собираются из данных, не из разметки).
 pub fn media_label(kind: &str, ru: bool) -> &'static str {
@@ -538,11 +538,17 @@ impl ChatRenderer {
                     pinned: r.dialog.pinned,
                     selected: Some(r.peer.id) == m.open,
                     out_state,
+                    muted: r.dialog.muted,
+                    archived: r.dialog.folder == 1,
+                    kind: peer_kind_code(&r.peer),
+                    is_self: r.peer.is_self,
+                    unread_mark: r.dialog.unread_mark,
                 }
             })
             .collect();
         sync(&dialogs, items);
         chat.set_dialogs_loading(m.dialogs_loading);
+        self.render_lists(app, m, avatars);
 
         // Открытый чат.
         chat.set_has_open(m.open.is_some());
@@ -563,6 +569,7 @@ impl ChatRenderer {
             };
             chat.set_open_status(status.into());
             chat.set_can_write(!(peer.kind == PeerKind::Channel && peer.broadcast));
+            chat.set_open_id(peer.id.to_string().into());
         }
         // Те же модели (повторная установка без изменений ничего не стоит).
         chat.set_above(ModelRc::from(self.above.model()));
@@ -716,6 +723,274 @@ impl ChatRenderer {
             self.seen_sent = id;
             trace(format_args!("видно до {id}"));
             send(ChatIntent::Seen(id));
+        }
+    }
+}
+
+/// Вид чата для разметки: 0 личный, 1 группа, 2 канал.
+fn peer_kind_code(p: &Peer) -> i32 {
+    match p.kind {
+        PeerKind::User => 0,
+        PeerKind::Channel if p.broadcast => 2,
+        _ => 1,
+    }
+}
+
+/// «5 участников», «1 подписчик» — по правилам русского множественного числа.
+fn count_label(n: i32, broadcast: bool, ru: bool) -> String {
+    if !ru {
+        let w = if broadcast { "subscriber" } else { "member" };
+        return format!("{n} {w}{}", if n == 1 { "" } else { "s" });
+    }
+    let (one, few, many) =
+        if broadcast { ("подписчик", "подписчика", "подписчиков") } else { ("участник", "участника", "участников") };
+    let (d10, d100) = (n % 10, n % 100);
+    let w = if d10 == 1 && d100 != 11 {
+        one
+    } else if (2..=4).contains(&d10) && !(12..=14).contains(&d100) {
+        few
+    } else {
+        many
+    };
+    format!("{n} {w}")
+}
+
+fn model<T: Clone + 'static>(v: Vec<T>) -> ModelRc<T> {
+    ModelRc::from(Rc::new(VecModel::from(v)))
+}
+
+impl ChatRenderer {
+    /// Фильтр папок, поиск в шапке, правая панель, подтверждение действий (В6).
+    fn render_lists(&mut self, app: &App, m: &ChatModel, avatars: &HashMap<String, SharedPixelBuffer<Rgba8Pixel>>) {
+        use domain::chatlist::{ListFilter, Panel};
+        let chat = app.global::<Chat>();
+        let ru = m.lang == "ru";
+        let all = if ru { "Все чаты" } else { "All chats" };
+        let archive = if ru { "Архив" } else { "Archive" };
+        let title = match m.filter {
+            ListFilter::All => all.to_string(),
+            ListFilter::Archive => archive.to_string(),
+            ListFilter::Folder(id) => m.folders.iter().find(|f| f.id == id).map(|f| f.title.clone()).unwrap_or_default(),
+        };
+        chat.set_filter_title(title.into());
+        let mut folders = vec![FolderItem {
+            kind: 0,
+            id: 0,
+            title: all.into(),
+            unread: m.unread_in(ListFilter::All) as i32,
+            selected: m.filter == ListFilter::All,
+        }];
+        for f in &m.folders {
+            let t = if f.emoticon.is_empty() { f.title.clone() } else { format!("{} {}", f.emoticon, f.title) };
+            folders.push(FolderItem {
+                kind: 2,
+                id: f.id,
+                title: t.into(),
+                unread: m.unread_in(ListFilter::Folder(f.id)) as i32,
+                selected: m.filter == ListFilter::Folder(f.id),
+            });
+        }
+        if m.all_rows.iter().any(|r| r.dialog.folder == 1) {
+            folders.push(FolderItem {
+                kind: 1,
+                id: 1,
+                title: archive.into(),
+                unread: m.unread_in(ListFilter::Archive) as i32,
+                selected: m.filter == ListFilter::Archive,
+            });
+        }
+        chat.set_folders(model(folders));
+
+        // Поиск в шапке: разделы по источнику, чтобы база и сервер не путались.
+        let row_of = |this: &mut Self, p: &Peer, msg: Option<&Message>| -> SearchRow {
+            let name = peer_name(p, ru);
+            let path = m.all_rows.iter().find(|r| r.peer.id == p.id).map(|r| r.avatar_path.clone()).unwrap_or_default();
+            let img = this.image(&path, avatars.get(&path));
+            SearchRow {
+                header: false,
+                peer: p.id.to_string().into(),
+                msg: msg.map(|x| x.id.to_string()).unwrap_or_default().into(),
+                initials: if p.is_self { "★".into() } else { avatar::initials(&name).into() },
+                title: name.into(),
+                text: match msg {
+                    Some(x) => domain::chat::snippet(x).into(),
+                    None if !p.username.is_empty() => format!("@{}", p.username).into(),
+                    None => "".into(),
+                },
+                time: msg.map(|x| timefmt::dialog_time(x.date, m.now, &m.lang)).unwrap_or_default().into(),
+                color: rgb(avatar::color_for(p.id)),
+                has_avatar: img.is_some() && !p.is_self,
+                avatar: img.unwrap_or_default(),
+            }
+        };
+        let header = |t: &str| SearchRow { header: true, title: t.into(), ..Default::default() };
+        let mut rows = Vec::new();
+        if let Some(s) = &m.search {
+            if !s.chats.is_empty() {
+                rows.push(header(if ru { "ЧАТЫ" } else { "CHATS" }));
+                for p in &s.chats {
+                    rows.push(row_of(self, p, None));
+                }
+            }
+            if !s.global_peers.is_empty() {
+                rows.push(header(if ru { "ГЛОБАЛЬНЫЙ ПОИСК" } else { "GLOBAL SEARCH" }));
+                for p in &s.global_peers {
+                    rows.push(row_of(self, p, None));
+                }
+            }
+            let msg_rows = |this: &mut Self, list: &[Message], rows: &mut Vec<SearchRow>| {
+                for x in list {
+                    if let Some(p) = m.search_peer(x.peer_id) {
+                        let p = p.clone();
+                        rows.push(row_of(this, &p, Some(x)));
+                    }
+                }
+            };
+            if !s.local.is_empty() {
+                rows.push(header(if ru { "СООБЩЕНИЯ" } else { "MESSAGES" }));
+                msg_rows(self, &s.local, &mut rows);
+            }
+            if !s.server.is_empty() {
+                rows.push(header(if ru { "СООБЩЕНИЯ НА СЕРВЕРЕ" } else { "MESSAGES ON SERVER" }));
+                msg_rows(self, &s.server, &mut rows);
+            }
+            chat.set_search_loading(s.server_loading);
+        } else {
+            chat.set_search_loading(false);
+        }
+        trace(format_args!("строк поиска {} (поиск {})", rows.len(), m.search.is_some()));
+        chat.set_search_rows(model(rows));
+
+        // Правая панель.
+        chat.set_panel(match m.panel {
+            None => 0,
+            Some(Panel::Info) => 1,
+            Some(Panel::Search) => 2,
+        });
+        if let Some(peer) = m.open_peer() {
+            let row = m.open_row();
+            chat.set_info_kind(peer_kind_code(peer));
+            chat.set_info_self(peer.is_self);
+            chat.set_info_muted(row.is_some_and(|r| r.dialog.muted));
+            chat.set_info_archived(row.is_some_and(|r| r.dialog.folder == 1));
+            chat.set_info_username(if peer.username.is_empty() { "".into() } else { format!("@{}", peer.username).into() });
+            let info = m.info.as_ref().filter(|i| i.peer_id == peer.id);
+            chat.set_info_about(info.map(|i| i.about.clone()).unwrap_or_default().into());
+            chat.set_info_blocked(info.is_some_and(|i| i.blocked));
+            let status = match (peer.kind, info) {
+                (PeerKind::User, _) if peer.is_bot => if ru { "бот" } else { "bot" }.to_string(),
+                (PeerKind::User, _) => String::new(),
+                (_, Some(i)) if i.members > 0 => count_label(i.members, peer.broadcast, ru),
+                _ => String::new(),
+            };
+            chat.set_info_status(status.into());
+            let mut members: Vec<(i64, i32)> = info.map(|i| i.participants.clone()).unwrap_or_default();
+            members.sort_by_key(|(_, role)| -role);
+            let names: HashMap<i64, &Peer> = info.map(|i| i.peers.iter().map(|p| (p.id, p)).collect()).unwrap_or_default();
+            let items: Vec<MemberItem> = members
+                .iter()
+                .filter_map(|(id, role)| {
+                    let p = names.get(id)?;
+                    let name = peer_name(p, ru);
+                    Some(MemberItem {
+                        id: id.to_string().into(),
+                        initials: avatar::initials(&name).into(),
+                        name: name.into(),
+                        color: rgb(avatar::color_for(*id)),
+                        avatar: Image::default(),
+                        has_avatar: false,
+                        role: match (role, ru) {
+                            (2, true) => "владелец",
+                            (2, false) => "owner",
+                            (1, true) => "админ",
+                            (1, false) => "admin",
+                            _ => "",
+                        }
+                        .into(),
+                    })
+                })
+                .collect();
+            let mut options = vec![if ru { "Любой отправитель".to_string() } else { "Any sender".to_string() }];
+            options.extend(items.iter().map(|i| i.name.to_string()));
+            chat.set_cs_from_options(model(options.into_iter().map(Into::into).collect()));
+            chat.set_info_members(model(items));
+        }
+        // Поиск по чату.
+        if let Some(cs) = &m.chat_search {
+            let me = if ru { "Вы" } else { "You" };
+            let sender = |x: &Message| -> String {
+                if x.out {
+                    return me.into();
+                }
+                m.senders
+                    .get(&x.from_id)
+                    .cloned()
+                    .or_else(|| m.info.as_ref().and_then(|i| i.peers.iter().find(|p| p.id == x.from_id)).map(|p| peer_name(p, ru)))
+                    .or_else(|| m.open_peer().map(|p| peer_name(p, ru)))
+                    .unwrap_or_default()
+            };
+            let rows: Vec<SearchRow> = cs
+                .results
+                .iter()
+                .map(|x| {
+                    let name = sender(x);
+                    SearchRow {
+                        header: false,
+                        peer: x.peer_id.to_string().into(),
+                        msg: x.id.to_string().into(),
+                        initials: avatar::initials(&name).into(),
+                        title: name.into(),
+                        text: domain::chat::snippet(x).into(),
+                        time: timefmt::dialog_time(x.date, m.now, &m.lang).into(),
+                        color: rgb(avatar::color_for(x.from_id)),
+                        ..Default::default()
+                    }
+                })
+                .collect();
+            chat.set_cs_rows(model(rows));
+            let counter = match (cs.index, cs.total) {
+                (Some(i), t) if t > 0 => if ru { format!("{} из {t}", i + 1) } else { format!("{} of {t}", i + 1) },
+                (None, t) if t > 0 => if ru { format!("Найдено: {t}") } else { format!("Found: {t}") },
+                _ => String::new(),
+            };
+            chat.set_cs_counter(counter.into());
+            chat.set_cs_filter(cs.filter as i32);
+            chat.set_cs_period(cs.period as i32);
+            chat.set_cs_loading(cs.loading);
+            let from = cs.from.and_then(|f| {
+                m.info.as_ref().and_then(|i| i.peers.iter().find(|p| p.id == f)).map(|p| peer_name(p, ru))
+            });
+            chat.set_cs_from_name(from.unwrap_or_default().into());
+        } else {
+            chat.set_cs_rows(model(Vec::new()));
+            chat.set_cs_counter("".into());
+        }
+
+        // Подтверждение опасного действия.
+        chat.set_action_confirm(m.confirm.is_some());
+        if let Some(c) = &m.confirm {
+            use domain::model::ChatActionKind as K;
+            let name = m.all_rows.iter().find(|r| r.peer.id == c.peer_id).map(|r| peer_name(&r.peer, ru)).unwrap_or_default();
+            let channel = m.all_rows.iter().any(|r| r.peer.id == c.peer_id && r.peer.broadcast);
+            let (title, text, ok) = match (c.kind, ru) {
+                (K::ClearHistory, true) => ("Очистить историю?".to_string(), "Сообщения будут удалены у вас. Это нельзя отменить.", "Очистить"),
+                (K::ClearHistory, false) => ("Clear history?".to_string(), "Messages will be deleted for you. This can't be undone.", "Clear"),
+                (K::DeleteChat, true) => (format!("Удалить чат с {name}?"), "История будет удалена у вас.", "Удалить"),
+                (K::DeleteChat, false) => (format!("Delete chat with {name}?"), "The history will be deleted for you.", "Delete"),
+                (K::Leave, true) if channel => ("Покинуть канал?".to_string(), "Вы больше не будете получать его сообщения.", "Покинуть"),
+                (K::Leave, true) => ("Покинуть группу?".to_string(), "Вы больше не будете получать её сообщения.", "Покинуть"),
+                (K::Leave, false) if channel => ("Leave channel?".to_string(), "You will no longer receive its messages.", "Leave"),
+                (K::Leave, false) => ("Leave group?".to_string(), "You will no longer receive its messages.", "Leave"),
+                (K::Block, true) => (format!("Заблокировать {name}?"), "Этот пользователь не сможет писать вам.", "Заблокировать"),
+                (K::Block, false) => (format!("Block {name}?"), "This user won't be able to message you.", "Block"),
+                (_, _) => (String::new(), "", "OK"),
+            };
+            chat.set_action_title(title.into());
+            chat.set_action_text(text.into());
+            chat.set_action_ok(ok.into());
+            chat.set_action_can_revoke(c.kind == K::DeleteChat);
+            chat.set_action_revoke(c.revoke);
+            chat.set_action_revoke_text(if ru { format!("Удалить и у {name}") } else { format!("Also delete for {name}") }.into());
         }
     }
 }

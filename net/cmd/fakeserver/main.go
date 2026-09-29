@@ -30,6 +30,7 @@ func main() {
 	dump := flag.String("dump", "", "куда сохранить историю при остановке")
 	history := flag.Int("history", 0, "сколько сообщений заранее в чате (длинная история для прокрутки)")
 	unread := flag.Int("unread", 0, "непрочитанных в диалоге (0 — одно, −1 — всё прочитано)")
+	extras := flag.Bool("extras", false, "ещё собеседники и папка (поиск, папки, архив — В6)")
 	flag.Parse()
 
 	msgs := []string{"начало"}
@@ -46,6 +47,15 @@ func main() {
 
 	acc := &fakeserver.Account{Phone: "1", Code: "1", Registered: true, UserID: 5, FirstName: "Тест", AutoQR: true,
 		Contacts: []fakeserver.Contact{{ID: 100, Name: "Отправитель", AccessHash: 11, Messages: msgs, OutEvery: 3, Unread: *unread}}}
+	if *extras {
+		// Раньше основного чата (старше по датам): первым в списке остаётся «Отправитель».
+		acc.Contacts = append([]fakeserver.Contact{
+			{ID: 101, Name: "Мария", AccessHash: 12, About: "дизайнер", Unread: -1,
+				Messages: []string{"привет", "релиз в пятницу", "ок, договорились"}},
+			{ID: 102, Name: "Архивный", AccessHash: 13, Archived: true, Unread: -1, Messages: []string{"старое"}},
+		}, acc.Contacts...)
+		acc.Folders = []fakeserver.FakeFolder{{ID: 2, Title: "Работа", Include: []int64{101}}}
+	}
 	srv, err := fakeserver.StartAt(*listen, fakeserver.Options{DC: 2, Account: acc})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

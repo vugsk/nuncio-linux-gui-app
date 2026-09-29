@@ -71,6 +71,8 @@ pub struct Peer {
     pub broadcast: bool,
     /// Неполные сведения: `access_hash` не годится для запросов.
     pub min: bool,
+    /// В контактах (правила папок «Контакты» и «Не контакты»).
+    pub contact: bool,
 }
 
 impl Peer {
@@ -181,6 +183,72 @@ pub struct Dialog {
     pub folder: i32,
     pub read_inbox_max_id: i32,
     pub read_outbox_max_id: i32,
+    /// Уведомления выключены.
+    pub muted: bool,
+    /// Помечен непрочитанным вручную.
+    pub unread_mark: bool,
+}
+
+/// Папка (dialogFilter): правила состава над диалогами, id — помеченные.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Folder {
+    pub id: i32,
+    pub title: String,
+    pub emoticon: String,
+    /// Папка по ссылке: только явно перечисленные чаты.
+    pub chatlist: bool,
+    pub contacts: bool,
+    pub non_contacts: bool,
+    pub groups: bool,
+    pub broadcasts: bool,
+    pub bots: bool,
+    pub exclude_muted: bool,
+    pub exclude_read: bool,
+    pub exclude_archived: bool,
+    pub pinned: Vec<i64>,
+    pub include: Vec<i64>,
+    pub exclude: Vec<i64>,
+}
+
+/// Сведения о чате для правой панели (Св-1).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ChatInfo {
+    pub peer_id: i64,
+    pub about: String,
+    /// Участников или подписчиков (0 — неизвестно).
+    pub members: i32,
+    /// Участник и роль: 0 участник, 1 администратор, 2 создатель.
+    pub participants: Vec<(i64, i32)>,
+    pub peers: Vec<Peer>,
+    pub blocked: bool,
+}
+
+/// Фильтр поиска по чату (Дз-18).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchFilter {
+    #[default]
+    All,
+    Media,
+    Files,
+    Links,
+    Voice,
+}
+
+/// Действие над чатом (Сп-4, Св-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatActionKind {
+    Mute,
+    Unmute,
+    Archive,
+    Unarchive,
+    Pin,
+    Unpin,
+    MarkUnread,
+    ClearHistory,
+    DeleteChat,
+    Leave,
+    Block,
+    Unblock,
 }
 
 /// Состояние обновлений (О-5): пишется одной транзакцией с событиями.
@@ -206,6 +274,14 @@ pub enum DomainUpdate {
     ResetChannel { peer_id: i64 },
     /// Закреплено или откреплено (Чт-14).
     Pinned { peer_id: i64, ids: Vec<i32>, pinned: bool },
+    /// Папки изменены на сервере: перечитать список папок.
+    FoldersChanged,
+    /// Чат перенесён в архив (1) или из архива (0).
+    PeerFolder { peer_id: i64, folder: i32 },
+    /// Настройки чата; None — не менялось.
+    PeerSettings { peer_id: i64, muted: Option<bool>, pinned: Option<bool>, unread_mark: Option<bool> },
+    /// Порядок закреплённых чатов изменился: перечитать диалоги.
+    PinnedDialogs,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -249,6 +325,22 @@ pub enum Command {
     LoadMessages { peer: PeerRef, ids: Vec<i32> },
     GetContacts,
     SearchPeers { query: String },
+    LoadFolders,
+    /// Поиск сообщений: `peer` None — по всем чатам на сервере.
+    SearchMessages {
+        peer: Option<PeerRef>,
+        query: String,
+        filter: SearchFilter,
+        min_date: i64,
+        max_date: i64,
+        from: Option<PeerRef>,
+        offset_id: i32,
+        limit: i32,
+        offset_rate: i32,
+        offset_peer: Option<PeerRef>,
+    },
+    GetChatInfo { peer: PeerRef, members_query: String },
+    ChatAction { peer: PeerRef, kind: ChatActionKind, revoke: bool },
 }
 
 /// Шаг входа.
@@ -359,10 +451,12 @@ pub enum Payload {
     Countries(Vec<Country>),
     ProxyCheck { rtt_ms: u32 },
     Dialogs { dialogs: Vec<Dialog>, messages: Vec<Message>, peers: Vec<Peer>, total: i32, complete: bool },
-    History { messages: Vec<Message>, peers: Vec<Peer>, total: i32 },
+    History { messages: Vec<Message>, peers: Vec<Peer>, total: i32, next_rate: i32 },
     Sent(Message),
     File(String),
     Peers(Vec<Peer>),
+    Folders(Vec<Folder>),
+    ChatInfo(ChatInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

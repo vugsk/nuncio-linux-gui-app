@@ -471,7 +471,7 @@ func (m *Manager) update(b *batch, u tl.UpdateClass, check bool) {
 			b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_Pinned{Pinned: &pb.Pinned{PeerId: ch, Ids: v.Messages,
 				Pinned: v.Pinned}}})
 		}
-	case *tl.UpdateReadMessagesContents, *tl.UpdateWebPage, *tl.UpdateFolderPeers:
+	case *tl.UpdateReadMessagesContents, *tl.UpdateWebPage:
 		// Содержательно — В5–В7; pts учитывается, чтобы не было ложных разрывов.
 		if check {
 			var p, c int32
@@ -479,8 +479,6 @@ func (m *Manager) update(b *batch, u tl.UpdateClass, check bool) {
 			case *tl.UpdateReadMessagesContents:
 				p, c = x.Pts, x.PtsCount
 			case *tl.UpdateWebPage:
-				p, c = x.Pts, x.PtsCount
-			case *tl.UpdateFolderPeers:
 				p, c = x.Pts, x.PtsCount
 			}
 			m.checkPts(b, p, c)
@@ -499,6 +497,46 @@ func (m *Manager) update(b *batch, u tl.UpdateClass, check bool) {
 		if m.channelPts(b, ch, v.Pts, v.PtsCount, check) {
 			b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_DeleteMessages{DeleteMessages: &pb.DeleteMessages{
 				PeerId: ch, Ids: v.Messages}}})
+		}
+	case *tl.UpdateDialogFilter, *tl.UpdateDialogFilters, *tl.UpdateDialogFilterOrder:
+		b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_FoldersChanged{FoldersChanged: &pb.FoldersChanged{}}})
+	case *tl.UpdateFolderPeers:
+		if pts(v.Pts, v.PtsCount) {
+			for _, fp := range v.FolderPeers {
+				if f, ok := fp.(*tl.FolderPeer); ok {
+					b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_PeerFolder{PeerFolder: &pb.PeerFolder{
+						PeerId: conv.PeerID(f.Peer), Folder: f.FolderId}}})
+				}
+			}
+		}
+	case *tl.UpdateNotifySettings:
+		if np, ok := v.Peer.(*tl.NotifyPeer); ok {
+			muted := int32(0)
+			if conv.Muted(v.NotifySettings) {
+				muted = 1
+			}
+			b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_PeerSettings{PeerSettings: &pb.PeerSettings{
+				PeerId: conv.PeerID(np.Peer), Muted: muted, Pinned: -1, UnreadMark: -1}}})
+		}
+	case *tl.UpdateDialogPinned:
+		if dp, ok := v.Peer.(*tl.DialogPeer); ok {
+			pinned := int32(0)
+			if v.Pinned {
+				pinned = 1
+			}
+			b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_PeerSettings{PeerSettings: &pb.PeerSettings{
+				PeerId: conv.PeerID(dp.Peer), Muted: -1, Pinned: pinned, UnreadMark: -1}}})
+		}
+	case *tl.UpdatePinnedDialogs:
+		b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_PinnedDialogs{PinnedDialogs: &pb.ResetDialogs{}}})
+	case *tl.UpdateDialogUnreadMark:
+		if dp, ok := v.Peer.(*tl.DialogPeer); ok {
+			mark := int32(0)
+			if v.Unread {
+				mark = 1
+			}
+			b.add(&pb.DomainUpdate{Body: &pb.DomainUpdate_PeerSettings{PeerSettings: &pb.PeerSettings{
+				PeerId: conv.PeerID(dp.Peer), Muted: -1, Pinned: -1, UnreadMark: mark}}})
 		}
 	case *tl.UpdateReadChannelInbox:
 		ch := conv.ChannelID(v.ChannelId)

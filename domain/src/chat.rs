@@ -52,6 +52,15 @@ pub enum DbOp {
     OutboxFail { local_id: i64, error: String },
     OutboxRetry { local_id: i64 },
     OutboxDelete { local_id: i64 },
+    /// Папки (В6): сохранить с сервера; перечитать (результат — `set_folders`).
+    SaveFolders(Vec<crate::model::Folder>),
+    ReloadFolders,
+    /// Поиск по базе (результат — `set_local_search`).
+    SearchLocal { query: String },
+    /// Настройки диалога по действию (как пришли бы обновлением).
+    ApplyLocal(Vec<crate::model::DomainUpdate>),
+    /// История очищена или чат удалён: убрать из базы (dialog — и сам диалог).
+    DropChat { peer_id: i64, dialog: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,10 +158,12 @@ pub enum ChatIntent {
     DismissToast,
     /// Ширина ленты истории, px: по ней раскладывается текст с эмодзи (О-14).
     ViewWidth(i32),
+    /// Папки, поиск, правая панель, действия над чатом (В6, chatlist.rs).
+    List(crate::chatlist::ListIntent),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pending {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Pending {
     Dialogs,
     History { peer_id: i64, offset_id: i32, add_offset: i32, limit: i32 },
     Read { peer_id: i64 },
@@ -163,11 +174,28 @@ enum Pending {
     Quotes { peer_id: i64 },
     PickerSearch,
     Contacts,
+    Folders,
+    GlobalSearch { query: String },
+    ServerPeers { query: String },
+    ChatInfo { peer_id: i64 },
+    ChatSearch { peer_id: i64, seq: u64 },
+    ChatAction { peer_id: i64, kind: crate::model::ChatActionKind },
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ChatModel {
+    /// Видимый список: по текущему фильтру (основной, архив, папка).
     pub rows: Vec<DialogRow>,
+    /// Все диалоги из базы (основной список и архив): поиск собеседников, папки.
+    pub all_rows: Vec<DialogRow>,
+    /// Папки, фильтр списка, поиск, правая панель, подтверждение (В6, chatlist.rs).
+    pub folders: Vec<crate::model::Folder>,
+    pub filter: crate::chatlist::ListFilter,
+    pub search: Option<crate::chatlist::GlobalSearch>,
+    pub panel: Option<crate::chatlist::Panel>,
+    pub info: Option<crate::model::ChatInfo>,
+    pub chat_search: Option<crate::chatlist::ChatSearch>,
+    pub confirm: Option<crate::chatlist::Confirm>,
     pub open: Option<i64>,
     /// Окно истории открытого чата, по возрастанию id (очередь отправки в конце).
     pub history: Vec<Message>,
@@ -216,7 +244,7 @@ pub struct ChatModel {
     /// Ширина ленты истории, px (0 — ещё неизвестна).
     pub view_width: i32,
     next_id: u64,
-    pending: HashMap<u64, Pending>,
+    pub(crate) pending: HashMap<u64, Pending>,
     pages: u32,
     avatar_queue: VecDeque<(PeerRef, i64, i32)>,
     avatar_requested: HashSet<(i64, i64)>,
@@ -235,7 +263,7 @@ impl ChatModel {
         }
     }
 
-    fn send(&mut self, cmd: Command, p: Pending, out: &mut Vec<ChatEffect>) {
+    pub(crate) fn send(&mut self, cmd: Command, p: Pending, out: &mut Vec<ChatEffect>) {
         let id = self.next_id;
         self.next_id += 1;
         self.pending.insert(id, p);
@@ -245,15 +273,15 @@ impl ChatModel {
     /// Открытый собеседник.
     pub fn open_row(&self) -> Option<&DialogRow> {
         let id = self.open?;
-        self.rows.iter().find(|r| r.peer.id == id)
+        self.all_rows.iter().find(|r| r.peer.id == id)
     }
 
-    fn peer_ref(&self, peer_id: i64) -> Option<PeerRef> {
+    pub(crate) fn peer_ref(&self, peer_id: i64) -> Option<PeerRef> {
         self.open_peer_of(peer_id).map(|p| p.peer_ref())
     }
 
     fn open_peer_of(&self, peer_id: i64) -> Option<&Peer> {
-        self.rows.iter().find(|r| r.peer.id == peer_id).map(|r| &r.peer).or_else(|| self.extra_peers.get(&peer_id))
+        self.all_rows.iter().find(|r| r.peer.id == peer_id).map(|r| &r.peer).or_else(|| self.extra_peers.get(&peer_id))
     }
 
     /// Собеседник открытого чата (в том числе ещё не в списке диалогов).
@@ -261,7 +289,7 @@ impl ChatModel {
         self.open_peer_of(self.open?)
     }
 
-    fn toast(&mut self, text: &str) {
+    pub(crate) fn toast(&mut self, text: &str) {
         self.toast = Some((text.to_string(), self.now + 3));
     }
 
@@ -269,7 +297,7 @@ impl ChatModel {
         self.history.iter().find(|m| m.id == id)
     }
 
-    fn load_dialogs_page(&mut self, offset: Option<(i64, i32, PeerRef)>, out: &mut Vec<ChatEffect>) {
+    pub(crate) fn load_dialogs_page(&mut self, offset: Option<(i64, i32, PeerRef)>, out: &mut Vec<ChatEffect>) {
         self.dialogs_loading = true;
         let (offset_date, offset_id, offset_peer) = match offset {
             Some((d, i, p)) => (d, i, Some(p)),
@@ -280,16 +308,18 @@ impl ChatModel {
 
     /// Вход выполнен: показать сохранённое и обновить с сервера.
     pub fn enter(&mut self) -> Vec<ChatEffect> {
-        let mut out = vec![ChatEffect::Db(DbOp::ReloadRows)];
+        let mut out = vec![ChatEffect::Db(DbOp::ReloadRows), ChatEffect::Db(DbOp::ReloadFolders)];
         self.pages = 0;
         self.load_dialogs_page(None, &mut out);
+        self.send(Command::LoadFolders, Pending::Folders, &mut out);
         out
     }
 
     /// Результат `ReloadRows`: список и очередь аватаров.
     pub fn set_rows(&mut self, rows: Vec<DialogRow>) -> Vec<ChatEffect> {
-        self.rows = rows;
-        for r in &self.rows {
+        self.all_rows = rows;
+        self.apply_filter();
+        for r in &self.all_rows {
             let key = (r.peer.id, r.peer.photo_id);
             if r.peer.photo_id != 0 && r.avatar_path.is_empty() && !r.peer.min && self.avatar_requested.insert(key) {
                 self.avatar_queue.push_back((r.peer.peer_ref(), r.peer.photo_id, r.peer.photo_dc));
@@ -543,7 +573,7 @@ impl ChatModel {
                 let peers: Vec<Peer> =
                     p.selected.iter().filter_map(|id| p.results.iter().find(|x| x.id == *id).cloned()).collect();
                 for peer in &peers {
-                    if !self.rows.iter().any(|r| r.peer.id == peer.id) {
+                    if !self.all_rows.iter().any(|r| r.peer.id == peer.id) {
                         self.extra_peers.insert(peer.id, peer.clone());
                     }
                 }
@@ -648,6 +678,7 @@ impl ChatModel {
                 }
             }
             ChatIntent::DismissToast => self.toast = None,
+            ChatIntent::List(li) => self.list_intent(li, &mut out),
             ChatIntent::ViewWidth(w) => self.view_width = w.max(0),
             ChatIntent::NeedOlder => {
                 let Some(peer_id) = self.open else { return out };
@@ -780,7 +811,10 @@ impl ChatModel {
                     self.anchor = Anchor::Latest;
                     self.load_page(peer_id, 0, 0, HISTORY_PAGE, &mut out);
                 }
-                if b.updates.iter().any(|u| matches!(u, crate::model::DomainUpdate::Reset)) {
+                if b.updates.iter().any(|u| matches!(u, crate::model::DomainUpdate::FoldersChanged)) {
+                    self.send(Command::LoadFolders, Pending::Folders, &mut out);
+                }
+                if b.updates.iter().any(|u| matches!(u, crate::model::DomainUpdate::Reset | crate::model::DomainUpdate::PinnedDialogs)) {
                     self.pages = 0;
                     self.load_dialogs_page(None, &mut out);
                 }
@@ -910,6 +944,12 @@ impl ChatModel {
                     }
                 }
             }
+            p @ (Pending::Folders
+            | Pending::GlobalSearch { .. }
+            | Pending::ServerPeers { .. }
+            | Pending::ChatInfo { .. }
+            | Pending::ChatSearch { .. }
+            | Pending::ChatAction { .. }) => self.list_result(p, r, out),
             Pending::PickerSearch | Pending::Contacts => {
                 if let Payload::Peers(peers) = &r.payload {
                     out.push(ChatEffect::Db(DbOp::SavePeers(peers.clone())));
@@ -1081,19 +1121,19 @@ mod tests {
         let mut m = ChatModel::new(1, "ru", 0);
         m.set_rows(vec![row(10, 0, 100, 0)]);
         let hid = sends(&m.intent(ChatIntent::OpenChat(10)))[0].0;
-        let fx = m.event(&ok(hid, Payload::History { messages: page_ids(51..=100), peers: vec![], total: 70 }));
+        let fx = m.event(&ok(hid, Payload::History { messages: page_ids(51..=100), peers: vec![], total: 70, next_rate: 0 }));
         let span = Some(Span { peer_id: 10, lo: 51, hi: crate::history::LIVE });
         assert!(fx.iter().any(|e| matches!(e, ChatEffect::Db(DbOp::SaveHistory { span: s, .. }) if *s == span)));
         // Начало неизвестно — самое старое сообщение для полосы прокрутки.
         let (first_id, first) = sends(&fx)[0].clone();
         assert_eq!(first, Command::LoadHistory { peer: PeerRef { id: 10, access_hash: 30 }, offset_id: 1, add_offset: -1, limit: 1 });
-        m.event(&ok(first_id, Payload::History { messages: page_ids(1..=1), peers: vec![], total: 70 }));
+        m.event(&ok(first_id, Payload::History { messages: page_ids(1..=1), peers: vec![], total: 70, next_rate: 0 }));
         // В базе старше нет: страница с сервера, повторов пока грузится нет.
         m.set_history(10, win(page_ids(51..=100), |w| { w.end = true; w.need_older = true; }), HashMap::new());
         let (id, cmd) = sends(&m.intent(ChatIntent::NeedOlder))[0].clone();
         assert_eq!(cmd, Command::LoadHistory { peer: PeerRef { id: 10, access_hash: 30 }, offset_id: 51, add_offset: 0, limit: 50 });
         assert!(sends(&m.intent(ChatIntent::NeedOlder)).is_empty(), "пока грузится — без повторов");
-        let fx = m.event(&ok(id, Payload::History { messages: page_ids(31..=50), peers: vec![], total: 70 }));
+        let fx = m.event(&ok(id, Payload::History { messages: page_ids(31..=50), peers: vec![], total: 70, next_rate: 0 }));
         let span = Some(Span { peer_id: 10, lo: 0, hi: 50 });
         assert!(fx.iter().any(|e| matches!(e, ChatEffect::Db(DbOp::SaveHistory { span: s, .. }) if *s == span)));
         // В базе есть — окно сдвигается без сервера; дошли до начала — стоп.

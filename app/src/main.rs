@@ -164,6 +164,21 @@ impl Domain {
                             chat.set_picker_results(peers);
                         }
                     }
+                    ChatEffect::Db(DbOp::ReloadFolders) => {
+                        let f = self.db.as_ref().and_then(|db| db.call(|s| s.folders()));
+                        if let (Some(Ok(f)), Some(chat)) = (f, self.chat.as_mut()) {
+                            chat.set_folders(f);
+                        }
+                    }
+                    ChatEffect::Db(DbOp::SearchLocal { query }) => {
+                        let q = query.clone();
+                        let found = self.db.as_ref().and_then(|db| db.call(move |s| s.search_local(&q, 100)));
+                        match (found, self.chat.as_mut()) {
+                            (Some(Ok(msgs)), Some(chat)) => chat.set_local_search(&query, msgs),
+                            (Some(Err(e)), _) => log::error!("поиск по базе: {e}"),
+                            _ => {}
+                        }
+                    }
                     ChatEffect::Db(DbOp::ReloadPinned { peer_id }) => {
                         let pins = self.db.as_ref().and_then(|db| db.call(move |s| s.pinned(peer_id)));
                         if let (Some(Ok(p)), Some(chat)) = (pins, self.chat.as_mut()) {
@@ -198,7 +213,8 @@ impl Domain {
                 let list = self
                     .db
                     .as_ref()
-                    .and_then(|db| db.call(|s| s.dialog_rows(0, DIALOGS_WINDOW)))
+                    // Все диалоги (основной список и архив): фильтр и папки — в модели.
+                    .and_then(|db| db.call(|s| s.dialog_rows(-1, DIALOGS_WINDOW)))
                     .and_then(|r| r.map_err(|e| log::error!("список диалогов: {e}")).ok())
                     .unwrap_or_default();
                 for r in &list {
@@ -300,7 +316,13 @@ impl Domain {
             DbOp::OutboxFail { local_id, error } => s.outbox_fail(local_id, &error),
             DbOp::OutboxRetry { local_id } => s.outbox_retry(local_id, now),
             DbOp::OutboxDelete { local_id } => s.outbox_delete(local_id),
-            DbOp::PumpOutbox | DbOp::SearchPeers { .. } | DbOp::ReloadPinned { .. } => Ok(()),
+            DbOp::PumpOutbox | DbOp::SearchPeers { .. } | DbOp::ReloadPinned { .. } | DbOp::ReloadFolders
+            | DbOp::SearchLocal { .. } => Ok(()),
+            DbOp::SaveFolders(f) => s.save_folders(&f),
+            DbOp::ApplyLocal(updates) => {
+                s.apply_batch(&domain::model::UpdatesBatch { updates, ..Default::default() }).map(|_| ())
+            }
+            DbOp::DropChat { peer_id, dialog } => s.drop_chat(peer_id, dialog),
             DbOp::SavePeers(peers) => s.save_peers(&peers),
             DbOp::SaveDialogs { dialogs, messages, peers } => s.save_dialogs(&dialogs, &messages, &peers),
             DbOp::SaveHistory { messages, peers, span } => s.save_history(&messages, &peers, span),

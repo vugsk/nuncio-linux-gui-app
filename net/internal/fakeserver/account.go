@@ -31,6 +31,7 @@ type Account struct {
 	QRDC       int       // 0 — QR подтверждается в том же DC; иначе loginTokenMigrateTo на этот DC
 	AutoQR     bool      // QR «сканируется» сразу (вход без человека в сквозных проверках)
 	Contacts   []Contact // собеседники-пользователи с историей (диалоги)
+	Folders    []FakeFolder
 
 	mu         sync.Mutex
 	authorized map[uint64]bool // auth_key_id -> вошли
@@ -194,6 +195,17 @@ type Contact struct {
 	Messages   []string // от старых к новым; id сообщений общие по аккаунту
 	OutEvery   int      // каждое n-е из Messages — своё (0 — все входящие)
 	Unread     int      // непрочитанных в диалоге (0 — по умолчанию одно; −1 — всё прочитано)
+	About      string   // «о себе» для сведений о чате
+	Archived   bool
+	Muted      bool
+}
+
+// FakeFolder — папка поддельного аккаунта: явно включённые собеседники и виды.
+type FakeFolder struct {
+	ID       int32
+	Title    string
+	Include  []int64
+	Contacts bool
 }
 
 type fakeMsg struct {
@@ -458,8 +470,18 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 			if c.Unread == 0 {
 				unread = 1
 			}
-			out.Dialogs = append(out.Dialogs, &tl.Dialog{Peer: &tl.PeerUser{UserId: c.ID}, TopMessage: top.id,
-				UnreadCount: int32(unread), ReadInboxMaxId: top.id - int32(unread), NotifySettings: &tl.PeerNotifySettings{}})
+			notify := &tl.PeerNotifySettings{}
+			if c.Muted {
+				until := int32(2147483647)
+				notify.MuteUntil = &until
+			}
+			d := &tl.Dialog{Peer: &tl.PeerUser{UserId: c.ID}, TopMessage: top.id,
+				UnreadCount: int32(unread), ReadInboxMaxId: top.id - int32(unread), NotifySettings: notify}
+			if c.Archived {
+				one := int32(1)
+				d.FolderId = &one
+			}
+			out.Dialogs = append(out.Dialogs, d)
 			out.Messages = append(out.Messages, top.tl())
 		}
 		return out, nil
@@ -589,14 +611,99 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 			return nil, unauthorized
 		}
 		peer, _ := inputUser(r.Peer, a.UserID)
-		out := &tl.MessagesMessages{Topics: []tl.ForumTopicClass{}, Chats: []tl.ChatClass{}, Users: a.contactUsers()}
-		for i := len(a.msgs) - 1; i >= 0; i-- {
-			m := a.msgs[i]
-			if m.peer == peer && m.pinned && !m.deleted {
-				out.Messages = append(out.Messages, m.tl())
+		_, pinnedOnly := r.Filter.(*tl.InputMessagesFilterPinned)
+		var from int64
+		if f, ok := r.FromId.(*tl.InputPeerUser); ok {
+			from = f.UserId
+		}
+		return a.search(func(m fakeMsg) bool {
+			return m.peer == peer && (!pinnedOnly || m.pinned) &&
+				(from == 0 || (from == a.UserID) == m.out)
+		}, r.Q, r.MinDate, r.OffsetId, r.Limit), nil
+	case *tl.MessagesSearchGlobalRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		return a.search(func(fakeMsg) bool { return true }, r.Q, r.MinDate, r.OffsetId, r.Limit), nil
+	case *tl.MessagesGetDialogFiltersRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		out := &tl.MessagesDialogFilters{Filters: []tl.DialogFilterClass{&tl.DialogFilterDefault{}}}
+		for _, f := range a.Folders {
+			df := &tl.DialogFilter{Id: f.ID, Title: &tl.TextWithEntities{Text: f.Title, Entities: []tl.MessageEntityClass{}},
+				Contacts: f.Contacts, PinnedPeers: []tl.InputPeerClass{}, ExcludePeers: []tl.InputPeerClass{}}
+			for _, id := range f.Include {
+				df.IncludePeers = append(df.IncludePeers, &tl.InputPeerUser{UserId: id, AccessHash: a.hashOf(id)})
 			}
+			if df.IncludePeers == nil {
+				df.IncludePeers = []tl.InputPeerClass{}
+			}
+			out.Filters = append(out.Filters, df)
 		}
 		return out, nil
+	case *tl.UsersGetFullUserRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		u, _ := r.Id.(*tl.InputUser)
+		full := &tl.UserFull{Settings: &tl.PeerSettings{}, NotifySettings: &tl.PeerNotifySettings{}}
+		if u != nil {
+			full.Id = u.UserId
+			for _, c := range a.Contacts {
+				if c.ID == u.UserId && c.About != "" {
+					about := c.About
+					full.About = &about
+				}
+			}
+		}
+		return &tl.UsersUserFull{FullUser: full, Chats: []tl.ChatClass{}, Users: a.contactUsers()}, nil
+	case *tl.AccountUpdateNotifySettingsRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		if np, ok := r.Peer.(*tl.InputNotifyPeer); ok {
+			if c := a.contact(np.Peer); c != nil {
+				if s, ok := r.Settings.(*tl.InputPeerNotifySettings); ok && s.MuteUntil != nil {
+					c.Muted = *s.MuteUntil > int32(time.Now().Unix())
+				}
+			}
+		}
+		return boolTrue{}, nil
+	case *tl.FoldersEditPeerFoldersRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		var peers []tl.FolderPeerClass
+		for _, fp := range r.FolderPeers {
+			if f, ok := fp.(*tl.InputFolderPeer); ok {
+				if c := a.contact(f.Peer); c != nil {
+					c.Archived = f.FolderId == 1
+					peers = append(peers, &tl.FolderPeer{Peer: &tl.PeerUser{UserId: c.ID}, FolderId: f.FolderId})
+				}
+			}
+		}
+		a.pts++
+		return &tl.Updates{Updates: []tl.UpdateClass{&tl.UpdateFolderPeers{FolderPeers: peers, Pts: a.pts, PtsCount: 1}},
+			Users: []tl.UserClass{}, Chats: []tl.ChatClass{}, Date: int32(time.Now().Unix())}, nil
+	case *tl.MessagesToggleDialogPinRequest, *tl.MessagesMarkDialogUnreadRequest, *tl.ContactsBlockRequest,
+		*tl.ContactsUnblockRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		return boolTrue{}, nil
+	case *tl.MessagesDeleteHistoryRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		peer, _ := inputUser(r.Peer, a.UserID)
+		for i := range a.msgs {
+			if a.msgs[i].peer == peer {
+				a.msgs[i].deleted = true
+			}
+		}
+		a.pts++
+		return &tl.MessagesAffectedHistory{Pts: a.pts, PtsCount: 1}, nil
 	case *tl.MessagesGetMessagesRequest:
 		if !a.authorized[key] {
 			return nil, unauthorized
@@ -665,6 +772,43 @@ func randomToken() []byte {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	return b
+}
+
+// search — сообщения по подстроке (без учёта регистра), новые первыми.
+func (a *Account) search(match func(fakeMsg) bool, q string, minDate, offsetID, limit int32) *tl.MessagesMessagesSlice {
+	q = strings.ToLower(q)
+	out := &tl.MessagesMessagesSlice{Topics: []tl.ForumTopicClass{}, Chats: []tl.ChatClass{}, Users: a.contactUsers()}
+	for i := len(a.msgs) - 1; i >= 0; i-- {
+		m := a.msgs[i]
+		if m.deleted || !match(m) || (q != "" && !strings.Contains(strings.ToLower(m.text), q)) || m.date < minDate {
+			continue
+		}
+		out.Count++
+		if (offsetID == 0 || m.id < offsetID) && len(out.Messages) < int(limit) {
+			out.Messages = append(out.Messages, m.tl())
+		}
+	}
+	return out
+}
+
+func (a *Account) contact(p tl.InputPeerClass) *Contact {
+	if u, ok := p.(*tl.InputPeerUser); ok {
+		for i := range a.Contacts {
+			if a.Contacts[i].ID == u.UserId {
+				return &a.Contacts[i]
+			}
+		}
+	}
+	return nil
+}
+
+func (a *Account) hashOf(id int64) int64 {
+	for _, c := range a.Contacts {
+		if c.ID == id {
+			return c.AccessHash
+		}
+	}
+	return 0
 }
 
 // boolTrue — boolTrue#997275b5 (Bool в кодеке — встроенный тип, не объект).

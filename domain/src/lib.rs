@@ -4,6 +4,7 @@
 
 pub mod backend;
 pub mod chat;
+pub mod chatlist;
 pub mod chatstore;
 pub mod config;
 pub mod history;

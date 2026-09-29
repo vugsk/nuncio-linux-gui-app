@@ -1,8 +1,8 @@
 //! Отображение доменных типов в protobuf `client.proto` и обратно.
 
 use domain::model::{
-    AuthState, AuthStep, CodeInfo, Command, CommandResult, ConnState, Country, CountryCode, Dialog, DomainUpdate,
-    Entity, EntityKind, ErrorInfo, ErrorKind, Event, Message, Payload, Peer, PeerKind, PeerRef, ProxyKind, ProxySettings,
+    AuthState, AuthStep, ChatActionKind, ChatInfo, CodeInfo, Command, CommandResult, ConnState, Country, CountryCode,
+    Dialog, DomainUpdate, Entity, EntityKind, ErrorInfo, Folder, SearchFilter, ErrorKind, Event, Message, Payload, Peer, PeerKind, PeerRef, ProxyKind, ProxySettings,
     StartupErrorKind, UpdateState, UpdatesBatch, User,
 };
 
@@ -48,7 +48,32 @@ fn peer_from(p: proto::Peer) -> Peer {
         is_bot: p.is_bot,
         broadcast: p.broadcast,
         min: p.min,
+        contact: p.contact,
     }
+}
+
+fn folder_from(f: proto::Folder) -> Folder {
+    Folder {
+        id: f.id,
+        title: f.title,
+        emoticon: f.emoticon,
+        chatlist: f.chatlist,
+        contacts: f.contacts,
+        non_contacts: f.non_contacts,
+        groups: f.groups,
+        broadcasts: f.broadcasts,
+        bots: f.bots,
+        exclude_muted: f.exclude_muted,
+        exclude_read: f.exclude_read,
+        exclude_archived: f.exclude_archived,
+        pinned: f.pinned,
+        include: f.include,
+        exclude: f.exclude,
+    }
+}
+
+fn tri(v: i32) -> Option<bool> {
+    (v >= 0).then_some(v > 0)
 }
 
 fn message_from(m: proto::Message) -> Message {
@@ -90,6 +115,8 @@ fn dialog_from(d: proto::Dialog) -> Dialog {
         folder: d.folder,
         read_inbox_max_id: d.read_inbox_max_id,
         read_outbox_max_id: d.read_outbox_max_id,
+        muted: d.muted,
+        unread_mark: d.unread_mark,
     }
 }
 
@@ -108,6 +135,15 @@ fn batch_from(b: proto::UpdatesBatch) -> UpdatesBatch {
                 U::Reset(_) => DomainUpdate::Reset,
                 U::ResetChannel(r) => DomainUpdate::ResetChannel { peer_id: r.peer_id },
                 U::Pinned(p) => DomainUpdate::Pinned { peer_id: p.peer_id, ids: p.ids, pinned: p.pinned },
+                U::FoldersChanged(_) => DomainUpdate::FoldersChanged,
+                U::PeerFolder(f) => DomainUpdate::PeerFolder { peer_id: f.peer_id, folder: f.folder },
+                U::PeerSettings(p) => DomainUpdate::PeerSettings {
+                    peer_id: p.peer_id,
+                    muted: tri(p.muted),
+                    pinned: tri(p.pinned),
+                    unread_mark: tri(p.unread_mark),
+                },
+                U::PinnedDialogs(_) => DomainUpdate::PinnedDialogs,
             })
         })
         .collect();
@@ -188,6 +224,48 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
         Command::LoadMessages { peer, ids } => C::LoadMessages(proto::LoadMessages { peer: Some(peer_ref_to(peer)), ids }),
         Command::GetContacts => C::GetContacts(proto::GetContacts {}),
         Command::SearchPeers { query } => C::SearchPeers(proto::SearchPeers { query, limit: 20 }),
+        Command::LoadFolders => C::LoadFolders(proto::LoadFolders {}),
+        Command::SearchMessages {
+            peer, query, filter, min_date, max_date, from, offset_id, limit, offset_rate, offset_peer,
+        } => C::SearchMessages(proto::SearchMessages {
+            peer: peer.map(peer_ref_to),
+            query,
+            filter: match filter {
+                SearchFilter::All => proto::search_messages::Filter::All,
+                SearchFilter::Media => proto::search_messages::Filter::Media,
+                SearchFilter::Files => proto::search_messages::Filter::Files,
+                SearchFilter::Links => proto::search_messages::Filter::Links,
+                SearchFilter::Voice => proto::search_messages::Filter::Voice,
+            } as i32,
+            min_date,
+            max_date,
+            from: from.map(peer_ref_to),
+            offset_id,
+            limit,
+            offset_rate,
+            offset_peer: offset_peer.map(peer_ref_to),
+        }),
+        Command::GetChatInfo { peer, members_query } => {
+            C::GetChatInfo(proto::GetChatInfo { peer: Some(peer_ref_to(peer)), members_query })
+        }
+        Command::ChatAction { peer, kind, revoke } => {
+            use proto::chat_action::Kind as K;
+            let kind = match kind {
+                ChatActionKind::Mute => K::Mute,
+                ChatActionKind::Unmute => K::Unmute,
+                ChatActionKind::Archive => K::Archive,
+                ChatActionKind::Unarchive => K::Unarchive,
+                ChatActionKind::Pin => K::Pin,
+                ChatActionKind::Unpin => K::Unpin,
+                ChatActionKind::MarkUnread => K::MarkUnread,
+                ChatActionKind::ClearHistory => K::ClearHistory,
+                ChatActionKind::DeleteChat => K::DeleteChat,
+                ChatActionKind::Leave => K::Leave,
+                ChatActionKind::Block => K::Block,
+                ChatActionKind::Unblock => K::Unblock,
+            };
+            C::ChatAction(proto::ChatAction { peer: Some(peer_ref_to(peer)), kind: kind as i32, revoke })
+        }
     };
     proto::Command { id, account_id: 1, body: Some(body) }
 }
@@ -266,10 +344,20 @@ pub fn event_from(ev: proto::Event) -> Option<Event> {
                     messages: h.messages.into_iter().map(message_from).collect(),
                     peers: h.peers.into_iter().map(peer_from).collect(),
                     total: h.total,
+                    next_rate: h.next_rate,
                 },
                 Some(P::Sent(s)) => Payload::Sent(s.message.map(message_from).unwrap_or_default()),
                 Some(P::File(f)) => Payload::File(f.path),
                 Some(P::Peers(p)) => Payload::Peers(p.peers.into_iter().map(peer_from).collect()),
+                Some(P::Folders(f)) => Payload::Folders(f.folders.into_iter().map(folder_from).collect()),
+                Some(P::ChatInfo(c)) => Payload::ChatInfo(ChatInfo {
+                    peer_id: c.peer_id,
+                    about: c.about,
+                    members: c.members,
+                    participants: c.participants.into_iter().map(|m| (m.user_id, m.role)).collect(),
+                    peers: c.peers.into_iter().map(peer_from).collect(),
+                    blocked: c.blocked,
+                }),
             };
             Event::Result(CommandResult { cmd_id: r.cmd_id, error: r.error.map(error_from), payload })
         }

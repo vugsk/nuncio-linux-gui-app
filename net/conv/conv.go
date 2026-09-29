@@ -9,6 +9,7 @@ package conv
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	pb "nuncio/net/gen"
 	"nuncio/net/tl"
@@ -87,7 +88,8 @@ func User(u tl.UserClass) *pb.Peer {
 		}
 		return nil
 	}
-	p := &pb.Peer{Id: v.Id, Kind: pb.Peer_USER, Username: str(v.Username), IsSelf: v.Self, IsBot: v.Bot, Min: v.Min}
+	p := &pb.Peer{Id: v.Id, Kind: pb.Peer_USER, Username: str(v.Username), IsSelf: v.Self, IsBot: v.Bot, Min: v.Min,
+		Contact: v.Contact}
 	p.Name = strings.TrimSpace(str(v.FirstName) + " " + str(v.LastName))
 	if v.Deleted && p.Name == "" {
 		p.Name = "\x00deleted" // интерфейс подставит «Удалённый аккаунт»
@@ -257,7 +259,58 @@ func Dialog(d tl.DialogClass) *pb.Dialog {
 	if v.Pts != nil {
 		out.Pts = *v.Pts
 	}
+	out.Muted = Muted(v.NotifySettings)
+	out.UnreadMark = v.UnreadMark
 	return out
+}
+
+// Muted — уведомления выключены (mute_until в будущем).
+func Muted(n tl.PeerNotifySettingsClass) bool {
+	s, ok := n.(*tl.PeerNotifySettings)
+	return ok && s.MuteUntil != nil && int64(*s.MuteUntil) > time.Now().Unix()
+}
+
+// Folder — папка (dialogFilter) в доменную; nil — «Все чаты» (dialogFilterDefault).
+func Folder(f tl.DialogFilterClass) *pb.Folder {
+	ids := func(ps []tl.InputPeerClass) []int64 {
+		var out []int64
+		for _, p := range ps {
+			if id := InputPeerID(p); id != 0 {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
+	title := func(t tl.TextWithEntitiesClass) string {
+		if v, ok := t.(*tl.TextWithEntities); ok {
+			return v.Text
+		}
+		return ""
+	}
+	switch v := f.(type) {
+	case *tl.DialogFilter:
+		return &pb.Folder{Id: v.Id, Title: title(v.Title), Emoticon: str(v.Emoticon), Contacts: v.Contacts,
+			NonContacts: v.NonContacts, Groups: v.Groups, Broadcasts: v.Broadcasts, Bots: v.Bots,
+			ExcludeMuted: v.ExcludeMuted, ExcludeRead: v.ExcludeRead, ExcludeArchived: v.ExcludeArchived,
+			Pinned: ids(v.PinnedPeers), Include: ids(v.IncludePeers), Exclude: ids(v.ExcludePeers)}
+	case *tl.DialogFilterChatlist:
+		return &pb.Folder{Id: v.Id, Title: title(v.Title), Emoticon: str(v.Emoticon), Chatlist: true,
+			Pinned: ids(v.PinnedPeers), Include: ids(v.IncludePeers)}
+	}
+	return nil
+}
+
+// InputPeerID — помеченный id по ссылке InputPeer (0 — не собеседник).
+func InputPeerID(p tl.InputPeerClass) int64 {
+	switch v := p.(type) {
+	case *tl.InputPeerUser:
+		return v.UserId
+	case *tl.InputPeerChat:
+		return ChatID(v.ChatId)
+	case *tl.InputPeerChannel:
+		return ChannelID(v.ChannelId)
+	}
+	return 0
 }
 
 // Entities — форматирование сообщения в доменное (Дз-15). Смещения в UTF-16,
