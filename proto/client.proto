@@ -160,7 +160,7 @@ message DeleteMessages {
 message ReadInbox {
   int64 peer_id = 1;
   int32 max_id = 2;
-  int32 still_unread = 3;
+  int32 still_unread = 3;        // −1 — неизвестно (своё «прочитано»): посчитать по базе
 }
 
 message ReadOutbox {

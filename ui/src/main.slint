@@ -654,10 +654,22 @@ component MessageRow inherits VerticalLayout {
     padding-top: item.first-in-series ? 6px : 2px;
     padding-bottom: 2px;
     spacing: 6px;
-    // Высота после раскладки — прокрутке (края и видимые строки).
-    init => { if (self.height > 0) { Chat.row-height(root.item.key, self.height / 1px); } }
+    // Высота после раскладки — прокрутке (края и видимые строки). Не из init:
+    // там строка ещё не разложена (8 px — одни отступы), и прокрутка решала,
+    // что история короче окна, прижимая вид к низу. Новая строка и строка с
+    // другим сообщением меряются следующим проходом цикла (таймер), когда
+    // раскладка готова; дальнейшие изменения — через changed height.
+    property <bool> measure: true;
+    changed item => { self.measure = true; }
+    Timer {
+        interval: 1ms;
+        running: root.measure;
+        triggered => {
+            root.measure = false;
+            Chat.row-height(root.item.key, root.height / 1px);
+        }
+    }
     changed height => { Chat.row-height(root.item.key, self.height / 1px); }
-    changed item => { if (self.height > 0) { Chat.row-height(root.item.key, self.height / 1px); } }
     if root.item.date-label != "": HorizontalLayout {
         alignment: center;
         padding-top: 6px;

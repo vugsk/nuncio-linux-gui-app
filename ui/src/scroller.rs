@@ -159,8 +159,11 @@ impl Scroller {
             self.p += self.h(s);
             s += 1;
         }
-        // Линия опоры ниже видимой области — опора выше.
-        while s > 0 && self.p > self.view_h && self.measured(s - 1) {
+        // Опора — верхняя видимая строка: видимые строки лежат в контейнере
+        // от опоры и при прокрутке не перестраиваются. (Если опора внизу, все
+        // видимые строки — в прижатом снизу контейнере, и каждый шаг колеса
+        // переносит строку между контейнерами — вид дрожит.)
+        while s > 0 && self.p > 0.0 && self.measured(s - 1) {
             s -= 1;
             self.p -= self.h(s);
         }
@@ -336,6 +339,18 @@ mod tests {
         assert!(v.need_older);
         s.scroll(-100_000.0);
         assert!(s.view().at_bottom);
+    }
+
+    #[test]
+    fn pivot_is_top_visible_row_after_leaving_bottom() {
+        let mut s = scroller(1..=100, false, true);
+        s.jump_bottom();
+        for _ in 0..30 {
+            s.scroll(7.0);
+            let v = s.view();
+            assert!(v.pivot <= 0.0 && v.pivot > -50.0, "опора — верхняя видимая строка: p {}", v.pivot);
+            assert_eq!(v.top_row, Some(v.below.start));
+        }
     }
 
     #[test]

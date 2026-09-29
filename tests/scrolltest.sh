@@ -17,14 +17,14 @@ printf 'API_ID=1\nAPI_HASH=00000000000000000000000000000000\n' > "$T/home/config
 chmod 600 "$T/home/config/api.env"
 
 (cd "$ROOT/net" && go build -o "$T/fakeserver" ./cmd/fakeserver)
-"$T/fakeserver" -listen "127.0.0.1:$PORT" -key "$T/key" -history "$N" > "$T/server.log" 2>&1 &
+"$T/fakeserver" -listen "127.0.0.1:$PORT" -key "$T/key" -history "$N" -unread -1 > "$T/server.log" 2>&1 &
 SRV=$!
 trap 'kill $SRV 2>/dev/null || true; pkill -KILL -f "$T/app" 2>/dev/null || true' EXIT
 until grep -q готов "$T/server.log"; do sleep 0.1; done
 cp "$ROOT/target/release/nuncio" "$T/app"
 env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" SLINT_BACKEND=winit-software NUNCIO_HOME="$T/home" \
   NUNCIO_TEST_DC="127.0.0.1:$PORT" NUNCIO_TEST_RSA="$T/key" NUNCIO_KEYRING_APP=nuncio-scrolltest \
-  NUNCIO_KEYRING_COLLECTION=session NUNCIO_WINDOW_SIZE=1100x800 NUNCIO_BENCH_OPEN=0 \
+  NUNCIO_KEYRING_COLLECTION=session NUNCIO_WINDOW_SIZE=1100x800 NUNCIO_BENCH_OPEN=0 NUNCIO_DEBUG_SCROLL=1 \
   "$T/app" > "$T/app.log" 2>&1 &
 APP=$!
 until grep -q "шаг READY" "$T/home/state/net.log" 2>/dev/null; do sleep 0.2; done
@@ -91,8 +91,16 @@ def check(cond, what):
 
 n0, r0, u0 = db()
 print("старт:", (n0, r0, u0))
-check(u0[0] == 0, "видимое непрочитанное отмечено прочитанным")
+check(u0[0] == 0, "непрочитанных нет — вход к концу истории")
 shot("1-bottom")
+# Чат без непрочитанных (вид у низа): несколько щелчков вверх — вид остаётся
+# поднятым (раньше строки сообщали высоту до раскладки, и вид возвращался вниз).
+move(700, 400)
+for _ in range(6):
+    click(4, 1, 0.15)
+time.sleep(1.5)
+last = [l for l in open(f"{t}/app.log") if l.startswith("scroll:")][-1]
+check("низ false" in last, "после щелчков вверх вид не вернулся к низу")
 # Колесо вверх: 400 щелчков — далеко за первую страницу.
 move(700, 400)
 for _ in range(8):

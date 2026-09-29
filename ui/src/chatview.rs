@@ -165,7 +165,14 @@ pub fn set_sender(f: impl Fn(ChatIntent) + 'static) {
 }
 
 /// Колесо, высота области, высота строки: прямо в потоке интерфейса.
+fn trace(what: std::fmt::Arguments) {
+    if std::env::var_os("NUNCIO_DEBUG_SCROLL").is_some() {
+        eprintln!("событие: {what}");
+    }
+}
+
 pub fn scroll(app: &App, dy: f32) {
+    trace(format_args!("колесо {dy}"));
     with(app, |r| r.scroller.scroll(dy));
 }
 
@@ -179,7 +186,8 @@ pub fn set_view_height(app: &App, h: f32) {
 }
 
 pub fn row_height(app: &App, key: i64, h: f32) {
-    if h > 0.0 {
+    // Меньше строки текста — строка ещё не разложена.
+    if h >= richtext::LINE {
         LATE.with(|l| l.borrow_mut().heights.push((key, h)));
         schedule(app);
     }
@@ -218,6 +226,7 @@ fn drain_late(app: &App) {
     if late.view_h.is_none() && late.heights.is_empty() {
         return;
     }
+    trace(format_args!("высоты {} вид {:?}", late.heights.len(), late.view_h));
     with(app, |r| {
         if let Some(h) = late.view_h {
             r.scroller.set_view_height(h);
@@ -583,10 +592,12 @@ impl ChatRenderer {
                 divider = None;
             }
         }
+        trace(format_args!("снимок модели, строк {}", items.len()));
         self.scroller.set_rows(items.iter().map(|i| i64::from(i.key)).collect(), m.window.start, m.window.end);
         self.items = items;
         if let Some((seq, j)) = m.jump {
             if seq != self.jump_seq {
+                trace(format_args!("переход {j:?}"));
                 self.jump_seq = seq;
                 match j {
                     Jump::To(id) => self.scroller.jump_to(i64::from(id)),
@@ -668,6 +679,12 @@ impl ChatRenderer {
     pub fn apply_view(&mut self, app: &App) {
         let chat = app.global::<Chat>();
         let v = self.scroller.view();
+        if std::env::var_os("NUNCIO_DEBUG_SCROLL").is_some() {
+            let key = |i: Option<usize>| i.and_then(|i| self.items.get(i)).map(|x| x.key).unwrap_or(0);
+            eprintln!("scroll: окно {}..{} ({}), опора {} p {:.0}, видно {}..{}, низ {}, старше {}, новее {}",
+                key(Some(0)), key(self.items.len().checked_sub(1)), self.items.len(), key(Some(v.below.start)),
+                v.pivot, key(v.top_row), key(v.bottom_row), v.at_bottom, v.need_older, v.need_newer);
+        }
         self.above.sync(&self.items[v.above.clone()]);
         self.below.sync(&self.items[v.below.clone()]);
         chat.set_pivot(v.pivot);

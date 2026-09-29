@@ -29,6 +29,7 @@ func main() {
 	start := flag.Duration("start", 3*time.Second, "задержка перед первым входящим после входа")
 	dump := flag.String("dump", "", "куда сохранить историю при остановке")
 	history := flag.Int("history", 0, "сколько сообщений заранее в чате (длинная история для прокрутки)")
+	unread := flag.Int("unread", 0, "непрочитанных в диалоге (0 — одно, −1 — всё прочитано)")
 	flag.Parse()
 
 	msgs := []string{"начало"}
@@ -44,7 +45,7 @@ func main() {
 	}
 
 	acc := &fakeserver.Account{Phone: "1", Code: "1", Registered: true, UserID: 5, FirstName: "Тест", AutoQR: true,
-		Contacts: []fakeserver.Contact{{ID: 100, Name: "Отправитель", AccessHash: 11, Messages: msgs, OutEvery: 3}}}
+		Contacts: []fakeserver.Contact{{ID: 100, Name: "Отправитель", AccessHash: 11, Messages: msgs, OutEvery: 3, Unread: *unread}}}
 	srv, err := fakeserver.StartAt(*listen, fakeserver.Options{DC: 2, Account: acc})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -68,6 +69,18 @@ func main() {
 			time.Sleep(*every)
 		}
 		fmt.Println("push done")
+	}()
+
+	// Прочитанное клиентом — в журнал (проверка «прочитано по мере просмотра»).
+	go func() {
+		var last int32
+		for {
+			if r := acc.ReadMax(100); r != last {
+				last = r
+				fmt.Println("read", r)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
 	}()
 
 	// SIGUSR1 — «выключить сеть», SIGUSR2 — включить.

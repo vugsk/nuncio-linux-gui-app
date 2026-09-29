@@ -44,6 +44,14 @@ type Account struct {
 	msgs       []fakeMsg
 	seeded     bool
 	randoms    map[int64]int32
+	readMax    map[int64]int32
+}
+
+// ReadMax — до какого id клиент отметил чат прочитанным (messages.readHistory).
+func (a *Account) ReadMax(peer int64) int32 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.readMax[peer]
 }
 
 // Dump — все сообщения аккаунта (для сверки в тесте kill -9).
@@ -185,6 +193,7 @@ type Contact struct {
 	AccessHash int64
 	Messages   []string // от старых к новым; id сообщений общие по аккаунту
 	OutEvery   int      // каждое n-е из Messages — своё (0 — все входящие)
+	Unread     int      // непрочитанных в диалоге (0 — по умолчанию одно; −1 — всё прочитано)
 }
 
 type fakeMsg struct {
@@ -445,8 +454,12 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 			if top == nil {
 				continue
 			}
+			unread := max(c.Unread, 0)
+			if c.Unread == 0 {
+				unread = 1
+			}
 			out.Dialogs = append(out.Dialogs, &tl.Dialog{Peer: &tl.PeerUser{UserId: c.ID}, TopMessage: top.id,
-				UnreadCount: 1, ReadInboxMaxId: top.id - 1, NotifySettings: &tl.PeerNotifySettings{}})
+				UnreadCount: int32(unread), ReadInboxMaxId: top.id - int32(unread), NotifySettings: &tl.PeerNotifySettings{}})
 			out.Messages = append(out.Messages, top.tl())
 		}
 		return out, nil
@@ -618,6 +631,18 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 			out.Users = []tl.UserClass{}
 		}
 		return out, nil
+	case *tl.MessagesReadHistoryRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		if p, ok := r.Peer.(*tl.InputPeerUser); ok {
+			if a.readMax == nil {
+				a.readMax = map[int64]int32{}
+			}
+			a.readMax[p.UserId] = max(a.readMax[p.UserId], r.MaxId)
+		}
+		a.pts++
+		return &tl.MessagesAffectedMessages{Pts: a.pts, PtsCount: 1}, nil
 	case *tl.HelpGetCountriesListRequest:
 		ru, en := "Россия", "Russia"
 		name := &ru

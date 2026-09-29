@@ -156,8 +156,9 @@ func (s *Service) markRead(ctx context.Context, id uint64, c *pb.MarkRead) *pb.E
 		v, err = s.m.Invoke(ctx, &tl.MessagesReadHistoryRequest{Peer: peer, MaxId: c.GetMaxId()})
 		if aff, ok := v.(*tl.MessagesAffectedMessages); ok {
 			// affectedMessages несёт pts: пропустить его — значит получить ложный разрыв.
+			// Сколько осталось непрочитанных, сервер не сообщает: −1, Rust посчитает сам.
 			s.upd.Process(ctx, &tl.UpdateShort{Update: &tl.UpdateReadHistoryInbox{Peer: peerOf(c.GetPeer()),
-				MaxId: c.GetMaxId(), Pts: aff.Pts, PtsCount: aff.PtsCount}}, nil)
+				MaxId: c.GetMaxId(), StillUnreadCount: -1, Pts: aff.Pts, PtsCount: aff.PtsCount}}, nil)
 		}
 	}
 	if err != nil {

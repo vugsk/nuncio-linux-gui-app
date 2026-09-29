@@ -762,8 +762,12 @@ impl ChatModel {
                 out.push(ChatEffect::Db(DbOp::ApplyBatch(b.clone())));
                 out.push(ChatEffect::Db(DbOp::ReloadRows));
                 // Входящие открытого чата становятся прочитанными, когда их видно
-                // (интерфейс сообщает `Seen`), а не сразу.
+                // (интерфейс сообщает `Seen`), а не сразу. Закреплённые — заново:
+                // закрепление, открепление и удаление приходят обновлениями.
                 self.reload_open(&mut out);
+                if let Some(peer_id) = self.open {
+                    out.push(ChatEffect::Db(DbOp::ReloadPinned { peer_id }));
+                }
                 let reset_open = b.updates.iter().any(|u| {
                     matches!(u, crate::model::DomainUpdate::ResetChannel { peer_id } if Some(*peer_id) == self.open)
                 });
@@ -884,6 +888,9 @@ impl ChatModel {
                 } else {
                     self.reload_open(out);
                     out.push(ChatEffect::Db(DbOp::ReloadRows));
+                    if let Some(peer_id) = self.open {
+                        out.push(ChatEffect::Db(DbOp::ReloadPinned { peer_id }));
+                    }
                 }
             }
             Pending::Pinned { peer_id } => {
@@ -1213,6 +1220,12 @@ mod tests {
         let fx = m.event(&ok(rid, Payload::None));
         assert_eq!(sends(&fx)[0].1, Command::MarkRead { peer: PeerRef { id: 10, access_hash: 30 }, max_id: 3 });
         assert!(sends(&m.intent(ChatIntent::Seen(3))).is_empty(), "уже прочитано");
+        let pin = UpdatesBatch {
+            updates: vec![DomainUpdate::Pinned { peer_id: 10, ids: vec![2], pinned: true }],
+            ..Default::default()
+        };
+        assert!(m.event(&Event::Updates(pin)).contains(&ChatEffect::Db(DbOp::ReloadPinned { peer_id: 10 })),
+            "закрепление обновлением — полоса перечитывается сразу");
         let reset = UpdatesBatch { updates: vec![DomainUpdate::Reset], ..Default::default() };
         assert!(matches!(sends(&m.event(&Event::Updates(reset)))[0].1, Command::LoadDialogs { .. }));
     }

@@ -13,6 +13,15 @@ use crate::model::{
 use crate::history;
 use crate::store::{Store, StoreError};
 
+/// «Прочитано до ?2» в чате ?1: непрочитанных меньше на прочитанные входящие,
+/// до верха диалога — ноль. Уже прочитанное повторно не вычитается.
+const MARK_READ_SQL: &str = "UPDATE dialogs SET
+       unread = CASE WHEN ?2 >= top_message_id THEN 0 ELSE MAX(0, unread - (
+         SELECT COUNT(*) FROM messages m WHERE m.peer_id = ?1 AND m.id > dialogs.read_inbox_max
+           AND m.id <= ?2 AND m.out = 0 AND m.service = '')) END,
+       read_inbox_max = MAX(read_inbox_max, ?2)
+     WHERE peer_id = ?1";
+
 /// Строка списка: диалог, собеседник и последнее сообщение.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DialogRow {
@@ -171,6 +180,11 @@ impl Store {
                             touched.push(*peer_id);
                         }
                     }
+                }
+                DomainUpdate::ReadInbox { peer_id, max_id, still_unread } if *still_unread < 0 => {
+                    // Своё «прочитано»: остаток сервер не сообщил — по базе.
+                    tx.execute(MARK_READ_SQL, params![peer_id, max_id])?;
+                    touched.push(*peer_id);
                 }
                 DomainUpdate::ReadInbox { peer_id, max_id, still_unread } => {
                     tx.execute(
@@ -421,15 +435,7 @@ impl Store {
     /// Локально отметить прочитанным до `max_id` (сервер подтвердит обновлением
     /// со своим счётчиком): непрочитанных меньше на прочитанные входящие.
     pub fn mark_read_local(&self, peer_id: i64, max_id: i32) -> Result<(), StoreError> {
-        self.conn().execute(
-            "UPDATE dialogs SET
-               unread = CASE WHEN ?2 >= top_message_id THEN 0 ELSE MAX(0, unread - (
-                 SELECT COUNT(*) FROM messages m WHERE m.peer_id = ?1 AND m.id > dialogs.read_inbox_max
-                   AND m.id <= ?2 AND m.out = 0 AND m.service = '')) END,
-               read_inbox_max = MAX(read_inbox_max, ?2)
-             WHERE peer_id = ?1",
-            params![peer_id, max_id],
-        )?;
+        self.conn().execute(MARK_READ_SQL, params![peer_id, max_id])?;
         Ok(())
     }
 
@@ -556,6 +562,11 @@ mod tests {
         s.mark_read_local(10, 110).unwrap();
         let unread = |s: &Store| s.dialog_rows(0, 10).unwrap()[0].dialog.unread_count;
         assert_eq!(unread(&s), 5, "прочитаны входящие 101..=109");
+        // Своё «прочитано» пришло обновлением без остатка (−1): считается по базе,
+        // уже вычтенное повторно не вычитается.
+        s.apply_batch(&UpdatesBatch { updates: vec![DomainUpdate::ReadInbox { peer_id: 10, max_id: 110, still_unread: -1 }],
+            ..Default::default() }).unwrap();
+        assert_eq!(unread(&s), 5, "−1 не обнуляет счётчик");
         s.mark_read_local(10, 120).unwrap();
         assert_eq!(unread(&s), 0, "до верха — всё");
     }
