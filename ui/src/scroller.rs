@@ -41,6 +41,9 @@ pub struct View {
     /// Верхняя и нижняя видимые строки (индексы окна).
     pub top_row: Option<usize>,
     pub bottom_row: Option<usize>,
+    /// Нижняя видимая строка по измеренным высотам (для «прочитано»): пока
+    /// высоты не пришли, оценка завышала бы видимое — высокие посты каналов.
+    pub seen_row: Option<usize>,
 }
 
 #[derive(Debug, Default)]
@@ -215,6 +218,20 @@ impl Scroller {
             }
             y += h;
         }
+        // Видимое по измеренным высотам: вниз от линии опоры (у низа — последняя строка).
+        let mut seen_row = None;
+        if s == n {
+            seen_row = n.checked_sub(1).filter(|&i| self.measured(i) && self.at_bottom());
+        } else {
+            let mut y = self.p;
+            for i in s..b {
+                if !self.measured(i) || y >= self.view_h {
+                    break;
+                }
+                seen_row = Some(i);
+                y += self.h(i);
+            }
+        }
         View {
             above: a..s,
             below: s..b,
@@ -224,6 +241,7 @@ impl Scroller {
             need_newer: b == n && !self.end,
             top_row,
             bottom_row,
+            seen_row,
         }
     }
 }
@@ -351,6 +369,19 @@ mod tests {
             assert!(v.pivot <= 0.0 && v.pivot > -50.0, "опора — верхняя видимая строка: p {}", v.pivot);
             assert_eq!(v.top_row, Some(v.below.start));
         }
+    }
+
+    #[test]
+    fn seen_only_by_measured_heights() {
+        let mut s = Scroller::new();
+        s.set_view_height(400.0);
+        s.set_rows((1..=50).collect(), false, false);
+        s.jump_to(10);
+        assert_eq!(s.view().seen_row, None, "высоты не пришли — ничего не видно наверняка");
+        s.set_height(10, 300.0);
+        s.set_height(11, 300.0);
+        let v = s.view();
+        assert_eq!(s.keys()[v.seen_row.unwrap()], 11, "видны два высоких поста, а не восемь по оценке");
     }
 
     #[test]

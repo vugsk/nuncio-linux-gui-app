@@ -144,6 +144,7 @@ func (s *Service) sendMessage(ctx context.Context, id uint64, c *pb.SendMessage)
 }
 
 func (s *Service) markRead(ctx context.Context, id uint64, c *pb.MarkRead) *pb.Event {
+	s.log.Printf("прочитано до id %d", c.GetMaxId())
 	var err error
 	if ch, ok := conv.InputChannel(c.GetPeer()); ok {
 		_, err = s.m.Invoke(ctx, &tl.ChannelsReadHistoryRequest{Channel: ch, MaxId: c.GetMaxId()})

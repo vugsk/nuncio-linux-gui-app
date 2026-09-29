@@ -15,7 +15,7 @@ struct FileLogger {
 
 impl log::Log for FileLogger {
     fn enabled(&self, m: &log::Metadata) -> bool {
-        m.level() <= log::Level::Info
+        m.level() <= log::max_level()
     }
 
     fn log(&self, r: &log::Record) {
@@ -55,6 +55,8 @@ pub fn init(dir: &Path) {
     let file = opts.open(&path).ok();
     let logger = Box::leak(Box::new(FileLogger { file: Mutex::new(file) }));
     if log::set_logger(logger).is_ok() {
-        log::set_max_level(log::LevelFilter::Info);
+        // Отладка прокрутки и «прочитано» (номера сообщений, без текста).
+        let debug = std::env::var_os("NUNCIO_DEBUG_SCROLL").is_some();
+        log::set_max_level(if debug { log::LevelFilter::Debug } else { log::LevelFilter::Info });
     }
 }

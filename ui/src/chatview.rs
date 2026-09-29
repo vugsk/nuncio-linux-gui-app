@@ -711,9 +711,10 @@ impl ChatRenderer {
             self.asked_newer = w;
             send(ChatIntent::NeedNewer);
         }
-        let seen = v.bottom_row.and_then(|b| self.items[..=b].iter().rev().find(|x| x.key > 0)).map(|x| x.key);
+        let seen = v.seen_row.and_then(|b| self.items[..=b].iter().rev().find(|x| x.key > 0)).map(|x| x.key);
         if let Some(id) = seen.filter(|id| *id > self.seen_sent) {
             self.seen_sent = id;
+            trace(format_args!("видно до {id}"));
             send(ChatIntent::Seen(id));
         }
     }

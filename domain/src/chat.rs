@@ -641,6 +641,8 @@ impl ChatModel {
                 if id > self.seen {
                     self.seen = id;
                 }
+                log::debug!("видно до {id}: отмечено до {}, окно {}..{}, входящие {incoming}", self.read_sent,
+                    self.history.first().map(|m| m.id).unwrap_or(0), self.history.last().map(|m| m.id).unwrap_or(0));
                 if incoming && !self.pending.values().any(|p| *p == Pending::Read { peer_id }) {
                     self.mark_read(peer_id, &mut out);
                 }
@@ -701,6 +703,7 @@ impl ChatModel {
 
     fn mark_read(&mut self, peer_id: i64, out: &mut Vec<ChatEffect>) {
         let max_id = self.seen;
+        log::debug!("прочитано до {max_id}");
         let Some(peer) = self.peer_ref(peer_id) else { return };
         self.read_sent = max_id;
         self.send(Command::MarkRead { peer, max_id }, Pending::Read { peer_id }, out);
