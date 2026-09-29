@@ -275,6 +275,7 @@ message Command {
     SearchMessages search_messages = 44;
     GetChatInfo get_chat_info = 45;
     ChatAction chat_action = 46;
+    UpdateFolder update_folder = 47;
     Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
   }
 }
@@ -493,6 +494,9 @@ message SearchMessages {
 }
 
 message GetChatInfo { PeerRef peer = 1; string members_query = 2; }
+
+// Изменить папку (пункт «В папку…», Сп-4): папка целиком и ссылки на все её чаты.
+message UpdateFolder { Folder folder = 1; repeated PeerRef peers = 2; }
 
 // Действия над чатом (Сп-4, Св-1).
 message ChatAction {

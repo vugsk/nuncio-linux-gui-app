@@ -573,6 +573,7 @@ fn bind_lists(app: &App, send: impl Fn(Action) + Clone + 'static) {
         };
         Some(L::Action { peer_id, kind })
     });
+    on!(on_toggle_folder, |peer, folder| peer.parse().ok().map(|peer_id| L::ToggleFolder { peer_id, folder_id: folder }));
     on!(on_action_toggle_revoke, | | Some(L::ToggleConfirmRevoke));
     on!(on_action_confirmed, | | Some(L::ConfirmAction));
     on!(on_action_cancel, | | Some(L::CancelAction));

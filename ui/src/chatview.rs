@@ -543,6 +543,12 @@ impl ChatRenderer {
                     kind: peer_kind_code(&r.peer),
                     is_self: r.peer.is_self,
                     unread_mark: r.dialog.unread_mark,
+                    folder_mask: m
+                        .folders
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, f)| domain::chatlist::in_folder(f, r))
+                        .fold(0, |acc, (i, _)| acc | (1 << i.min(30))),
                 }
             })
             .collect();

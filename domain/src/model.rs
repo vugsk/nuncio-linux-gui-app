@@ -341,6 +341,8 @@ pub enum Command {
     },
     GetChatInfo { peer: PeerRef, members_query: String },
     ChatAction { peer: PeerRef, kind: ChatActionKind, revoke: bool },
+    /// Папка целиком и ссылки на её чаты (access_hash).
+    UpdateFolder { folder: Folder, peers: Vec<PeerRef> },
 }
 
 /// Шаг входа.

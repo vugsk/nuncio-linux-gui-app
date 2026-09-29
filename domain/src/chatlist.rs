@@ -117,6 +117,8 @@ pub enum ListIntent {
     /// Действие над чатом; опасные — сначала подтверждение.
     Action { peer_id: i64, kind: ChatActionKind },
     MarkRead(i64),
+    /// «В папку…» (Сп-4): добавить чат в папку или убрать из неё.
+    ToggleFolder { peer_id: i64, folder_id: i32 },
     ToggleConfirmRevoke,
     ConfirmAction,
     CancelAction,
@@ -148,6 +150,22 @@ pub fn in_folder(f: &Folder, r: &DialogRow) -> bool {
         && !(f.exclude_muted && d.muted)
         && !(f.exclude_read && d.unread_count == 0 && !d.unread_mark)
         && !(f.exclude_archived && d.folder == 1)
+}
+
+/// Чат в папке — убрать (явно включённый — из списка, подходящий по правилам —
+/// в исключения); не в папке — включить явно.
+pub fn toggle_in_folder(f: &mut Folder, r: &DialogRow) {
+    let id = r.peer.id;
+    if in_folder(f, r) {
+        f.include.retain(|x| *x != id);
+        f.pinned.retain(|x| *x != id);
+        if in_folder(f, r) {
+            f.exclude.push(id);
+        }
+    } else {
+        f.exclude.retain(|x| *x != id);
+        f.include.push(id);
+    }
 }
 
 fn dangerous(kind: ChatActionKind) -> bool {
@@ -420,6 +438,18 @@ impl ChatModel {
                     out.push(ChatEffect::Db(DbOp::ReloadRows));
                 }
             }
+            ListIntent::ToggleFolder { peer_id, folder_id } => {
+                let Some(row) = self.all_rows.iter().find(|r| r.peer.id == peer_id).cloned() else { return };
+                let Some(f) = self.folders.iter_mut().find(|f| f.id == folder_id) else { return };
+                toggle_in_folder(f, &row);
+                let f = f.clone();
+                // Ссылки на все чаты папки: серверу нужны access_hash.
+                let ids: HashSet<i64> = f.include.iter().chain(&f.exclude).chain(&f.pinned).copied().collect();
+                let peers = ids.into_iter().filter_map(|id| self.peer_ref(id)).collect();
+                self.send(Command::UpdateFolder { folder: f, peers }, Pending::Folders, out);
+                out.push(ChatEffect::Db(DbOp::SaveFolders(self.folders.clone())));
+                self.apply_filter();
+            }
             ListIntent::ToggleConfirmRevoke => {
                 if let Some(c) = self.confirm.as_mut() {
                     c.revoke = !c.revoke;
@@ -605,6 +635,31 @@ mod tests {
         assert!(in_folder(&unread_only, &unread) && in_folder(&unread_only, &marked) && !in_folder(&unread_only, &stranger));
         let chatlist = Folder { chatlist: true, groups: true, include: vec![-4], ..Default::default() };
         assert!(in_folder(&chatlist, &group) && !in_folder(&chatlist, &supergroup), "папка по ссылке — только явные");
+    }
+
+    #[test]
+    fn toggle_folder_membership() {
+        let contact = row(1, |r| r.peer.contact = true);
+        let stranger = row(2, |_| {});
+        let mut f = Folder { id: 3, contacts: true, ..Default::default() };
+        toggle_in_folder(&mut f, &contact);
+        assert!(!in_folder(&f, &contact) && f.exclude == [1], "подходит по правилам — в исключения");
+        toggle_in_folder(&mut f, &contact);
+        assert!(in_folder(&f, &contact) && f.exclude.is_empty() && f.include == [1]);
+        toggle_in_folder(&mut f, &stranger);
+        assert!(in_folder(&f, &stranger));
+        toggle_in_folder(&mut f, &stranger);
+        assert!(!in_folder(&f, &stranger) && !f.include.contains(&2));
+        // Папка отправляется целиком, с access_hash её чатов.
+        let mut m = ChatModel::new(1, "ru", 0);
+        m.set_rows(vec![contact.clone(), stranger.clone()]);
+        m.set_folders(vec![Folder { id: 3, contacts: true, ..Default::default() }]);
+        let fx = m.intent(ChatIntent::List(ListIntent::ToggleFolder { peer_id: 2, folder_id: 3 }));
+        let cmd = sends(&fx)[0].1.clone();
+        assert_eq!(cmd, Command::UpdateFolder {
+            folder: Folder { id: 3, contacts: true, include: vec![2], ..Default::default() },
+            peers: vec![crate::model::PeerRef { id: 2, access_hash: 7 }],
+        });
     }
 
     #[test]

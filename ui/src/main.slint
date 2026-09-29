@@ -27,6 +27,7 @@ export struct DialogItem {
     kind: int,         // 0 личный, 1 группа, 2 канал
     is-self: bool,
     unread-mark: bool,
+    folder-mask: int,  // в каких папках (бит i — i-я папка после «Все чаты»)
 }
 
 // Пункт фильтра списка: 0 «Все чаты», 1 архив, 2 папка (id).
@@ -176,6 +177,7 @@ export global Chat {
     callback open-result(string, string);
     // Меню диалога и действия над чатом (Сп-4, Св-1).
     callback dialog-action(string, int);
+    callback toggle-folder(string, int);
     in property <bool> action-confirm;
     in property <string> action-title;
     in property <string> action-text;
@@ -362,6 +364,35 @@ component DialogRow inherits Rectangle {
             }
         }
     }
+    // «В папку…»: галочка — чат уже в папке; клик переключает.
+    folders-menu := PopupWindow {
+        x: min(root.menu-x, root.width - 240px);
+        y: root.menu-y;
+        width: 230px;
+        Rectangle {
+            background: Theme.card-bg;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            VerticalLayout {
+                padding: 6px;
+                for f[i] in Chat.folders: Rectangle {
+                    property <bool> member: Math.mod(floor(root.item.folder-mask / pow(2, i - 1)), 2) == 1;
+                    height: f.kind == 2 ? 32px : 0px;
+                    visible: f.kind == 2;
+                    border-radius: 4px;
+                    background: fm.has-hover ? Theme.row-bg : transparent;
+                    fm := TouchArea { clicked => { Chat.toggle-folder(root.item.id, f.id); } }
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        Text { text: f.title; color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                        if parent.member: Text { text: "✓"; color: Theme.link; font-size: 13px; vertical-alignment: center; }
+                    }
+                }
+            }
+        }
+    }
     // Меню диалога (Сп-4): три группы, опасные — внизу и красным.
     menu := PopupWindow {
         x: min(root.menu-x, root.width - 240px);
@@ -390,6 +421,10 @@ component DialogRow inherits Rectangle {
                 MenuItem {
                     text: root.item.unread > 0 || root.item.unread-mark ? @tr("Mark as read") : @tr("Mark as unread");
                     clicked => { Chat.dialog-action(root.item.id, root.item.unread > 0 || root.item.unread-mark ? 20 : 6); }
+                }
+                if Chat.folders.length > 1 && !(Chat.folders.length == 2 && Chat.folders[1].kind == 1): MenuItem {
+                    text: @tr("Add to folder…");
+                    clicked => { folders-menu.show(); }
                 }
                 Rectangle { height: 1px; background: Theme.card-border; }
                 MenuItem { text: @tr("Clear history"); danger: true; clicked => { Chat.dialog-action(root.item.id, 7); } }

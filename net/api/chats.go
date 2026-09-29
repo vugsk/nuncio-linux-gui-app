@@ -279,3 +279,50 @@ func (s *Service) chatAction(ctx context.Context, id uint64, c *pb.ChatAction) *
 	s.log.Printf("действие над чатом: %v", c.GetKind())
 	return payload(id, nil)
 }
+
+// updateFolder — папка целиком (messages.updateDialogFilter); access_hash чатов
+// папки присылает Rust (они в его базе).
+func (s *Service) updateFolder(ctx context.Context, id uint64, c *pb.UpdateFolder) *pb.Event {
+	f := c.GetFolder()
+	refs := map[int64]*pb.PeerRef{}
+	for _, r := range c.GetPeers() {
+		refs[r.GetId()] = r
+	}
+	peers := func(ids []int64) []tl.InputPeerClass {
+		out := []tl.InputPeerClass{}
+		for _, pid := range ids {
+			ref := refs[pid]
+			if ref == nil {
+				ref = &pb.PeerRef{Id: pid}
+			}
+			if p, err := conv.InputPeer(ref); err == nil {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+	title := &tl.TextWithEntities{Text: f.GetTitle(), Entities: []tl.MessageEntityClass{}}
+	var filter tl.DialogFilterClass
+	if f.GetChatlist() {
+		cl := &tl.DialogFilterChatlist{Id: f.GetId(), Title: title, PinnedPeers: peers(f.GetPinned()),
+			IncludePeers: peers(f.GetInclude())}
+		if e := f.GetEmoticon(); e != "" {
+			cl.Emoticon = &e
+		}
+		filter = cl
+	} else {
+		df := &tl.DialogFilter{Id: f.GetId(), Title: title, Contacts: f.GetContacts(), NonContacts: f.GetNonContacts(),
+			Groups: f.GetGroups(), Broadcasts: f.GetBroadcasts(), Bots: f.GetBots(), ExcludeMuted: f.GetExcludeMuted(),
+			ExcludeRead: f.GetExcludeRead(), ExcludeArchived: f.GetExcludeArchived(), PinnedPeers: peers(f.GetPinned()),
+			IncludePeers: peers(f.GetInclude()), ExcludePeers: peers(f.GetExclude())}
+		if e := f.GetEmoticon(); e != "" {
+			df.Emoticon = &e
+		}
+		filter = df
+	}
+	if _, err := s.m.Invoke(ctx, &tl.MessagesUpdateDialogFilterRequest{Id: f.GetId(), Filter: filter}); err != nil {
+		s.auth.CheckAuthError(err)
+		return resultError(id, err)
+	}
+	return payload(id, nil)
+}

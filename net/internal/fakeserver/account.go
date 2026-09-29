@@ -686,6 +686,24 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 		a.pts++
 		return &tl.Updates{Updates: []tl.UpdateClass{&tl.UpdateFolderPeers{FolderPeers: peers, Pts: a.pts, PtsCount: 1}},
 			Users: []tl.UserClass{}, Chats: []tl.ChatClass{}, Date: int32(time.Now().Unix())}, nil
+	case *tl.MessagesUpdateDialogFilterRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		for i := range a.Folders {
+			if a.Folders[i].ID != r.Id {
+				continue
+			}
+			a.Folders[i].Include = nil
+			if f, ok := r.Filter.(*tl.DialogFilter); ok {
+				for _, p := range f.IncludePeers {
+					if u, ok := p.(*tl.InputPeerUser); ok {
+						a.Folders[i].Include = append(a.Folders[i].Include, u.UserId)
+					}
+				}
+			}
+		}
+		return boolTrue{}, nil
 	case *tl.MessagesToggleDialogPinRequest, *tl.MessagesMarkDialogUnreadRequest, *tl.ContactsBlockRequest,
 		*tl.ContactsUnblockRequest:
 		if !a.authorized[key] {

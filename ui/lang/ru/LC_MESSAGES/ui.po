@@ -489,3 +489,6 @@ msgstr "Год"
 
 msgid "Any sender"
 msgstr "Любой отправитель"
+
+msgid "Add to folder…"
+msgstr "В папку…"

@@ -507,6 +507,8 @@ func (s *Service) handle(c command) (ev *pb.Event) {
 		return s.getChatInfo(ctx, c.id, b.GetChatInfo)
 	case *pb.Command_ChatAction:
 		return s.chatAction(ctx, c.id, b.ChatAction)
+	case *pb.Command_UpdateFolder:
+		return s.updateFolder(ctx, c.id, b.UpdateFolder)
 	default:
 		return resultErrorKind(c.id, pb.Error_INTERNAL, "команда не поддерживается этой сборкой")
 	}

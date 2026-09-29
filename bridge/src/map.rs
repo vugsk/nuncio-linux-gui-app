@@ -72,6 +72,26 @@ fn folder_from(f: proto::Folder) -> Folder {
     }
 }
 
+fn folder_to(f: Folder) -> proto::Folder {
+    proto::Folder {
+        id: f.id,
+        title: f.title,
+        emoticon: f.emoticon,
+        chatlist: f.chatlist,
+        contacts: f.contacts,
+        non_contacts: f.non_contacts,
+        groups: f.groups,
+        broadcasts: f.broadcasts,
+        bots: f.bots,
+        exclude_muted: f.exclude_muted,
+        exclude_read: f.exclude_read,
+        exclude_archived: f.exclude_archived,
+        pinned: f.pinned,
+        include: f.include,
+        exclude: f.exclude,
+    }
+}
+
 fn tri(v: i32) -> Option<bool> {
     (v >= 0).then_some(v > 0)
 }
@@ -266,6 +286,10 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
             };
             C::ChatAction(proto::ChatAction { peer: Some(peer_ref_to(peer)), kind: kind as i32, revoke })
         }
+        Command::UpdateFolder { folder, peers } => C::UpdateFolder(proto::UpdateFolder {
+            folder: Some(folder_to(folder)),
+            peers: peers.into_iter().map(peer_ref_to).collect(),
+        }),
     };
     proto::Command { id, account_id: 1, body: Some(body) }
 }
