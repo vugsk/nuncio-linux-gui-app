@@ -744,6 +744,9 @@ func (c *conn) answer(reqID int64, o tlbin.Object) error {
 		res = &tl.NearestDc{Country: "RU", ThisDc: int32(c.s.opt.DC), NearestDc: int32(c.s.opt.DC)}
 	default:
 		if c.s.opt.Account != nil {
+			if _, ok := o.(*tl.UploadGetFileRequest); ok && c.s.opt.Account.PartDelay > 0 {
+				time.Sleep(c.s.opt.Account.PartDelay) // ход скачивания виден в интерфейсе
+			}
 			r, err := c.accountAnswer(o)
 			if err != nil {
 				var re *rpcErr

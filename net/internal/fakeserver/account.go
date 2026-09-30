@@ -32,6 +32,8 @@ type Account struct {
 	AutoQR     bool      // QR «сканируется» сразу (вход без человека в сквозных проверках)
 	Contacts   []Contact // собеседники-пользователи с историей (диалоги)
 	Folders    []FakeFolder
+	Files      map[int64][]byte // содержимое файлов вложений по id (upload.getFile)
+	PartDelay  time.Duration    // задержка на часть файла (виден ход скачивания)
 
 	mu         sync.Mutex
 	authorized map[uint64]bool // auth_key_id -> вошли
@@ -105,7 +107,13 @@ func (a *Account) seed() {
 			a.pts++
 			date += 600
 			out := c.OutEvery > 0 && i%c.OutEvery == c.OutEvery-1
-			a.msgs = append(a.msgs, fakeMsg{id: int32(len(a.msgs) + 1), peer: c.ID, text: t, date: date, out: out})
+			m := fakeMsg{id: int32(len(a.msgs) + 1), peer: c.ID, text: t, date: date, out: out}
+			for _, at := range c.Attach {
+				if at.Index == i {
+					m.media, m.grouped = at.Media, at.Grouped
+				}
+			}
+			a.msgs = append(a.msgs, m)
 		}
 	}
 }
@@ -116,6 +124,13 @@ func (m fakeMsg) tl() *tl.Message {
 	if m.edited != 0 {
 		e := m.edited
 		out.EditDate = &e
+	}
+	if m.media != nil {
+		out.Media = m.media
+	}
+	if m.grouped != 0 {
+		g := m.grouped
+		out.GroupedId = &g
 	}
 	if m.fwdFrom != 0 {
 		out.FwdFrom = &tl.MessageFwdHeader{FromId: &tl.PeerUser{UserId: m.fwdFrom}, Date: m.date}
@@ -198,6 +213,7 @@ type Contact struct {
 	About      string   // «о себе» для сведений о чате
 	Archived   bool
 	Muted      bool
+	Attach     []Attach // вложения к сообщениям из Messages
 }
 
 // FakeFolder — папка поддельного аккаунта: явно включённые собеседники и виды.
@@ -219,6 +235,8 @@ type fakeMsg struct {
 	edited   int32
 	fwdFrom  int64
 	entities []tl.MessageEntityClass
+	media    tl.MessageMediaClass
+	grouped  int64
 }
 
 type qrToken struct {
@@ -768,6 +786,25 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 		}
 		a.pts++
 		return &tl.MessagesAffectedMessages{Pts: a.pts, PtsCount: 1}, nil
+	case *tl.UploadGetFileRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		data, ok := a.fileBytes(r.Location, r.Offset, r.Limit)
+		if !ok {
+			return nil, &rpcErr{400, "FILE_ID_INVALID"}
+		}
+		return &tl.UploadFile{Type: &tl.StorageFilePartial{}, Mtime: 1, Bytes: data}, nil
+	case *tl.MessagesSendVoteRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		m := a.find(r.MsgId)
+		if m == nil || !m.vote(r.Options) {
+			return nil, &rpcErr{400, "MESSAGE_POLL_CLOSED"}
+		}
+		return &tl.Updates{Updates: []tl.UpdateClass{}, Users: []tl.UserClass{}, Chats: []tl.ChatClass{},
+			Date: int32(time.Now().Unix())}, nil
 	case *tl.HelpGetCountriesListRequest:
 		ru, en := "Россия", "Russia"
 		name := &ru

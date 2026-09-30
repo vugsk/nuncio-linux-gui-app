@@ -39,6 +39,7 @@ struct Outbox {
     model: Option<LoginModel>,
     chat: Option<ChatModel>,
     avatars: HashMap<String, SharedPixelBuffer<Rgba8Pixel>>,
+    images_ver: u64,
     lang: Option<String>,
     scheduled: bool,
 }
@@ -56,17 +57,24 @@ struct Domain {
     out: Arc<Mutex<Outbox>>,
     quit: bool,
     chat: Option<ChatModel>,
+    /// Картинки для UI: аватары по пути файла и вложения окна истории
+    /// (`photo:ключ`, `strip:id`, `full:ключ`); версия растёт при изменении.
     avatars: HashMap<String, SharedPixelBuffer<Rgba8Pixel>>,
+    images_ver: u64,
     bad_avatars: HashSet<String>,
     bench_sent: bool,
 }
+
+/// Отложенное раскодирование картинки (выполняется, только если её ещё нет).
+type Decode = Box<dyn FnOnce() -> Option<SharedPixelBuffer<Rgba8Pixel>>>;
 
 impl Domain {
     fn publish(&self, lang: Option<String>) {
         let mut o = self.out.lock().unwrap();
         o.model = Some(self.model.clone());
         o.chat = self.chat.clone();
-        if o.avatars.len() != self.avatars.len() {
+        if o.images_ver != self.images_ver {
+            o.images_ver = self.images_ver;
             o.avatars = self.avatars.clone();
         }
         if lang.is_some() {
@@ -168,6 +176,48 @@ impl Domain {
                         let f = self.db.as_ref().and_then(|db| db.call(|s| s.folders()));
                         if let (Some(Ok(f)), Some(chat)) = (f, self.chat.as_mut()) {
                             chat.set_folders(f);
+                        }
+                    }
+                    ChatEffect::OpenFile(path) => {
+                        if let Err(e) = std::process::Command::new("xdg-open").arg(&path).spawn() {
+                            log::warn!("xdg-open: {e}");
+                        }
+                    }
+                    ChatEffect::Db(DbOp::MediaLookup { keys }) => {
+                        let now = now();
+                        let found = self.db.as_ref().and_then(|db| {
+                            db.call(move |s| {
+                                s.media_touch(&keys, now)?;
+                                s.media_paths(&keys)
+                            })
+                        });
+                        match (found, self.chat.as_mut()) {
+                            (Some(Ok(f)), Some(chat)) => queue.extend(chat.set_media_paths(f)),
+                            (Some(Err(e)), _) => log::error!("кэш вложений: {e}"),
+                            _ => {}
+                        }
+                    }
+                    ChatEffect::Db(DbOp::MediaSaved { key, path, size }) => {
+                        // Записать в индекс; сверх лимита — вытеснить давнее, кроме видимого.
+                        let now = now();
+                        // Размер неизвестен заранее — по файлу.
+                        let size = if size > 0 { size } else { std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0) };
+                        let keep: HashSet<String> =
+                            self.chat.as_ref().map(|c| c.window_media_keys().into_iter().collect()).unwrap_or_default();
+                        let gone = self.db.as_ref().and_then(|db| {
+                            db.call(move |s| {
+                                s.media_saved(&key, &path, size, now)?;
+                                s.media_evict(domain::media::CACHE_LIMIT, &keep)
+                            })
+                        });
+                        match gone {
+                            Some(Ok(paths)) => {
+                                for p in paths {
+                                    let _ = std::fs::remove_file(p);
+                                }
+                            }
+                            Some(Err(e)) => log::error!("кэш вложений: {e}"),
+                            None => {}
                         }
                     }
                     ChatEffect::Db(DbOp::SearchLocal { query }) => {
@@ -299,6 +349,68 @@ impl Domain {
                 break;
             }
         }
+        self.sync_media_images();
+    }
+
+    /// Картинки вложений окна истории: фото для ленты (скачанное), размытое
+    /// мини-превью (ещё нет), полное — для окна просмотра. Всё вне окна —
+    /// выбрасывается: память ограничена окном (План, В7).
+    fn sync_media_images(&mut self) {
+        let Some(chat) = self.chat.as_ref() else { return };
+        let mut want: Vec<(String, Decode)> = Vec::new();
+        let mut keep: HashSet<String> = HashSet::new();
+        for (id, f) in domain::media::feed_images(&chat.history) {
+            let (tw, th) = (f.w as u32, f.h as u32);
+            let path = f.file.as_ref().and_then(|file| chat.media_paths.get(&file.key()));
+            match (path, f.photo_key()) {
+                (Some(path), Some(k)) => {
+                    keep.insert(k.clone());
+                    if !self.avatars.contains_key(&k) && !self.bad_avatars.contains(&k) {
+                        let path = path.clone();
+                        want.push((k, Box::new(move || ui::photo::load_feed(&path, tw, th))));
+                    }
+                }
+                _ if !f.stripped.is_empty() => {
+                    let k = f.strip_key(chat.open.unwrap_or(0), id);
+                    keep.insert(k.clone());
+                    if !self.avatars.contains_key(&k) && !self.bad_avatars.contains(&k) {
+                        let stripped = f.stripped;
+                        want.push((k, Box::new(move || ui::photo::stripped(&stripped, tw, th))));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(key) = chat.viewer_key() {
+            if let Some(path) = chat.media_paths.get(&key) {
+                let k = format!("full:{key}");
+                keep.insert(k.clone());
+                if !self.avatars.contains_key(&k) {
+                    let path = path.clone();
+                    want.push((k, Box::new(move || ui::photo::load_full(&path, 2560, 1440))));
+                }
+            }
+        }
+        let before = self.avatars.len();
+        self.avatars.retain(|k, _| {
+            !(k.starts_with("photo:") || k.starts_with("strip:") || k.starts_with("full:")) || keep.contains(k)
+        });
+        let mut changed = before != self.avatars.len();
+        for (k, load) in want {
+            match load() {
+                Some(px) => {
+                    self.avatars.insert(k, px);
+                    changed = true;
+                }
+                None => {
+                    log::warn!("вложение не раскодировано");
+                    self.bad_avatars.insert(k);
+                }
+            }
+        }
+        if changed {
+            self.images_ver += 1;
+        }
     }
 
     fn db_write(&self, op: DbOp) {
@@ -317,7 +429,7 @@ impl Domain {
             DbOp::OutboxRetry { local_id } => s.outbox_retry(local_id, now),
             DbOp::OutboxDelete { local_id } => s.outbox_delete(local_id),
             DbOp::PumpOutbox | DbOp::SearchPeers { .. } | DbOp::ReloadPinned { .. } | DbOp::ReloadFolders
-            | DbOp::SearchLocal { .. } => Ok(()),
+            | DbOp::SearchLocal { .. } | DbOp::MediaLookup { .. } | DbOp::MediaSaved { .. } => Ok(()),
             DbOp::SaveFolders(f) => s.save_folders(&f),
             DbOp::ApplyLocal(updates) => {
                 s.apply_batch(&domain::model::UpdatesBatch { updates, ..Default::default() }).map(|_| ())
@@ -344,6 +456,7 @@ impl Domain {
         }
         match ui::avatar::load(path, AVATAR_PX) {
             Some(px) => {
+                self.images_ver += 1;
                 self.avatars.insert(path.to_string(), px);
             }
             None => {
@@ -613,6 +726,7 @@ fn main() {
         quit: false,
         chat: None,
         avatars: HashMap::new(),
+        images_ver: 0,
         bad_avatars: HashSet::new(),
         bench_sent: false,
     };

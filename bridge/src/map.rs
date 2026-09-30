@@ -2,7 +2,8 @@
 
 use domain::model::{
     AuthState, AuthStep, ChatActionKind, ChatInfo, CodeInfo, Command, CommandResult, ConnState, Country, CountryCode,
-    Dialog, DomainUpdate, Entity, EntityKind, ErrorInfo, Folder, SearchFilter, ErrorKind, Event, Message, Payload, Peer, PeerKind, PeerRef, ProxyKind, ProxySettings,
+    Dialog, DomainUpdate, Entity, EntityKind, ErrorInfo, FileRef, Folder, Media, MediaKind, Poll, PollOption,
+    SearchFilter, WebPage, ErrorKind, Event, Message, Payload, Peer, PeerKind, PeerRef, ProxyKind, ProxySettings,
     StartupErrorKind, UpdateState, UpdatesBatch, User,
 };
 
@@ -115,6 +116,89 @@ fn message_from(m: proto::Message) -> Message {
         fwd_from_name: m.fwd_from_name,
         pinned: m.pinned,
         entities: m.entities.into_iter().map(entity_from).collect(),
+        media_info: m.media_info.map(|x| Box::new(media_from(x))),
+        grouped_id: m.grouped_id,
+    }
+}
+
+fn file_from(f: proto::FileRef) -> FileRef {
+    FileRef {
+        photo: f.kind == proto::file_ref::Kind::Photo as i32,
+        id: f.id,
+        access_hash: f.access_hash,
+        file_reference: f.file_reference,
+        dc: f.dc,
+        thumb_size: f.thumb_size,
+        size: f.size,
+    }
+}
+
+fn file_to(f: FileRef) -> proto::FileRef {
+    proto::FileRef {
+        kind: if f.photo { proto::file_ref::Kind::Photo } else { proto::file_ref::Kind::Document } as i32,
+        id: f.id,
+        access_hash: f.access_hash,
+        file_reference: f.file_reference,
+        dc: f.dc,
+        thumb_size: f.thumb_size,
+        size: f.size,
+    }
+}
+
+fn media_from(m: proto::Media) -> Media {
+    use proto::media::Kind as K;
+    let kind = match K::try_from(m.kind).unwrap_or(K::Other) {
+        K::Photo => MediaKind::Photo,
+        K::Document => MediaKind::Document,
+        K::Video => MediaKind::Video,
+        K::Voice => MediaKind::Voice,
+        K::Audio => MediaKind::Audio,
+        K::Sticker => MediaKind::Sticker,
+        K::Gif => MediaKind::Gif,
+        K::VideoNote => MediaKind::VideoNote,
+        K::Webpage => MediaKind::WebPage,
+        K::Poll => MediaKind::Poll,
+        K::None | K::Other => MediaKind::Other,
+    };
+    Media {
+        kind,
+        file: m.file.map(file_from),
+        full: m.full.map(file_from),
+        thumb: m.thumb.map(file_from),
+        stripped: m.stripped,
+        width: m.width,
+        height: m.height,
+        duration: m.duration,
+        mime: m.mime,
+        name: m.name,
+        size: m.size,
+        waveform: m.waveform,
+        title: m.title,
+        performer: m.performer,
+        emoji: m.emoji,
+        webpage: m.webpage.map(|w| WebPage {
+            url: w.url,
+            site: w.site,
+            title: w.title,
+            description: w.description,
+            photo: w.photo.map(file_from),
+            photo_stripped: w.photo_stripped,
+            photo_width: w.photo_width,
+            photo_height: w.photo_height,
+        }),
+        poll: m.poll.map(|p| Poll {
+            id: p.id,
+            question: p.question,
+            options: p
+                .options
+                .into_iter()
+                .map(|o| PollOption { text: o.text, option: o.option, voters: o.voters, chosen: o.chosen, correct: o.correct })
+                .collect(),
+            total_voters: p.total_voters,
+            closed: p.closed,
+            multiple: p.multiple,
+            quiz: p.quiz,
+        }),
     }
 }
 
@@ -286,6 +370,16 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
             };
             C::ChatAction(proto::ChatAction { peer: Some(peer_ref_to(peer)), kind: kind as i32, revoke })
         }
+        Command::DownloadFile { file, name, peer, msg_id } => C::DownloadFile(proto::DownloadFile {
+            file: Some(file_to(file)),
+            name,
+            peer: Some(peer_ref_to(peer)),
+            msg_id,
+        }),
+        Command::CancelTransfer { cmd_id } => C::CancelTransfer(proto::CancelTransfer { cmd_id }),
+        Command::SendVote { peer, msg_id, options } => {
+            C::SendVote(proto::SendVote { peer: Some(peer_ref_to(peer)), msg_id, options })
+        }
         Command::UpdateFolder { folder, peers } => C::UpdateFolder(proto::UpdateFolder {
             folder: Some(folder_to(folder)),
             peers: peers.into_iter().map(peer_ref_to).collect(),
@@ -406,6 +500,7 @@ pub fn event_from(ev: proto::Event) -> Option<Event> {
             Event::Startup { kind, text: s.text }
         }
         E::Fatal(f) => Event::Fatal(f.text),
+        E::Transfer(t) => Event::Transfer { cmd_id: t.cmd_id, done: t.done, total: t.total },
     })
 }
 

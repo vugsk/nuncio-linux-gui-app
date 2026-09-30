@@ -15,7 +15,8 @@ use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPix
 
 use crate::richtext::{self, Fonts, Span, Style};
 use crate::scroller::Scroller;
-use crate::{avatar, App, Chat, DialogItem, FolderItem, MemberItem, MessageItem, PickerItem, RichLine, RichSeg, SearchRow};
+use crate::{avatar, AlbumCell, App, Chat, DialogItem, FolderItem, MemberItem, MessageItem, PickerItem, PollRow, RichLine,
+    RichSeg, SearchRow, ViewerWindow};
 
 /// Подписи на языке интерфейса (в Rust: собираются из данных, не из разметки).
 pub fn media_label(kind: &str, ru: bool) -> &'static str {
@@ -103,6 +104,17 @@ pub fn peer_name(p: &Peer, ru: bool) -> String {
         return if ru { "Удалённый аккаунт" } else { "Deleted account" }.into();
     }
     p.name.clone()
+}
+
+thread_local! {
+    static NO_IMAGE: Image = Image::from_rgba8(SharedPixelBuffer::new(1, 1));
+}
+
+/// Пустая картинка для полей строк. У Slint `Image::default()` не равна даже
+/// самой себе, и строка с ней при каждом снимке считалась бы изменённой
+/// (замена строки списка, новая раскладка); копии одной картинки равны.
+pub fn no_image() -> Image {
+    NO_IMAGE.with(Image::clone)
 }
 
 fn rgb((r, g, b): (u8, u8, u8)) -> Color {
@@ -318,6 +330,8 @@ pub struct ChatRenderer {
     window_version: u64,
     seen_sent: i32,
     sender: Option<Rc<dyn Fn(ChatIntent)>>,
+    /// Окно просмотра фото (Св-3): есть, пока открыто.
+    viewer: Option<ViewerWindow>,
 }
 
 /// Раскладка текстов с эмодзи и картинки эмодзи. Готовые модели строк
@@ -509,6 +523,8 @@ impl ChatRenderer {
     pub fn render(&mut self, app: &App, m: &ChatModel, avatars: &HashMap<String, SharedPixelBuffer<Rgba8Pixel>>) {
         let chat = app.global::<Chat>();
         let ru = m.lang == "ru";
+        // Картинки, которых больше нет у потока домена (ушли из окна), — забыть.
+        self.images.retain(|k, _| avatars.contains_key(k));
 
         let dialogs = self.dialogs.get_or_insert_with(|| Rc::new(VecModel::default())).clone();
         chat.set_dialogs(ModelRc::from(dialogs.clone()));
@@ -529,7 +545,7 @@ impl ChatRenderer {
                     name: name.into(),
                     color: rgb(avatar::color_for(r.peer.id)),
                     has_avatar: img.is_some() && !r.peer.is_self,
-                    avatar: img.unwrap_or_default(),
+                    avatar: img.unwrap_or_else(no_image),
                     prefix: prefix.into(),
                     preview: text.into(),
                     preview_accent: accent,
@@ -605,6 +621,7 @@ impl ChatRenderer {
                 divider = None;
             }
         }
+        self.fill_media(&mut items, m, avatars, ru);
         trace(format_args!("снимок модели, строк {}", items.len()));
         self.scroller.set_rows(items.iter().map(|i| i64::from(i.key)).collect(), m.window.start, m.window.end);
         self.items = items;
@@ -686,6 +703,220 @@ impl ChatRenderer {
         chat.set_sending(m.sending);
         crate::composer::sync_model(app, m);
         chat.set_error(m.error.clone().unwrap_or_default().into());
+        self.sync_viewer(m, avatars, ru);
+    }
+
+    /// Картинка из буферов потока домена по ключу (если готова).
+    fn media_image(&mut self, key: &str, images: &HashMap<String, SharedPixelBuffer<Rgba8Pixel>>) -> Option<Image> {
+        let px = images.get(key)?;
+        self.image(key, Some(px))
+    }
+
+    /// Вложения строк истории (В7) и склейка альбомов в одну строку.
+    fn fill_media(&mut self, items: &mut Vec<MessageItem>, m: &ChatModel,
+        images: &HashMap<String, SharedPixelBuffer<Rgba8Pixel>>, ru: bool) {
+        use domain::media::{albums, album_layout, duration_label, feed_images, size_label, ALBUM_W};
+        use domain::model::MediaKind as K;
+        let feed = feed_images(&m.history);
+        let peer = m.open.unwrap_or(0);
+        for (it, msg) in items.iter_mut().zip(&m.history) {
+            let Some(mi) = &msg.media_info else { continue };
+            if let Some(f) = feed.get(&msg.id) {
+                let img = match f.photo_key().and_then(|k| self.media_image(&k, images)) {
+                    Some(i) => Some(i),
+                    None => self.media_image(&f.strip_key(peer, msg.id), images),
+                };
+                it.mw = f.w as f32;
+                it.mh = f.h as f32;
+                it.mhas_img = img.is_some();
+                it.mimg = img.unwrap_or_else(no_image);
+            }
+            // Файл: скачивается, скачан или нет.
+            let key = mi.file.as_ref().map(|f| f.key()).unwrap_or_default();
+            let size = mi.file.as_ref().map(|f| f.size).filter(|s| *s > 0).unwrap_or(mi.size);
+            if let Some(t) = m.transfers.get(&key) {
+                let total = if t.total > 0 { t.total } else { size };
+                it.file_state = 1;
+                it.file_progress = if total > 0 { (t.done as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
+                let of = if ru { "из" } else { "of" };
+                it.file_info = format!("{} {of} {}", size_label(t.done, ru), size_label(total, ru)).into();
+            } else {
+                it.file_state = if m.media_paths.contains_key(&key) { 2 } else { 0 };
+                it.file_info = if size > 0 { size_label(size, ru).into() } else { "".into() };
+            }
+            let has_feed = feed.contains_key(&msg.id);
+            match mi.kind {
+                K::Photo if has_feed => it.mkind = 1,
+                K::Video | K::Gif | K::VideoNote if has_feed => {
+                    it.mkind = 1;
+                    it.mplay = mi.kind != K::Gif;
+                    it.mdur = if mi.duration > 0 { duration_label(mi.duration).into() } else { "".into() };
+                }
+                K::Document | K::Audio | K::Voice | K::Video | K::VideoNote => {
+                    it.mkind = 2;
+                    it.file_voice = matches!(mi.kind, K::Voice | K::Audio);
+                    let name = match mi.kind {
+                        K::Voice => media_label("voice", ru).to_string(),
+                        K::Audio if !mi.title.is_empty() => {
+                            if mi.performer.is_empty() { mi.title.clone() } else { format!("{} — {}", mi.performer, mi.title) }
+                        }
+                        _ if !mi.name.is_empty() => mi.name.clone(),
+                        K::Video | K::VideoNote => media_label("video", ru).to_string(),
+                        _ => media_label("document", ru).to_string(),
+                    };
+                    it.file_name = name.into();
+                    if mi.duration > 0 && it.file_state != 1 {
+                        let d = duration_label(mi.duration);
+                        it.file_info = if it.file_info.is_empty() { d.into() } else { format!("{d}, {}", it.file_info).into() };
+                    }
+                }
+                K::WebPage => {
+                    let Some(wp) = &mi.webpage else { continue };
+                    it.mkind = 3;
+                    it.wp_site = wp.site.clone().into();
+                    it.wp_title = wp.title.clone().into();
+                    let mut desc: String = wp.description.chars().take(300).collect();
+                    if desc.len() < wp.description.len() {
+                        desc.push('…');
+                    }
+                    it.wp_desc = desc.into();
+                }
+                K::Poll => {
+                    let Some(poll) = &mi.poll else { continue };
+                    it.mkind = 4;
+                    let voted = poll.closed || poll.options.iter().any(|o| o.chosen);
+                    it.poll_voted = voted;
+                    it.poll_question = poll.question.clone().into();
+                    let kind = match (poll.quiz, ru) {
+                        (true, true) => "Викторина",
+                        (true, false) => "Quiz",
+                        (false, true) => "Опрос",
+                        (false, false) => "Poll",
+                    };
+                    let votes = if ru {
+                        format!("{kind} · {}", count_votes(poll.total_voters))
+                    } else {
+                        format!("{kind} · {} votes", poll.total_voters)
+                    };
+                    it.poll_info = if poll.closed { format!("{votes} · {}", if ru { "завершён" } else { "closed" }) } else { votes }
+                        .into();
+                    let total = poll.options.iter().map(|o| o.voters).sum::<i32>().max(1);
+                    it.poll_options = model(
+                        poll.options
+                            .iter()
+                            .map(|o| PollRow {
+                                text: o.text.clone().into(),
+                                share: o.voters as f32 / total as f32,
+                                percent: format!("{}%", (o.voters * 100 + total / 2) / total).into(),
+                                chosen: o.chosen,
+                                correct: o.correct,
+                            })
+                            .collect(),
+                    );
+                }
+                _ => {}
+            }
+            if it.mkind != 0 {
+                it.media = "".into();
+            }
+        }
+        // Альбомы: строки подряд → одна; ключ — последнего сообщения (прочитано до конца альбома).
+        for r in albums(&m.history).into_iter().rev() {
+            let (cells, height) = album_layout(r.len());
+            let group: Vec<MessageItem> = items.drain(r.clone()).collect();
+            let mut base = group[0].clone();
+            if let Some(cap) = group.iter().find(|g| !g.text.is_empty()) {
+                base.text = cap.text.clone();
+                base.rich = cap.rich;
+                base.lines = cap.lines.clone();
+                base.big_emoji = cap.big_emoji.clone();
+            }
+            base.key = group.last().map(|g| g.key).unwrap_or(base.key);
+            base.unread_divider = group.iter().any(|g| g.unread_divider);
+            base.edited = group.iter().any(|g| g.edited);
+            base.album = model(
+                group
+                    .iter()
+                    .zip(cells)
+                    .map(|(g, c)| AlbumCell {
+                        id: g.id.clone(),
+                        img: g.mimg.clone(),
+                        has_img: g.mhas_img,
+                        play: g.mplay,
+                        x: c.x as f32,
+                        y: c.y as f32,
+                        w: c.w as f32,
+                        h: c.h as f32,
+                    })
+                    .collect(),
+            );
+            base.mkind = 5;
+            base.mw = ALBUM_W as f32;
+            base.mh = height as f32;
+            items.insert(r.start, base);
+        }
+    }
+
+    /// Окно просмотра фото (Св-3): создать по запросу, наполнить, закрыть.
+    fn sync_viewer(&mut self, m: &ChatModel, images: &HashMap<String, SharedPixelBuffer<Rgba8Pixel>>, ru: bool) {
+        let msg = m.viewer.and_then(|id| m.history.iter().find(|x| x.id == id));
+        let Some(msg) = msg else {
+            if let Some(w) = self.viewer.take() {
+                let _ = w.hide();
+            }
+            return;
+        };
+        if self.viewer.is_none() {
+            let Ok(w) = ViewerWindow::new() else { return };
+            if let Some(send) = self.sender.clone() {
+                let s = send.clone();
+                w.on_step(move |d| s(ChatIntent::ViewerStep(d)));
+                let s = send.clone();
+                w.on_close_viewer(move || s(ChatIntent::CloseViewer));
+                w.window().on_close_requested(move || {
+                    send(ChatIntent::CloseViewer);
+                    slint::CloseRequestResponse::HideWindow
+                });
+            }
+            let weak = w.as_weak();
+            w.on_toggle_fullscreen(move || {
+                if let Some(w) = weak.upgrade() {
+                    let full = w.window().is_fullscreen();
+                    w.window().set_fullscreen(!full);
+                }
+            });
+            if w.show().is_err() {
+                return;
+            }
+            self.viewer = Some(w);
+        }
+        let key = m.viewer_key().unwrap_or_default();
+        let feed = domain::media::feed_images(std::slice::from_ref(msg));
+        // Полный размер, пока его нет — картинка из ленты.
+        let img = match self.media_image(&format!("full:{key}"), images) {
+            Some(i) => Some(i),
+            None => feed.get(&msg.id).and_then(|f| {
+                let k = f.photo_key().filter(|k| images.contains_key(k)).unwrap_or_else(|| f.strip_key(m.open.unwrap_or(0), msg.id));
+                self.media_image(&k, images)
+            }),
+        };
+        let ids = m.photo_ids();
+        let pos = ids.iter().position(|x| *x == msg.id);
+        let Some(w) = &self.viewer else { return };
+        w.set_has_photo(img.is_some());
+        w.set_photo(img.unwrap_or_default());
+        w.set_counter(match pos {
+            Some(p) if ids.len() > 1 => format!("{} {} {}", p + 1, if ru { "из" } else { "of" }, ids.len()).into(),
+            _ => "".into(),
+        });
+        w.set_can_prev(pos.is_some_and(|p| p > 0));
+        w.set_can_next(pos.is_some_and(|p| p + 1 < ids.len()));
+        w.set_caption(msg.text.chars().take(500).collect::<String>().into());
+        w.set_progress(match m.transfers.get(&key) {
+            Some(t) if t.total > 0 => format!("{} {}%", if ru { "Загрузка" } else { "Loading" }, t.done * 100 / t.total).into(),
+            Some(_) => if ru { "Загрузка…" } else { "Loading…" }.into(),
+            None => "".into(),
+        });
     }
 
     /// Видимые строки, линия опоры, ползунок; просьбы о подгрузке и «прочитано».
@@ -734,6 +965,16 @@ impl ChatRenderer {
 }
 
 /// Вид чата для разметки: 0 личный, 1 группа, 2 канал.
+/// «5 голосов».
+fn count_votes(n: i32) -> String {
+    let w = match (n % 10, n % 100) {
+        (1, x) if x != 11 => "голос",
+        (2..=4, x) if !(12..=14).contains(&x) => "голоса",
+        _ => "голосов",
+    };
+    format!("{n} {w}")
+}
+
 fn peer_kind_code(p: &Peer) -> i32 {
     match p.kind {
         PeerKind::User => 0,
@@ -826,7 +1067,7 @@ impl ChatRenderer {
                 time: msg.map(|x| timefmt::dialog_time(x.date, m.now, &m.lang)).unwrap_or_default().into(),
                 color: rgb(avatar::color_for(p.id)),
                 has_avatar: img.is_some() && !p.is_self,
-                avatar: img.unwrap_or_default(),
+                avatar: img.unwrap_or_else(no_image),
             }
         };
         let header = |t: &str| SearchRow { header: true, title: t.into(), ..Default::default() };
@@ -903,7 +1144,7 @@ impl ChatRenderer {
                         initials: avatar::initials(&name).into(),
                         name: name.into(),
                         color: rgb(avatar::color_for(*id)),
-                        avatar: Image::default(),
+                        avatar: no_image(),
                         has_avatar: false,
                         role: match (role, ru) {
                             (2, true) => "владелец",
@@ -1069,6 +1310,7 @@ pub fn message_items(history: &[Message], cx: &HistoryCtx) -> Vec<MessageItem> {
             pinned: msg.pinned,
             has_link: cx.peer.and_then(|p| domain::chat::message_link(p, msg.id)).is_some(),
             key: msg.id, // у очереди id = −local_id
+            mimg: no_image(),
             reply_id: if msg.reply_to > 0 { msg.reply_to.to_string().into() } else { "".into() },
             ..Default::default()
         });
@@ -1107,7 +1349,7 @@ mod tests {
     #[test]
     fn rich_text_is_cached_per_width() {
         let mut c = RichCache::default();
-        let item = |t: &str| MessageItem { text: t.into(), ..Default::default() };
+        let item = |t: &str| MessageItem { text: t.into(), mimg: no_image(), ..Default::default() };
         let mut a = item("привет 👋 мир");
         c.enrich(&mut a, &Message::default(), 700);
         assert!(a.rich && a.lines.row_count() == 1);

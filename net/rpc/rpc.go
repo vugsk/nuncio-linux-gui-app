@@ -139,8 +139,16 @@ func refill(b *bucket, now time.Time, rate, burst float64) {
 	}
 }
 
+// fileMethods — передача файлов частями: идёт сериями параллельных запросов
+// (официальные клиенты — десятками), под общими пределами файл шёл бы 1 МБ/с.
+// Параллельность ограничивает сам загрузчик (net/files).
+var fileMethods = map[string]bool{"upload.getFile": true, "upload.saveFilePart": true, "upload.saveBigFilePart": true}
+
 // Wait ждёт, пока можно выполнить запрос method, и забирает токены.
 func (l *Limiter) Wait(ctx context.Context, method string) error {
+	if fileMethods[method] {
+		return nil
+	}
 	for {
 		l.mu.Lock()
 		now := l.clock.Now()

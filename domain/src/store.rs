@@ -156,6 +156,12 @@ const MIGRATIONS: &[&str] = &[
         exclude  TEXT NOT NULL DEFAULT ''
     );
     "#,
+    // 8 (В7): вложения подробно (JSON описания), альбомы, индекс кэша файлов.
+    r#"
+    ALTER TABLE messages ADD COLUMN media_json TEXT NOT NULL DEFAULT '';
+    ALTER TABLE messages ADD COLUMN grouped_id INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE media ADD COLUMN last_used INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 /// Текущая версия схемы.

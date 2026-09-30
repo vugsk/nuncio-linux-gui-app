@@ -16,6 +16,7 @@ slint::include_modules!();
 pub mod avatar;
 pub mod chatview;
 pub mod composer;
+pub mod photo;
 pub mod richtext;
 pub mod scroller;
 
@@ -452,6 +453,19 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
         chat.on_jump_to(move |id| {
             if let Ok(id) = id.parse() {
                 s(Action::Chat(ChatIntent::JumpTo(id)));
+            }
+        });
+        // Вложения (В7).
+        let s = send.clone();
+        chat.on_media_click(move |id| {
+            if let Ok(id) = id.parse() {
+                s(Action::Chat(ChatIntent::MediaClick(id)));
+            }
+        });
+        let s = send.clone();
+        chat.on_vote(move |id, option| {
+            if let (Ok(id), Ok(option)) = (id.parse(), usize::try_from(option)) {
+                s(Action::Chat(ChatIntent::Vote(id, option)));
             }
         });
         let a = app.as_weak();

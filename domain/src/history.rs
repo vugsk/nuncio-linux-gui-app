@@ -170,7 +170,7 @@ impl Store {
         let v = st
             .query_map(p, |r| {
                 let mut m = message_from_row(r, 0)?;
-                m.send_error = r.get(16)?;
+                m.send_error = r.get(18)?;
                 Ok(m)
             })?
             .collect::<Result<_, _>>()?;

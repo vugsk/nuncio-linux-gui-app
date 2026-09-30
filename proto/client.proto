@@ -92,6 +92,87 @@ message Message {
   string fwd_from_name = 13;     // имя, если id скрыт настройками приватности
   bool pinned = 14;
   repeated MessageEntity entities = 15;
+  Media media_info = 16;         // вложение подробно (В7); media — только вид словом
+  int64 grouped_id = 17;         // альбом: общий номер у сообщений одного альбома
+}
+
+// Вложение (Чт-7, Чт-11, Чт-13).
+message Media {
+  enum Kind {
+    NONE = 0;
+    PHOTO = 1;
+    DOCUMENT = 2;
+    VIDEO = 3;
+    VOICE = 4;
+    AUDIO = 5;
+    STICKER = 6;
+    GIF = 7;
+    VIDEO_NOTE = 8;
+    WEBPAGE = 9;
+    POLL = 10;
+    OTHER = 11;
+  }
+  Kind kind = 1;
+  FileRef file = 2;              // фото — размер для ленты; документ — сам файл
+  FileRef full = 3;              // фото — самый большой размер (окно просмотра)
+  FileRef thumb = 4;             // превью документа (видео, картинка-файл)
+  bytes stripped = 5;            // мини-превью JPEG: размытое до скачивания (Чт-11)
+  int32 width = 6;
+  int32 height = 7;
+  int32 duration = 8;            // секунды
+  string mime = 9;
+  string name = 10;
+  int64 size = 11;
+  bytes waveform = 12;           // голосовое: 5-битные значения подряд
+  string title = 13;             // аудио
+  string performer = 14;
+  string emoji = 15;             // стикер
+  WebPage webpage = 16;
+  Poll poll = 17;
+}
+
+// Ссылка на файл для upload.getFile.
+message FileRef {
+  enum Kind {
+    PHOTO = 0;
+    DOCUMENT = 1;
+  }
+  Kind kind = 1;
+  int64 id = 2;
+  int64 access_hash = 3;
+  bytes file_reference = 4;
+  int32 dc = 5;
+  string thumb_size = 6;         // размер фото или превью документа; пусто — сам документ
+  int64 size = 7;
+}
+
+message WebPage {
+  string url = 1;
+  string site = 2;
+  string title = 3;
+  string description = 4;
+  FileRef photo = 5;
+  bytes photo_stripped = 6;
+  int32 photo_width = 7;
+  int32 photo_height = 8;
+}
+
+message Poll {
+  int64 id = 1;
+  string question = 2;
+  repeated PollOption options = 3;
+  int32 total_voters = 4;
+  bool closed = 5;
+  bool multiple = 6;
+  bool quiz = 7;
+}
+
+message PollOption {
+  string text = 1;
+  bytes option = 2;
+  int32 voters = 3;
+  bool chosen = 4;
+  bool correct = 5;
 }
 
 // Форматирование текста (Дз-15). Смещения — в единицах UTF-16, как в Telegram.
@@ -276,6 +357,9 @@ message Command {
     GetChatInfo get_chat_info = 45;
     ChatAction chat_action = 46;
     UpdateFolder update_folder = 47;
+    DownloadFile download_file = 54;
+    CancelTransfer cancel_transfer = 55;
+    SendVote send_vote = 56;
     Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
   }
 }
@@ -387,7 +471,15 @@ message Event {
     UpdatesBatch updates = 4;
     FatalError fatal = 6;
     StartupError startup = 7;
+    TransferProgress transfer = 8;
   }
+}
+
+// Ход передачи файла (скачивание или выгрузка): id — команды, которая её начала.
+message TransferProgress {
+  uint64 cmd_id = 1;
+  int64 done = 2;
+  int64 total = 3;               // 0 — размер неизвестен
 }
 
 message ConnectionState {
@@ -494,6 +586,19 @@ message SearchMessages {
 }
 
 message GetChatInfo { PeerRef peer = 1; string members_query = 2; }
+
+// Скачать файл в кэш (результат — FilePath). Прогресс — события TransferProgress.
+// peer и msg_id — чтобы обновить ссылку на файл, если она устарела.
+message DownloadFile {
+  FileRef file = 1;
+  string name = 2;               // имя файла для расширения (документы)
+  PeerRef peer = 3;
+  int32 msg_id = 4;
+}
+
+message CancelTransfer { uint64 cmd_id = 1; }
+
+message SendVote { PeerRef peer = 1; int32 msg_id = 2; repeated bytes options = 3; }
 
 // Изменить папку (пункт «В папку…», Сп-4): папка целиком и ссылки на все её чаты.
 message UpdateFolder { Folder folder = 1; repeated PeerRef peers = 2; }

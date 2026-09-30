@@ -225,6 +225,10 @@ func Message(m tl.MessageClass) *pb.Message {
 		}
 		out.Pinned = v.Pinned
 		out.Entities = Entities(v.Entities)
+		out.MediaInfo = MediaInfo(v.Media)
+		if v.GroupedId != nil {
+			out.GroupedId = *v.GroupedId
+		}
 		return out
 	case *tl.MessageService:
 		out := &pb.Message{PeerId: PeerID(v.PeerId), Id: v.Id, Date: int64(v.Date), Out: v.Out,

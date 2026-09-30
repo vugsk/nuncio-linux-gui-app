@@ -229,3 +229,20 @@ func TestClientAttemptTimeout(t *testing.T) {
 		t.Fatalf("контекст вызывающего: %v, вызовов %d", err, h.calls)
 	}
 }
+
+func TestLimiterSkipsFileParts(t *testing.T) {
+	clk := &fakeClock{now: time.Unix(1_000_000, 0)}
+	l := NewLimiter(DefaultLimits, clk)
+	for i := 0; i < 200; i++ {
+		if err := l.Wait(context.Background(), "upload.getFile"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if clk.slept != 0 {
+		t.Fatalf("части файла ждали ограничителя: %v", clk.slept)
+	}
+	// И не съедают общий запас: обычный запрос идёт сразу.
+	if err := l.Wait(context.Background(), "help.getConfig"); err != nil || clk.slept != 0 {
+		t.Fatalf("общий запас потрачен частями файла: %v", clk.slept)
+	}
+}

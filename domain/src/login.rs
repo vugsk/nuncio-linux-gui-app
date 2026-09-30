@@ -480,6 +480,7 @@ impl LoginModel {
                 self.busy = false;
                 self.screen = Some(Screen::Critical(Critical { kind, detail: text }));
             }
+            Event::Transfer { .. } => {}
             Event::Fatal(text) => {
                 self.screen = Some(Screen::Critical(Critical { kind: CriticalKind::NetworkFailed, detail: text }));
             }

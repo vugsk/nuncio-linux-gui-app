@@ -31,6 +31,8 @@ func main() {
 	history := flag.Int("history", 0, "сколько сообщений заранее в чате (длинная история для прокрутки)")
 	unread := flag.Int("unread", 0, "непрочитанных в диалоге (0 — одно, −1 — всё прочитано)")
 	extras := flag.Bool("extras", false, "ещё собеседники и папка (поиск, папки, архив — В6)")
+	media := flag.Bool("media", false, "чат «Вложения»: фото, альбом, файл, опрос, превью ссылки (В7)")
+	partDelay := flag.Duration("part-delay", 0, "задержка на часть файла при скачивании")
 	flag.Parse()
 
 	msgs := []string{"начало"}
@@ -55,6 +57,14 @@ func main() {
 			{ID: 102, Name: "Архивный", AccessHash: 13, Archived: true, Unread: -1, Messages: []string{"старое"}},
 		}, acc.Contacts...)
 		acc.Folders = []fakeserver.FakeFolder{{ID: 2, Title: "Работа", Include: []int64{101}}}
+	}
+	if *media {
+		// Новее всех: чат «Вложения» — первый в списке.
+		texts, att, files := fakeserver.MediaChat()
+		acc.Contacts = append(acc.Contacts, fakeserver.Contact{ID: 103, Name: "Вложения", AccessHash: 14, Unread: -1,
+			Messages: texts, Attach: att})
+		acc.Files = files
+		acc.PartDelay = *partDelay
 	}
 	srv, err := fakeserver.StartAt(*listen, fakeserver.Options{DC: 2, Account: acc})
 	if err != nil {

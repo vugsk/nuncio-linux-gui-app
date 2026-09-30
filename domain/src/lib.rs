@@ -9,6 +9,7 @@ pub mod chatstore;
 pub mod config;
 pub mod history;
 pub mod login;
+pub mod media;
 pub mod model;
 pub mod outbox;
 pub mod phone;

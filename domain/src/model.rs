@@ -106,6 +106,111 @@ pub struct Message {
     pub pinned: bool,
     /// Форматирование (Дз-15), смещения в UTF-16.
     pub entities: Vec<Entity>,
+    /// Вложение подробно (В7); `media` — только вид словом.
+    pub media_info: Option<Box<Media>>,
+    /// Альбом: общий номер у сообщений одного альбома (0 — не альбом).
+    pub grouped_id: i64,
+}
+
+/// Вид вложения (Чт-7, Чт-11, Чт-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum MediaKind {
+    #[default]
+    Other,
+    Photo,
+    Document,
+    Video,
+    Voice,
+    Audio,
+    Sticker,
+    Gif,
+    VideoNote,
+    WebPage,
+    Poll,
+}
+
+/// Ссылка на файл для скачивания (upload.getFile).
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct FileRef {
+    /// Фото (иначе документ).
+    pub photo: bool,
+    pub id: i64,
+    pub access_hash: i64,
+    pub file_reference: Vec<u8>,
+    pub dc: i32,
+    /// Размер фото или превью документа; пусто — сам документ.
+    pub thumb_size: String,
+    pub size: i64,
+}
+
+impl FileRef {
+    /// Ключ файла в кэше (совпадает с именем без расширения у Go).
+    pub fn key(&self) -> String {
+        let kind = if self.photo || !self.thumb_size.is_empty() { "p" } else { "d" };
+        let thumb = if self.thumb_size.is_empty() { "0" } else { &self.thumb_size };
+        format!("{kind}_{}_{thumb}", self.id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct WebPage {
+    pub url: String,
+    pub site: String,
+    pub title: String,
+    pub description: String,
+    pub photo: Option<FileRef>,
+    pub photo_stripped: Vec<u8>,
+    pub photo_width: i32,
+    pub photo_height: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct PollOption {
+    pub text: String,
+    pub option: Vec<u8>,
+    pub voters: i32,
+    pub chosen: bool,
+    pub correct: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct Poll {
+    pub id: i64,
+    pub question: String,
+    pub options: Vec<PollOption>,
+    pub total_voters: i32,
+    pub closed: bool,
+    pub multiple: bool,
+    pub quiz: bool,
+}
+
+/// Вложение подробно.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct Media {
+    pub kind: MediaKind,
+    /// Фото — размер для ленты; документ — сам файл.
+    pub file: Option<FileRef>,
+    /// Фото — самый большой размер (окно просмотра).
+    pub full: Option<FileRef>,
+    /// Превью документа.
+    pub thumb: Option<FileRef>,
+    /// Мини-превью JPEG (размытое до скачивания).
+    #[serde(default)]
+    pub stripped: Vec<u8>,
+    pub width: i32,
+    pub height: i32,
+    /// Секунды.
+    pub duration: i32,
+    pub mime: String,
+    pub name: String,
+    pub size: i64,
+    #[serde(default)]
+    pub waveform: Vec<u8>,
+    pub title: String,
+    pub performer: String,
+    pub emoji: String,
+    pub webpage: Option<WebPage>,
+    pub poll: Option<Poll>,
 }
 
 /// Вид форматирования (как `MessageEntity` в client.proto).
@@ -343,6 +448,11 @@ pub enum Command {
     ChatAction { peer: PeerRef, kind: ChatActionKind, revoke: bool },
     /// Папка целиком и ссылки на её чаты (access_hash).
     UpdateFolder { folder: Folder, peers: Vec<PeerRef> },
+    /// Скачать файл в кэш (результат — `Payload::File`); peer и msg_id — для
+    /// обновления устаревшей ссылки на файл.
+    DownloadFile { file: FileRef, name: String, peer: PeerRef, msg_id: i32 },
+    CancelTransfer { cmd_id: u64 },
+    SendVote { peer: PeerRef, msg_id: i32, options: Vec<Vec<u8>> },
 }
 
 /// Шаг входа.
@@ -477,4 +587,6 @@ pub enum Event {
     Updates(UpdatesBatch),
     Startup { kind: StartupErrorKind, text: String },
     Fatal(String),
+    /// Ход передачи файла: id команды, начавшей её.
+    Transfer { cmd_id: u64, done: i64, total: i64 },
 }

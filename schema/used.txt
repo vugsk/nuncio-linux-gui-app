@@ -82,3 +82,21 @@ inputMessagesFilterDocument
 inputMessagesFilterUrl
 inputMessagesFilterVoice
 messages.updateDialogFilter
+
+# В7: файлы — скачивание, выгрузка, отправка вложений, опросы
+upload.getFile
+upload.saveFilePart
+upload.saveBigFilePart
+messages.sendMedia
+messages.sendMultiMedia
+messages.uploadMedia
+messages.sendVote
+inputPhotoFileLocation
+inputDocumentFileLocation
+inputMediaUploadedPhoto
+inputMediaUploadedDocument
+inputMediaPhoto
+inputMediaDocument
+inputSingleMedia
+inputFile
+inputFileBig

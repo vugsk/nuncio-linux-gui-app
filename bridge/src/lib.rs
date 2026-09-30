@@ -9,6 +9,8 @@
 mod ffi;
 pub mod map;
 
+// Сгенерированный prost код: размеры вариантов oneof задаёт схема, не мы.
+#[allow(clippy::large_enum_variant)]
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/nuncio.client.v0.rs"));
 }
@@ -23,7 +25,7 @@ use domain::{Backend, BackendError, Next};
 use prost::Message;
 
 /// Версия client.proto, которую понимает эта сборка (сверяется с Go).
-pub const PROTO_VERSION: u32 = 7;
+pub const PROTO_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeError {

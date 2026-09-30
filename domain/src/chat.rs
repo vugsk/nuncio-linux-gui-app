@@ -61,6 +61,9 @@ pub enum DbOp {
     ApplyLocal(Vec<crate::model::DomainUpdate>),
     /// История очищена или чат удалён: убрать из базы (dialog — и сам диалог).
     DropChat { peer_id: i64, dialog: bool },
+    /// Вложения: что из нужного окну уже в кэше (результат — `set_media_paths`); скачано.
+    MediaLookup { keys: Vec<String> },
+    MediaSaved { key: String, path: String, size: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +72,8 @@ pub enum ChatEffect {
     Db(DbOp),
     /// Скопировать в буфер обмена (Чт-9).
     Clipboard(String),
+    /// Открыть скачанный файл во внешней программе.
+    OpenFile(String),
 }
 
 /// Режим поля ввода: ответ или правка (одна панель над полем, Дз-2).
@@ -160,6 +165,13 @@ pub enum ChatIntent {
     ViewWidth(i32),
     /// Папки, поиск, правая панель, действия над чатом (В6, chatlist.rs).
     List(crate::chatlist::ListIntent),
+    /// Вложение: скачать, отменить, открыть (В7).
+    MediaClick(i32),
+    /// Голос в опросе: сообщение и вариант.
+    Vote(i32, usize),
+    /// Окно просмотра: соседнее фото (−1, +1) или закрыть.
+    ViewerStep(i32),
+    CloseViewer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +192,10 @@ pub(crate) enum Pending {
     ChatInfo { peer_id: i64 },
     ChatSearch { peer_id: i64, seq: u64 },
     ChatAction { peer_id: i64, kind: crate::model::ChatActionKind },
+    Download { key: String, size: i64 },
+    /// Голос в опросе: после ответа — перечитать сообщение (результаты).
+    Vote { peer: PeerRef, msg_id: i32 },
+    Other,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -196,6 +212,13 @@ pub struct ChatModel {
     pub info: Option<crate::model::ChatInfo>,
     pub chat_search: Option<crate::chatlist::ChatSearch>,
     pub confirm: Option<crate::chatlist::Confirm>,
+    /// Вложения (В7, media.rs): скачивания в работе, скачанное окна, неудачи.
+    pub transfers: HashMap<String, crate::media::Transfer>,
+    pub media_paths: HashMap<String, String>,
+    pub(crate) media_failed: HashSet<String>,
+    /// Окно просмотра фото (Св-3): сообщение и номер открытия.
+    pub viewer: Option<i32>,
+    pub viewer_seq: u64,
     pub open: Option<i64>,
     /// Окно истории открытого чата, по возрастанию id (очередь отправки в конце).
     pub history: Vec<Message>,
@@ -261,6 +284,11 @@ impl ChatModel {
             next_id: 1 << 32, // у модели входа id с 1: не пересекаются
             ..Default::default()
         }
+    }
+
+    /// Id, который получит следующая команда.
+    pub(crate) fn peek_id(&self) -> u64 {
+        self.next_id
     }
 
     pub(crate) fn send(&mut self, cmd: Command, p: Pending, out: &mut Vec<ChatEffect>) {
@@ -359,6 +387,7 @@ impl ChatModel {
         if matches!(self.anchor, Anchor::At(_)) && self.window.end {
             self.anchor = Anchor::Latest;
         }
+        self.media_window_changed(&mut out);
         let ready = match self.pending_jump {
             Some(Jump::Bottom) => true,
             Some(Jump::To(_)) => self.window.found,
@@ -679,6 +708,17 @@ impl ChatModel {
             }
             ChatIntent::DismissToast => self.toast = None,
             ChatIntent::List(li) => self.list_intent(li, &mut out),
+            ChatIntent::MediaClick(id) => self.media_click(id, &mut out),
+            ChatIntent::Vote(id, option) => self.vote(id, option, &mut out),
+            ChatIntent::CloseViewer => self.viewer = None,
+            ChatIntent::ViewerStep(d) => {
+                let ids = self.photo_ids();
+                let pos = self.viewer.and_then(|v| ids.iter().position(|x| *x == v));
+                if let Some(next) = pos.and_then(|p| ids.get((p as i64 + i64::from(d)).max(0) as usize)) {
+                    let next = *next;
+                    self.media_click(next, &mut out);
+                }
+            }
             ChatIntent::ViewWidth(w) => self.view_width = w.max(0),
             ChatIntent::NeedOlder => {
                 let Some(peer_id) = self.open else { return out };
@@ -820,6 +860,7 @@ impl ChatModel {
                 }
             }
             Event::Result(r) => self.result(r, &mut out),
+            Event::Transfer { cmd_id, done, total } => self.transfer_progress(*cmd_id, *done, *total),
             _ => {}
         }
         out
@@ -950,6 +991,23 @@ impl ChatModel {
             | Pending::ChatInfo { .. }
             | Pending::ChatSearch { .. }
             | Pending::ChatAction { .. }) => self.list_result(p, r, out),
+            Pending::Download { key, size } => {
+                let path = match (&r.error, &r.payload) {
+                    (None, Payload::File(p)) => Some(p.clone()),
+                    _ => None,
+                };
+                self.download_done(key, size, path, out);
+            }
+            Pending::Vote { peer, msg_id } => match &r.error {
+                Some(e) => {
+                    let t = e.text.clone();
+                    self.toast(&t);
+                }
+                None => {
+                    self.send(Command::LoadMessages { peer, ids: vec![msg_id] }, Pending::Quotes { peer_id: peer.id }, out)
+                }
+            },
+            Pending::Other => {}
             Pending::PickerSearch | Pending::Contacts => {
                 if let Payload::Peers(peers) = &r.payload {
                     out.push(ChatEffect::Db(DbOp::SavePeers(peers.clone())));
