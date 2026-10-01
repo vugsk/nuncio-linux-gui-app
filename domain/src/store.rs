@@ -162,6 +162,11 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE messages ADD COLUMN grouped_id INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE media ADD COLUMN last_used INTEGER NOT NULL DEFAULT 0;
     "#,
+    // 9 (В7): вложения в очереди отправки (JSON файла) и альбомы (общий ключ).
+    r#"
+    ALTER TABLE outbox ADD COLUMN media TEXT NOT NULL DEFAULT '';
+    ALTER TABLE outbox ADD COLUMN group_key INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 /// Текущая версия схемы.

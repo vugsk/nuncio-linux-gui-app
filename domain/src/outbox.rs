@@ -6,7 +6,7 @@
 
 use rusqlite::{params, OptionalExtension};
 
-use crate::model::{decode_entities, encode_entities, Entity, Message, PeerKind};
+use crate::model::{decode_entities, encode_entities, Entity, Media, MediaKind, Message, PeerKind};
 use crate::store::{Store, StoreError};
 
 /// Срок жизни сообщения в очереди по умолчанию (О-12): сутки.
@@ -26,6 +26,37 @@ pub struct OutboxItem {
     pub text: String,
     pub reply_to: i32,
     pub entities: Vec<Entity>,
+    /// Вложение (В7); у альбома — общий `group` у нескольких строк подряд.
+    pub media: Option<OutMedia>,
+    pub group: i64,
+}
+
+/// Файл в очереди отправки.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct OutMedia {
+    pub path: String,
+    pub name: String,
+    pub mime: String,
+    pub as_photo: bool,
+    pub size: i64,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl OutMedia {
+    /// Описание своего неотправленного для ленты: файл пока на диске.
+    pub fn local_media(&self) -> Media {
+        Media {
+            kind: if self.as_photo { MediaKind::Photo } else { MediaKind::Document },
+            name: self.name.clone(),
+            mime: self.mime.clone(),
+            size: self.size,
+            width: self.width,
+            height: self.height,
+            local_path: self.path.clone(),
+            ..Default::default()
+        }
+    }
 }
 
 fn msg_state(outbox_state: i32) -> i32 {
@@ -37,24 +68,30 @@ fn msg_state(outbox_state: i32) -> i32 {
 }
 
 /// Что поставить в очередь.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Outgoing<'a> {
     pub peer_id: i64,
     pub text: &'a str,
     pub entities: &'a [Entity],
     pub reply_to: i32,
     pub random_id: i64,
+    pub media: Option<&'a OutMedia>,
+    /// Альбом: одинаковый ненулевой ключ у файлов, уходящих одним запросом.
+    pub group: i64,
 }
 
 impl Store {
     /// Поставить сообщение в очередь: строка очереди и локальное сообщение в чате.
     pub fn outbox_enqueue(&mut self, o: &Outgoing, self_id: i64, now: i64) -> Result<i64, StoreError> {
-        let Outgoing { peer_id, text, entities, reply_to, random_id } = *o;
+        let Outgoing { peer_id, text, entities, reply_to, random_id, media, group } = *o;
+        let json = |v: Option<String>| v.unwrap_or_default();
+        let media_json = json(media.and_then(|m| serde_json::to_string(m).ok()));
+        let shown = json(media.and_then(|m| serde_json::to_string(&m.local_media()).ok()));
         let tx = self.conn_mut().transaction()?;
         tx.execute(
-            "INSERT INTO outbox (peer_id, random_id, content, queued_at, reply_to, state, next_try, entities)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6)",
-            params![peer_id, random_id, text.as_bytes(), now, reply_to, encode_entities(entities)],
+            "INSERT INTO outbox (peer_id, random_id, content, queued_at, reply_to, state, next_try, entities, media, group_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6, ?7, ?8)",
+            params![peer_id, random_id, text.as_bytes(), now, reply_to, encode_entities(entities), media_json, group],
         )?;
         let local = tx.last_insert_rowid();
         let kind = match PeerKind::of(peer_id) {
@@ -64,28 +101,50 @@ impl Store {
         };
         tx.execute("INSERT OR IGNORE INTO peers (id, kind) VALUES (?1, ?2)", params![peer_id, kind])?;
         tx.execute(
-            "INSERT INTO messages (peer_id, id, date, sender_id, text, reply_to, out, random_id, send_state, entities)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 1, ?8)",
-            params![peer_id, -local, now, self_id, text, reply_to, random_id, encode_entities(entities)],
+            "INSERT INTO messages (peer_id, id, date, sender_id, text, reply_to, out, random_id, send_state, entities,
+                                   media_json, grouped_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 1, ?8, ?9, ?10)",
+            params![peer_id, -local, now, self_id, text, reply_to, random_id, encode_entities(entities), shown, group],
         )?;
         tx.commit()?;
         Ok(local)
     }
 
     /// Готовые к отправке: по одному (самому старому) на чат, если в этом чате
-    /// ничего не отправляется и время попытки наступило.
+    /// ничего не отправляется и время попытки наступило. Альбом — целиком:
+    /// за первым файлом идут остальные ждущие с тем же ключом.
     pub fn outbox_ready(&self, now: i64) -> Result<Vec<OutboxItem>, StoreError> {
-        let mut st = self.conn().prepare_cached(
-            "SELECT o.local_id, o.peer_id, COALESCE(p.access_hash, 0), o.random_id, o.content, o.reply_to, o.entities
-             FROM outbox o LEFT JOIN peers p ON p.id = o.peer_id
-             WHERE o.state = 0 AND o.next_try <= ?1
+        let first = self.outbox_rows(
+            "WHERE o.state = 0 AND o.next_try <= ?1
                AND o.local_id = (SELECT MIN(local_id) FROM outbox x WHERE x.peer_id = o.peer_id AND x.state != 2)
                AND NOT EXISTS (SELECT 1 FROM outbox y WHERE y.peer_id = o.peer_id AND y.state = 1)
              ORDER BY o.local_id",
+            params![now],
         )?;
+        let mut out = Vec::with_capacity(first.len());
+        for it in first {
+            let (peer, group, local) = (it.peer_id, it.group, it.local_id);
+            out.push(it);
+            if group != 0 {
+                out.extend(self.outbox_rows(
+                    "WHERE o.peer_id = ?1 AND o.group_key = ?2 AND o.state = 0 AND o.local_id > ?3 ORDER BY o.local_id",
+                    params![peer, group, local],
+                )?);
+            }
+        }
+        Ok(out)
+    }
+
+    fn outbox_rows(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<OutboxItem>, StoreError> {
+        let mut st = self.conn().prepare_cached(&format!(
+            "SELECT o.local_id, o.peer_id, COALESCE(p.access_hash, 0), o.random_id, o.content, o.reply_to, o.entities,
+                    o.media, o.group_key
+             FROM outbox o LEFT JOIN peers p ON p.id = o.peer_id {filter}"
+        ))?;
         let v = st
-            .query_map(params![now], |r| {
+            .query_map(args, |r| {
                 let content: Vec<u8> = r.get(4)?;
+                let media: String = r.get(7)?;
                 Ok(OutboxItem {
                     local_id: r.get(0)?,
                     peer_id: r.get(1)?,
@@ -94,6 +153,8 @@ impl Store {
                     text: String::from_utf8_lossy(&content).into_owned(),
                     reply_to: r.get(5)?,
                     entities: decode_entities(&r.get::<_, String>(6)?),
+                    media: serde_json::from_str(&media).ok(),
+                    group: r.get(8)?,
                 })
             })?
             .collect::<Result<_, _>>()?;
@@ -219,9 +280,9 @@ mod tests {
     #[test]
     fn queue_order_one_per_chat_and_done() {
         let mut s = store();
-        let a = s.outbox_enqueue(&Outgoing { peer_id: 10, text: "первое", entities: &[], reply_to: 0, random_id: 111 }, 1, 200).unwrap();
-        let b = s.outbox_enqueue(&Outgoing { peer_id: 10, text: "второе", entities: &[], reply_to: 5, random_id: 222 }, 1, 201).unwrap();
-        let c = s.outbox_enqueue(&Outgoing { peer_id: 20, text: "другой чат", entities: &[], reply_to: 0, random_id: 333 }, 1, 202).unwrap();
+        let a = s.outbox_enqueue(&Outgoing { peer_id: 10, text: "первое", entities: &[], reply_to: 0, random_id: 111, ..Default::default() }, 1, 200).unwrap();
+        let b = s.outbox_enqueue(&Outgoing { peer_id: 10, text: "второе", entities: &[], reply_to: 5, random_id: 222, ..Default::default() }, 1, 201).unwrap();
+        let c = s.outbox_enqueue(&Outgoing { peer_id: 20, text: "другой чат", entities: &[], reply_to: 0, random_id: 333, ..Default::default() }, 1, 202).unwrap();
         // В истории: отправленное, потом очередь в порядке постановки.
         let h = s.history(10, None, 50).unwrap();
         let texts: Vec<_> = h.iter().map(|m| (m.text.as_str(), m.send_state)).collect();
@@ -245,7 +306,7 @@ mod tests {
     #[test]
     fn requeue_fail_retry_delete_expire_recover() {
         let mut s = store();
-        let a = s.outbox_enqueue(&Outgoing { peer_id: 10, text: "x", entities: &[], reply_to: 0, random_id: 1 }, 1, 100).unwrap();
+        let a = s.outbox_enqueue(&Outgoing { peer_id: 10, text: "x", entities: &[], reply_to: 0, random_id: 1, ..Default::default() }, 1, 100).unwrap();
         s.outbox_sending(a).unwrap();
         s.outbox_requeue(a, 500).unwrap();
         assert!(s.outbox_ready(400).unwrap().is_empty(), "до следующей попытки");
@@ -262,7 +323,7 @@ mod tests {
         s.outbox_delete(a).unwrap();
         assert_eq!(s.history(10, None, 50).unwrap().len(), 1);
         // Восстановление после сбоя: «отправляется» → «в очереди», random_id прежний.
-        let b = s.outbox_enqueue(&Outgoing { peer_id: 10, text: "y", entities: &[], reply_to: 0, random_id: 42 }, 1, 2000).unwrap();
+        let b = s.outbox_enqueue(&Outgoing { peer_id: 10, text: "y", entities: &[], reply_to: 0, random_id: 42, ..Default::default() }, 1, 2000).unwrap();
         s.outbox_sending(b).unwrap();
         assert_eq!(s.outbox_recover().unwrap(), 1);
         let r = s.outbox_ready(2000).unwrap();
@@ -272,9 +333,32 @@ mod tests {
     }
 
     #[test]
+    fn album_goes_out_whole_and_shows_local_file() {
+        let mut s = store();
+        let f = |n: &str| OutMedia { path: format!("/tmp/{n}"), name: n.into(), mime: "image/jpeg".into(), as_photo: true,
+            size: 10, width: 800, height: 600 };
+        let (a, b) = (f("a.jpg"), f("b.jpg"));
+        let x = s.outbox_enqueue(&Outgoing { peer_id: 10, text: "подпись", random_id: 1, media: Some(&a), group: 5,
+            ..Default::default() }, 1, 100).unwrap();
+        let y = s.outbox_enqueue(&Outgoing { peer_id: 10, random_id: 2, media: Some(&b), group: 5, ..Default::default() }, 1, 100)
+            .unwrap();
+        s.outbox_enqueue(&Outgoing { peer_id: 10, text: "потом", random_id: 3, ..Default::default() }, 1, 100).unwrap();
+        let r = s.outbox_ready(100).unwrap();
+        assert_eq!(r.iter().map(|i| i.local_id).collect::<Vec<_>>(), [x, y], "альбом целиком, текст после");
+        assert_eq!(r[1].media.as_ref(), Some(&b));
+        let h = s.history(10, None, 50).unwrap();
+        let local = h.iter().find(|m| m.id == -(x as i32)).unwrap();
+        let mi = local.media_info.as_deref().unwrap();
+        assert_eq!((mi.kind, mi.local_path.as_str(), local.grouped_id), (MediaKind::Photo, "/tmp/a.jpg", 5));
+        s.outbox_sending(x).unwrap();
+        s.outbox_sending(y).unwrap();
+        assert!(s.outbox_ready(100).unwrap().is_empty(), "пока альбом уходит, чат ждёт");
+    }
+
+    #[test]
     fn duplicate_random_id_is_rejected() {
         let mut s = store();
-        s.outbox_enqueue(&Outgoing { peer_id: 10, text: "x", entities: &[], reply_to: 0, random_id: 7 }, 1, 1).unwrap();
-        assert!(s.outbox_enqueue(&Outgoing { peer_id: 10, text: "x", entities: &[], reply_to: 0, random_id: 7 }, 1, 1).is_err(), "random_id уникален");
+        s.outbox_enqueue(&Outgoing { peer_id: 10, text: "x", entities: &[], reply_to: 0, random_id: 7, ..Default::default() }, 1, 1).unwrap();
+        assert!(s.outbox_enqueue(&Outgoing { peer_id: 10, text: "x", entities: &[], reply_to: 0, random_id: 7, ..Default::default() }, 1, 1).is_err(), "random_id уникален");
     }
 }

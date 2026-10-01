@@ -35,19 +35,22 @@ type Account struct {
 	Files      map[int64][]byte // содержимое файлов вложений по id (upload.getFile)
 	PartDelay  time.Duration    // задержка на часть файла (виден ход скачивания)
 
-	mu         sync.Mutex
-	authorized map[uint64]bool // auth_key_id -> вошли
-	needPwd    map[uint64]bool // auth_key_id -> код принят, ждём пароль
-	tokens     map[string]qrToken
-	codeHash   string
-	srp        *srpState
-	loggedOut  int
-	codesSent  int
-	pts        int32
-	msgs       []fakeMsg
-	seeded     bool
-	randoms    map[int64]int32
-	readMax    map[int64]int32
+	mu            sync.Mutex
+	authorized    map[uint64]bool // auth_key_id -> вошли
+	needPwd       map[uint64]bool // auth_key_id -> код принят, ждём пароль
+	tokens        map[string]qrToken
+	codeHash      string
+	srp           *srpState
+	loggedOut     int
+	codesSent     int
+	pts           int32
+	msgs          []fakeMsg
+	seeded        bool
+	randoms       map[int64]int32
+	readMax       map[int64]int32
+	uploads       map[int64]map[int32][]byte // выгружаемые файлы: id → части
+	uploadedMedia map[int64]tl.MessageMediaClass
+	nextFile      int64
 }
 
 // ReadMax — до какого id клиент отметил чат прочитанным (messages.readHistory).
@@ -795,6 +798,68 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 			return nil, &rpcErr{400, "FILE_ID_INVALID"}
 		}
 		return &tl.UploadFile{Type: &tl.StorageFilePartial{}, Mtime: 1, Bytes: data}, nil
+	case *tl.UploadSaveFilePartRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		a.savePart(r.FileId, r.FilePart, r.Bytes)
+		return boolTrue{}, nil
+	case *tl.UploadSaveBigFilePartRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		a.savePart(r.FileId, r.FilePart, r.Bytes)
+		return boolTrue{}, nil
+	case *tl.MessagesUploadMediaRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		m, err := a.mediaOf(r.Media)
+		if err != nil {
+			return nil, err
+		}
+		a.remember(m)
+		return m, nil
+	case *tl.MessagesSendMediaRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		a.seed()
+		peer, err := a.peerOf(r.Peer)
+		if err != nil {
+			return nil, err
+		}
+		m, err := a.mediaOf(r.Media)
+		if err != nil {
+			return nil, err
+		}
+		u := a.newUpdates()
+		if err := a.postMedia(peer, r.Message, m, 0, r.RandomId, u); err != nil {
+			return nil, err
+		}
+		return u, nil
+	case *tl.MessagesSendMultiMediaRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		a.seed()
+		peer, err := a.peerOf(r.Peer)
+		if err != nil {
+			return nil, err
+		}
+		u := a.newUpdates()
+		grouped := time.Now().UnixNano()
+		for _, x := range r.MultiMedia {
+			s := x.(*tl.InputSingleMedia)
+			m, err := a.mediaOf(s.Media)
+			if err != nil {
+				return nil, err
+			}
+			if err := a.postMedia(peer, s.Message, m, grouped, s.RandomId, u); err != nil {
+				return nil, err
+			}
+		}
+		return u, nil
 	case *tl.MessagesSendVoteRequest:
 		if !a.authorized[key] {
 			return nil, unauthorized

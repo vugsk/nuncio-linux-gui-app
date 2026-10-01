@@ -186,6 +186,7 @@ fn media_from(m: proto::Media) -> Media {
             photo_width: w.photo_width,
             photo_height: w.photo_height,
         }),
+        local_path: String::new(),
         poll: m.poll.map(|p| Poll {
             id: p.id,
             question: p.question,
@@ -380,6 +381,24 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
         Command::SendVote { peer, msg_id, options } => {
             C::SendVote(proto::SendVote { peer: Some(peer_ref_to(peer)), msg_id, options })
         }
+        Command::PickFiles { multiple, title } => C::PickFiles(proto::PickFiles { multiple, title }),
+        Command::SaveFileAs { src, name, title } => C::SaveFileAs(proto::SaveFileAs { src, name, title }),
+        Command::SendMedia { peer, items, reply_to } => C::SendMedia(proto::SendMedia {
+            peer: Some(peer_ref_to(peer)),
+            items: items
+                .into_iter()
+                .map(|i| proto::MediaUpload {
+                    path: i.path,
+                    name: i.name,
+                    mime: i.mime,
+                    as_photo: i.as_photo,
+                    random_id: i.random_id,
+                    caption: i.caption,
+                    entities: i.entities.into_iter().map(entity_to).collect(),
+                })
+                .collect(),
+            reply_to,
+        }),
         Command::UpdateFolder { folder, peers } => C::UpdateFolder(proto::UpdateFolder {
             folder: Some(folder_to(folder)),
             peers: peers.into_iter().map(peer_ref_to).collect(),
@@ -468,6 +487,8 @@ pub fn event_from(ev: proto::Event) -> Option<Event> {
                 Some(P::File(f)) => Payload::File(f.path),
                 Some(P::Peers(p)) => Payload::Peers(p.peers.into_iter().map(peer_from).collect()),
                 Some(P::Folders(f)) => Payload::Folders(f.folders.into_iter().map(folder_from).collect()),
+                Some(P::FilePaths(f)) => Payload::FilePaths(f.paths),
+                Some(P::SentList(s)) => Payload::SentList(s.messages.into_iter().map(message_from).collect()),
                 Some(P::ChatInfo(c)) => Payload::ChatInfo(ChatInfo {
                     peer_id: c.peer_id,
                     about: c.about,

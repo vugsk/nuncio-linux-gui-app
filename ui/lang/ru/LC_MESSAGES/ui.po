@@ -495,3 +495,27 @@ msgstr "В папку…"
 
 msgid "Photo"
 msgstr "Фото"
+
+msgid "Clear cache"
+msgstr "Очистить кэш"
+
+msgid "Add more"
+msgstr "Добавить ещё"
+
+msgid "As photo"
+msgstr "Как фото"
+
+msgid "As file"
+msgstr "Как файл"
+
+msgid "Caption — in the field below"
+msgstr "Подпись — в поле ввода ниже"
+
+msgid "Attach"
+msgstr "Прикрепить"
+
+msgid "Fit"
+msgstr "По размеру"
+
+msgid "Show in chat"
+msgstr "В чате"

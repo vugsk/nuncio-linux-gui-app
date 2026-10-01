@@ -1,17 +1,32 @@
 // Окно просмотра фото (Св-3): отдельное окно, создаётся по запросу и
-// уничтожается при закрытии. Стрелки — соседние фото окна истории,
-// Esc — закрыть, F11 и двойной клик — во весь экран.
+// уничтожается при закрытии. Шапка — автор, дата, номер; действия —
+// сохранить, переслать, показать в чате. Колесо — масштаб, перетаскивание —
+// сдвиг, «по размеру» — сброс; стрелки — соседние фото окна истории,
+// Esc — закрыть, F11 и двойной клик — во весь экран, Ctrl+S — сохранить.
 import { Theme } from "theme.slint";
+
+component Action inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    width: t.preferred-width + 20px;
+    height: 30px;
+    border-radius: 15px;
+    background: ta.has-hover ? #ffffff30 : #00000080;
+    t := Text { text: root.text; color: white; font-size: 12px; }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
 
 export component ViewerWindow inherits Window {
     title: @tr("Photo");
     preferred-width: 1000px;
     preferred-height: 720px;
-    min-width: 320px;
-    min-height: 240px;
+    min-width: 480px;
+    min-height: 320px;
     background: #101214;
     in property <image> photo;
     in property <bool> has-photo;
+    in property <string> author;
+    in property <string> date;
     in property <string> counter;   // «3 из 12»
     in property <string> caption;
     in property <string> progress;  // ход скачивания полного размера
@@ -20,6 +35,18 @@ export component ViewerWindow inherits Window {
     callback step(int);
     callback close-viewer();
     callback toggle-fullscreen();
+    callback save();
+    callback forward();
+    callback show-in-chat();
+    // Масштаб относительно «по размеру окна» (1) и сдвиг изображения.
+    property <float> zoom: 1;
+    property <length> pan-x;
+    property <length> pan-y;
+    property <float> fit: root.has-photo && photo.width > 0
+        ? min(1, min(root.width / 1px / photo.width, root.height / 1px / photo.height)) : 1;
+    property <length> img-w: photo.width * 1px * fit * zoom;
+    property <length> img-h: photo.height * 1px * fit * zoom;
+    changed photo => { root.zoom = 1; root.pan-x = 0; root.pan-y = 0; }
     forward-focus: keys;
     keys := FocusScope {
         key-pressed(e) => {
@@ -27,17 +54,41 @@ export component ViewerWindow inherits Window {
             if (e.text == Key.RightArrow) { root.step(1); return accept; }
             if (e.text == Key.Escape) { root.close-viewer(); return accept; }
             if (e.text == Key.F11) { root.toggle-fullscreen(); return accept; }
+            if (e.modifiers.control && (e.text == "s" || e.text == "ы")) { root.save(); return accept; }
             reject
         }
     }
-    TouchArea {
+    drag := TouchArea {
+        property <length> start-x;
+        property <length> start-y;
+        mouse-cursor: root.zoom > 1 ? (self.pressed ? grabbing : grab) : default;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                self.start-x = root.pan-x - self.mouse-x;
+                self.start-y = root.pan-y - self.mouse-y;
+            }
+        }
+        moved => {
+            if (root.zoom > 1) {
+                root.pan-x = max(-(root.img-w - root.width) / 2, min((root.img-w - root.width) / 2, self.start-x + self.mouse-x));
+                root.pan-y = max(-(root.img-h - root.height) / 2, min((root.img-h - root.height) / 2, self.start-y + self.mouse-y));
+            }
+        }
         double-clicked => { root.toggle-fullscreen(); }
+        scroll-event(e) => {
+            if (e.delta-y > 0) { root.zoom = min(8, root.zoom * 1.25); }
+            if (e.delta-y < 0) { root.zoom = max(1, root.zoom / 1.25); }
+            if (root.zoom == 1) { root.pan-x = 0; root.pan-y = 0; }
+            accept
+        }
     }
     if root.has-photo: Image {
         source: root.photo;
-        width: parent.width;
-        height: parent.height;
-        image-fit: contain;
+        width: root.img-w;
+        height: root.img-h;
+        x: (root.width - self.width) / 2 + root.pan-x;
+        y: (root.height - self.height) / 2 + root.pan-y;
+        image-rendering: smooth;
     }
     if !root.has-photo || root.progress != "": Rectangle {
         y: parent.height / 2 - 16px;
@@ -47,14 +98,34 @@ export component ViewerWindow inherits Window {
         background: #000000a0;
         load-text := Text { text: root.progress != "" ? root.progress : @tr("Loading…"); color: white; font-size: 12px; }
     }
-    if root.counter != "": Rectangle {
-        x: 12px;
-        y: 12px;
-        width: counter-text.preferred-width + 20px;
-        height: 26px;
-        border-radius: 13px;
+    // Шапка: автор и дата слева, номер, действия и «закрыть» справа.
+    Rectangle {
+        y: 0;
+        height: 52px;
         background: #000000a0;
-        counter-text := Text { text: root.counter; color: white; font-size: 12px; }
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 10px;
+            spacing: 10px;
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                Text { text: root.author; color: white; font-size: 13px; font-weight: 600; overflow: elide; }
+                Text { text: root.date; color: #c8d0d8; font-size: 11px; }
+            }
+            if root.counter != "": Text { text: root.counter; color: #c8d0d8; font-size: 12px; vertical-alignment: center; }
+            VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    spacing: 6px;
+                    if root.zoom > 1: Action { text: @tr("Fit"); clicked => { root.zoom = 1; root.pan-x = 0; root.pan-y = 0; } }
+                    Action { text: @tr("Save"); clicked => { root.save(); } }
+                    Action { text: @tr("Forward"); clicked => { root.forward(); } }
+                    Action { text: @tr("Show in chat"); clicked => { root.show-in-chat(); } }
+                    Action { text: "✕"; clicked => { root.close-viewer(); } }
+                }
+            }
+        }
     }
     if root.caption != "": Rectangle {
         y: parent.height - self.height - 16px;
@@ -91,15 +162,5 @@ export component ViewerWindow inherits Window {
         background: next-ta.has-hover ? #ffffff30 : #00000080;
         Text { text: "›"; color: white; font-size: 28px; }
         next-ta := TouchArea { mouse-cursor: pointer; clicked => { root.step(1); } }
-    }
-    Rectangle {
-        x: parent.width - 44px;
-        y: 8px;
-        width: 36px;
-        height: 36px;
-        border-radius: 18px;
-        background: close-ta.has-hover ? #ffffff30 : #00000080;
-        Text { text: "✕"; color: white; font-size: 16px; }
-        close-ta := TouchArea { mouse-cursor: pointer; clicked => { root.close-viewer(); } }
     }
 }

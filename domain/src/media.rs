@@ -179,6 +179,10 @@ impl ChatModel {
 
     /// Нажатие на вложение: скачать, отменить или открыть скачанное.
     pub(crate) fn media_click(&mut self, msg_id: i32, out: &mut Vec<ChatEffect>) {
+        if msg_id < 0 {
+            self.cancel_upload(msg_id, out);
+            return;
+        }
         let Some(m) = self.history.iter().find(|m| m.id == msg_id).cloned() else { return };
         let Some(mi) = m.media_info.clone() else { return };
         let Some(peer_id) = self.open else { return };
@@ -227,7 +231,8 @@ impl ChatModel {
 
     /// Ход передачи.
     pub fn transfer_progress(&mut self, cmd_id: u64, done: i64, total: i64) {
-        if let Some(t) = self.transfers.values_mut().find(|t| t.cmd_id == cmd_id) {
+        // У альбома одна команда на несколько сообщений: ход у всех.
+        for t in self.transfers.values_mut().filter(|t| t.cmd_id == cmd_id) {
             t.done = done;
             if total > 0 {
                 t.total = total;
@@ -296,12 +301,18 @@ pub struct FeedImage {
     pub h: i32,
     /// Место в альбоме: (номер, всего); у одиночного — (0, 1).
     pub album: (usize, usize),
+    /// Своё неотправленное: файл на диске (показывается до выгрузки).
+    pub local: String,
 }
 
 impl FeedImage {
     /// Ключ раскодированной картинки скачанного файла (размер — часть ключа).
     pub fn photo_key(&self) -> Option<String> {
-        self.file.as_ref().map(|f| format!("photo:{}:{}x{}", f.key(), self.w, self.h))
+        match &self.file {
+            Some(f) => Some(format!("photo:{}:{}x{}", f.key(), self.w, self.h)),
+            None if !self.local.is_empty() => Some(format!("local:{}:{}x{}", self.local, self.w, self.h)),
+            None => None,
+        }
     }
 
     /// Ключ размытого мини-превью.
@@ -395,11 +406,11 @@ pub fn feed_images(history: &[Message]) -> HashMap<i32, FeedImage> {
             },
             _ => continue,
         };
-        if file.is_none() && stripped.is_empty() {
+        if file.is_none() && stripped.is_empty() && mi.local_path.is_empty() {
             continue;
         }
         let (w, h) = feed_size(w, h);
-        out.insert(m.id, FeedImage { file, stripped, w, h, album: (0, 1) });
+        out.insert(m.id, FeedImage { file, stripped, w, h, album: (0, 1), local: mi.local_path.clone() });
     }
     for r in albums(history) {
         let (cells, _) = album_layout(r.len());

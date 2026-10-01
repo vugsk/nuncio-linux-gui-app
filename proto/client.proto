@@ -360,6 +360,9 @@ message Command {
     DownloadFile download_file = 54;
     CancelTransfer cancel_transfer = 55;
     SendVote send_vote = 56;
+    PickFiles pick_files = 57;
+    SaveFileAs save_file_as = 58;
+    SendMedia send_media = 35;
     Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
   }
 }
@@ -555,6 +558,8 @@ message CommandResult {
     PeerList peers = 107;
     FolderList folders = 108;
     ChatInfo chat_info = 109;
+    FilePaths file_paths = 110;
+    SentList sent_list = 111;
   }
 }
 
@@ -599,6 +604,29 @@ message DownloadFile {
 message CancelTransfer { uint64 cmd_id = 1; }
 
 message SendVote { PeerRef peer = 1; int32 msg_id = 2; repeated bytes options = 3; }
+
+// Системный диалог выбора файлов (xdg-desktop-portal, Св-4). Результат —
+// FilePaths; закрытый диалог — пустой список.
+message PickFiles { bool multiple = 1; string title = 2; }
+message FilePaths { repeated string paths = 1; }
+
+// Сохранить файл из кэша через системный диалог (окно просмотра). Результат — FilePath.
+message SaveFileAs { string src = 1; string name = 2; string title = 3; }
+
+// Отправить вложения: одно — messages.sendMedia, несколько — альбомом
+// messages.sendMultiMedia (подпись у первого). Ход выгрузки — TransferProgress
+// с id этой команды, отмена — CancelTransfer. Результат — SentList.
+message MediaUpload {
+  string path = 1;
+  string name = 2;
+  string mime = 3;
+  bool as_photo = 4;
+  int64 random_id = 5;
+  string caption = 6;
+  repeated MessageEntity entities = 7;
+}
+message SendMedia { PeerRef peer = 1; repeated MediaUpload items = 2; int32 reply_to = 3; }
+message SentList { repeated Message messages = 1; }
 
 // Изменить папку (пункт «В папку…», Сп-4): папка целиком и ссылки на все её чаты.
 message UpdateFolder { Folder folder = 1; repeated PeerRef peers = 2; }

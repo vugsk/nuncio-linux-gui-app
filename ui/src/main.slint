@@ -81,6 +81,14 @@ export struct RichLine {
     segs: [RichSeg],
 }
 
+// Файл в панели подготовки вложений (Св-4).
+export struct PrepItem {
+    name: string,
+    info: string,   // размер
+    img: image,
+    has-img: bool,
+}
+
 // Вариант ответа опроса (Чт-13).
 export struct PollRow {
     text: string,
@@ -137,6 +145,7 @@ export struct MessageItem {
     // Вложение (В7, Чт-11…Чт-13): 0 нет (или подпись `media`), 1 картинка (фото,
     // видео, GIF), 2 файл, голосовое или аудио, 3 превью ссылки, 4 опрос, 5 альбом.
     mkind: int,
+    mid: string,          // id для нажатия на вложение (у очереди — отрицательный)
     mimg: image,
     mhas-img: bool,
     mw: length,
@@ -343,6 +352,19 @@ export global Chat {
     // Вложения (В7): нажатие (просмотр, скачать, отмена, открыть), голос в опросе.
     callback media-click(string);
     callback vote(string, int);
+    // Отправка вложений (Св-4): панель подготовки над полем ввода, подпись — само поле.
+    in property <bool> prepare-open;
+    in property <string> prepare-title;
+    in property <[PrepItem]> prepare-files;
+    in property <bool> prepare-as-photo;
+    in property <bool> prepare-can-photo;
+    callback attach();
+    callback prepare-more();
+    callback prepare-photo(bool);
+    callback prepare-remove(int);
+    callback prepare-cancel();
+    // Временный пункт меню до настроек (В9).
+    callback clear-cache();
 }
 
 component Avatar inherits Rectangle {
@@ -840,6 +862,20 @@ component DialogList inherits Rectangle {
             Rectangle {
                 height: 36px;
                 border-radius: 4px;
+                background: cache-touch.has-hover ? Theme.row-bg : transparent;
+                cache-touch := TouchArea { clicked => { root.menu-open = false; Chat.clear-cache(); } }
+                Text {
+                    x: 10px;
+                    text: @tr("Clear cache");
+                    color: Theme.text;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    height: parent.height;
+                }
+            }
+            Rectangle {
+                height: 36px;
+                border-radius: 4px;
                 background: out-touch.has-hover ? Theme.row-bg : transparent;
                 out-touch := TouchArea { clicked => { root.menu-open = false; Chat.confirm-logout = true; } }
                 Text {
@@ -990,7 +1026,7 @@ component MediaBlock inherits VerticalLayout {
         has-img: root.item.mhas-img;
         play: root.item.mplay;
         dur: root.item.mdur;
-        id: root.item.id;
+        id: root.item.mid;
         state: root.item.file-state;
         progress: root.item.file-progress;
     }
@@ -1025,7 +1061,7 @@ component MediaBlock inherits VerticalLayout {
             }
             TouchArea {
                 mouse-cursor: pointer;
-                clicked => { Chat.media-click(root.item.id); }
+                clicked => { Chat.media-click(root.item.mid); }
             }
         }
         VerticalLayout {
@@ -1055,7 +1091,7 @@ component MediaBlock inherits VerticalLayout {
                 height: root.item.mh;
                 img: root.item.mimg;
                 has-img: true;
-                id: root.item.id;
+                id: root.item.mid;
             }
         }
     }
@@ -1325,6 +1361,35 @@ component MessageRow inherits VerticalLayout {
                 }
             }
         }
+    }
+}
+
+// Переключатель «один из» (как фото / как файл).
+component Radio inherits HorizontalLayout {
+    in property <string> text;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback clicked();
+    spacing: 6px;
+    Rectangle {
+        width: 16px;
+        height: 16px;
+        y: 2px;
+        border-radius: 8px;
+        border-width: 1.5px;
+        border-color: root.enabled ? (root.checked ? Theme.link : Theme.text-muted) : Theme.card-border;
+        if root.checked: Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.link; }
+    }
+    Text {
+        text: root.text;
+        color: root.enabled ? Theme.text : Theme.text-muted;
+        font-size: 12px;
+        vertical-alignment: center;
+    }
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: self.enabled ? pointer : default;
+        clicked => { root.clicked(); }
     }
 }
 
@@ -1708,6 +1773,98 @@ component ChatPane inherits Rectangle {
             font-size: 11px;
             horizontal-alignment: center;
         }
+        // Подготовка вложений (Св-4): миниатюры, «как фото» или «как файл»;
+        // подпись набирается в поле ввода ниже, «Отправить» — его кнопка и Enter.
+        if Chat.prepare-open: Rectangle {
+            height: prep.preferred-height;
+            background: Theme.card-bg;
+            Rectangle { y: 0; height: 1px; background: Theme.card-border; }
+            prep := VerticalLayout {
+                padding: 10px;
+                padding-left: 14px;
+                padding-right: 14px;
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    Text {
+                        text: Chat.prepare-title;
+                        color: Theme.text;
+                        font-size: 13px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Link { text: @tr("Cancel"); clicked => { Chat.prepare-cancel(); } }
+                }
+                Flickable {
+                    height: 60px;
+                    content-width: thumbs.preferred-width;
+                    thumbs := HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        for f[i] in Chat.prepare-files: Rectangle {
+                            width: 56px;
+                            height: 56px;
+                            y: 2px;
+                            border-radius: 6px;
+                            background: f.has-img ? transparent : #ffffff10;
+                            clip: true;
+                            if f.has-img: Image { source: f.img; width: 56px; height: 56px; }
+                            if !f.has-img: VerticalLayout {
+                                padding: 4px;
+                                alignment: center;
+                                Text { text: f.name; color: Theme.text; font-size: 9px; wrap: word-wrap; horizontal-alignment: center; }
+                                Text { text: f.info; color: Theme.text-muted; font-size: 9px; horizontal-alignment: center; }
+                            }
+                            Rectangle {
+                                x: parent.width - 19px;
+                                y: 3px;
+                                width: 16px;
+                                height: 16px;
+                                border-radius: 8px;
+                                background: rm.has-hover ? #000000e0 : #000000a0;
+                                Text { text: "✕"; color: white; font-size: 9px; }
+                                rm := TouchArea { mouse-cursor: pointer; clicked => { Chat.prepare-remove(i); } }
+                            }
+                        }
+                        Rectangle {
+                            width: 56px;
+                            height: 56px;
+                            y: 2px;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: Theme.card-border;
+                            background: more.has-hover ? Theme.row-bg : transparent;
+                            accessible-role: button;
+                            accessible-label: @tr("Add more");
+                            Text { text: "+"; color: Theme.link; font-size: 24px; }
+                            more := TouchArea { mouse-cursor: pointer; clicked => { Chat.prepare-more(); } }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 18px;
+                    alignment: start;
+                    Radio {
+                        text: @tr("As photo");
+                        checked: Chat.prepare-as-photo;
+                        enabled: Chat.prepare-can-photo;
+                        clicked => { Chat.prepare-photo(true); }
+                    }
+                    Radio {
+                        text: @tr("As file");
+                        checked: !Chat.prepare-as-photo;
+                        clicked => { Chat.prepare-photo(false); }
+                    }
+                    Text {
+                        text: @tr("Caption — in the field below");
+                        color: Theme.text-muted;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
         // Ответ или правка: одна панель над полем ввода (Дз, раздел 2).
         if Chat.compose-mode != 0: Rectangle {
             height: 44px;
@@ -1751,8 +1908,28 @@ component ChatPane inherits Rectangle {
             background: Theme.card-bg;
             HorizontalLayout {
                 padding: 8px;
-                padding-left: 14px;
+                padding-left: 6px;
                 spacing: 8px;
+                // Скрепка (Св-4): системный диалог выбора файлов.
+                Rectangle {
+                    width: 32px;
+                    accessible-role: button;
+                    accessible-label: @tr("Attach");
+                    clip-touch := TouchArea {
+                        enabled: Chat.can-write;
+                        mouse-cursor: pointer;
+                        clicked => { Chat.attach(); }
+                    }
+                    Path {
+                        width: 20px;
+                        height: 20px;
+                        stroke: clip-touch.has-hover ? Theme.link : Theme.text-muted;
+                        stroke-width: 1.6px;
+                        viewbox-width: 20;
+                        viewbox-height: 20;
+                        commands: "M 14 6 L 7.5 12.5 A 1.8 1.8 0 0 0 10 15 L 16 9 A 3.5 3.5 0 0 0 11 4 L 4.5 10.5 A 5 5 0 0 0 11.5 17.5 L 17 12";
+                    }
+                }
                 Rectangle {
                     horizontal-stretch: 1;
                     field := ComposerField {
@@ -1766,13 +1943,13 @@ component ChatPane inherits Rectangle {
                     accessible-role: button;
                     accessible-label: @tr("Send");
                     send-touch := TouchArea {
-                        enabled: Composer.text != "" && !Chat.sending;
+                        enabled: (Composer.text != "" || Chat.prepare-open) && !Chat.sending;
                         clicked => { Chat.send(); }
                     }
                     Path {
                         width: 20px;
                         height: 20px;
-                        fill: Composer.text != "" && !Chat.sending ? Theme.link : Theme.text-muted;
+                        fill: send-touch.enabled ? Theme.link : Theme.text-muted;
                         viewbox-width: 20;
                         viewbox-height: 20;
                         commands: "M 1 18 L 19 10 L 1 2 L 1 8 L 13 10 L 1 12 Z";

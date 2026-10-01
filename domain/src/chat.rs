@@ -64,6 +64,8 @@ pub enum DbOp {
     /// Вложения: что из нужного окну уже в кэше (результат — `set_media_paths`); скачано.
     MediaLookup { keys: Vec<String> },
     MediaSaved { key: String, path: String, size: i64 },
+    /// Вложения в очередь отправки (одно или альбом с общим `group`).
+    EnqueueMedia { peer_id: i64, items: Vec<crate::attach::EnqueueItem>, reply_to: i32, group: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +76,10 @@ pub enum ChatEffect {
     Clipboard(String),
     /// Открыть скачанный файл во внешней программе.
     OpenFile(String),
+    /// Осмотреть выбранные файлы (размер, картинка ли) — затем `set_prepared`.
+    InspectFiles { paths: Vec<String>, append: bool },
+    /// Очистить кэш файлов (временный пункт меню до настроек В9).
+    ClearCache,
 }
 
 /// Режим поля ввода: ответ или правка (одна панель над полем, Дз-2).
@@ -172,6 +178,17 @@ pub enum ChatIntent {
     /// Окно просмотра: соседнее фото (−1, +1) или закрыть.
     ViewerStep(i32),
     CloseViewer,
+    /// Окно просмотра: сохранить, переслать, показать в чате.
+    ViewerSave,
+    ViewerForward,
+    ViewerShowInChat,
+    /// Отправка вложений (Св-4): скрепка, «+ ещё», «как фото», убрать файл, отмена.
+    Attach,
+    PrepareMore,
+    PrepareAsPhoto(bool),
+    PrepareRemove(usize),
+    PrepareCancel,
+    ClearCache,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +210,12 @@ pub(crate) enum Pending {
     ChatSearch { peer_id: i64, seq: u64 },
     ChatAction { peer_id: i64, kind: crate::model::ChatActionKind },
     Download { key: String, size: i64 },
+    /// Системный диалог выбора файлов; `append` — «+ ещё» к панели подготовки.
+    Pick { append: bool },
+    /// Вложения из очереди (одно или альбом).
+    OutboxMedia { local_ids: Vec<i64> },
+    /// Сохранение файла из окна просмотра.
+    Save,
     /// Голос в опросе: после ответа — перечитать сообщение (результаты).
     Vote { peer: PeerRef, msg_id: i32 },
     Other,
@@ -219,6 +242,8 @@ pub struct ChatModel {
     /// Окно просмотра фото (Св-3): сообщение и номер открытия.
     pub viewer: Option<i32>,
     pub viewer_seq: u64,
+    /// Панель подготовки вложений (Св-4).
+    pub prepare: Option<crate::attach::Prepare>,
     pub open: Option<i64>,
     /// Окно истории открытого чата, по возрастанию id (очередь отправки в конце).
     pub history: Vec<Message>,
@@ -317,7 +342,7 @@ impl ChatModel {
         self.open_peer_of(self.open?)
     }
 
-    pub(crate) fn toast(&mut self, text: &str) {
+    pub fn toast(&mut self, text: &str) {
         self.toast = Some((text.to_string(), self.now + 3));
     }
 
@@ -460,7 +485,7 @@ impl ChatModel {
         }
     }
 
-    fn random_id(&mut self) -> i64 {
+    pub(crate) fn random_id(&mut self) -> i64 {
         use std::hash::{BuildHasher, Hasher};
         self.random_seq += 1;
         let mut h = std::collections::hash_map::RandomState::new().build_hasher();
@@ -524,6 +549,15 @@ impl ChatModel {
                 // Сразу в очередь (О-9): сообщение видно в чате как «отправляется».
                 let (text, entities) = trim_with_entities(&self.composer, entities);
                 let Some(peer_id) = self.open else { return out };
+                if self.prepare.is_some() {
+                    // Панель подготовки открыта: текст поля — подпись к вложениям (Св-4).
+                    self.fill_composer(String::new(), Vec::new());
+                    let reply_to = match std::mem::take(&mut self.compose) {
+                        Compose::Reply { id, .. } => id,
+                        _ => 0,
+                    };
+                    return self.send_prepared(text, entities, reply_to);
+                }
                 if text.is_empty() {
                     return out;
                 }
@@ -711,6 +745,18 @@ impl ChatModel {
             ChatIntent::MediaClick(id) => self.media_click(id, &mut out),
             ChatIntent::Vote(id, option) => self.vote(id, option, &mut out),
             ChatIntent::CloseViewer => self.viewer = None,
+            ChatIntent::ViewerSave => self.viewer_save(&mut out),
+            ChatIntent::ViewerForward => out = self.viewer_to_chat(true),
+            ChatIntent::ViewerShowInChat => out = self.viewer_to_chat(false),
+            ChatIntent::Attach => self.attach(false, &mut out),
+            ChatIntent::PrepareMore => self.attach(true, &mut out),
+            ChatIntent::PrepareAsPhoto(on) => self.prepare_as_photo(on),
+            ChatIntent::PrepareRemove(i) => self.prepare_remove(i),
+            ChatIntent::PrepareCancel => self.prepare = None,
+            ChatIntent::ClearCache => {
+                self.media_paths.clear();
+                out.push(ChatEffect::ClearCache);
+            }
             ChatIntent::ViewerStep(d) => {
                 let ids = self.photo_ids();
                 let pos = self.viewer.and_then(|v| ids.iter().position(|x| *x == v));
@@ -762,14 +808,18 @@ impl ChatModel {
     fn enqueue_reply(&mut self, peer_id: i64, text: String, entities: Vec<Entity>, reply_to: i32) -> Vec<ChatEffect> {
         let random_id = self.random_id();
         let mut out = vec![ChatEffect::Db(DbOp::Enqueue { peer_id, text, entities, reply_to, random_id })];
+        self.after_enqueue(peer_id, &mut out);
+        out
+    }
+
+    /// После постановки в очередь: своё видно сразу (к концу истории), очередь — в путь.
+    pub(crate) fn after_enqueue(&mut self, peer_id: i64, out: &mut Vec<ChatEffect>) {
         if self.open == Some(peer_id) {
-            // Своё сообщение видно сразу: к концу истории.
             self.set_jump(Jump::Bottom);
-            self.reload_at(Anchor::Latest, &mut out);
+            self.reload_at(Anchor::Latest, out);
         }
         out.push(ChatEffect::Db(DbOp::ReloadRows));
         out.push(ChatEffect::Db(DbOp::PumpOutbox));
-        out
     }
 
     fn mark_read(&mut self, peer_id: i64, out: &mut Vec<ChatEffect>) {
@@ -799,7 +849,7 @@ impl ChatModel {
             .unwrap_or_default()
     }
 
-    fn reload_open(&self, out: &mut Vec<ChatEffect>) {
+    pub(crate) fn reload_open(&self, out: &mut Vec<ChatEffect>) {
         if let Some(peer_id) = self.open {
             let (before, after) = match self.anchor {
                 Anchor::Latest => (LATEST_WINDOW, 0),
@@ -812,8 +862,28 @@ impl ChatModel {
     /// Результат `PumpOutbox`: готовые к отправке (по одному на чат).
     pub fn set_outbox_ready(&mut self, items: Vec<crate::outbox::OutboxItem>) -> Vec<ChatEffect> {
         let mut out = Vec::new();
+        let busy = |p: &Pending, l: i64| match p {
+            Pending::Outbox { local_id } => *local_id == l,
+            Pending::OutboxMedia { local_ids } => local_ids.contains(&l),
+            _ => false,
+        };
+        // Вложения: подряд идущие одного альбома (или одно) — одной командой.
+        let mut media: Vec<crate::outbox::OutboxItem> = Vec::new();
+        let flush = |m: &mut Self, media: &mut Vec<crate::outbox::OutboxItem>, out: &mut Vec<ChatEffect>| {
+            if !media.is_empty() {
+                m.send_media_items(std::mem::take(media), out);
+            }
+        };
         for it in items {
-            if self.pending.values().any(|p| *p == Pending::Outbox { local_id: it.local_id }) {
+            if self.pending.values().any(|p| busy(p, it.local_id)) {
+                continue;
+            }
+            if it.media.is_some() {
+                let same = media.last().is_some_and(|l| l.peer_id == it.peer_id && l.group != 0 && l.group == it.group);
+                if !same {
+                    flush(self, &mut media, &mut out);
+                }
+                media.push(it);
                 continue;
             }
             let peer = PeerRef { id: it.peer_id, access_hash: it.access_hash };
@@ -822,6 +892,7 @@ impl ChatModel {
                 entities: it.entities },
                 Pending::Outbox { local_id: it.local_id }, &mut out);
         }
+        flush(self, &mut media, &mut out);
         if !out.is_empty() {
             self.reload_open(&mut out);
         }
@@ -1007,6 +1078,9 @@ impl ChatModel {
                     self.send(Command::LoadMessages { peer, ids: vec![msg_id] }, Pending::Quotes { peer_id: peer.id }, out)
                 }
             },
+            Pending::Pick { append } => self.picked(append, r, out),
+            Pending::OutboxMedia { local_ids } => self.media_sent(local_ids, r, out),
+            Pending::Save => self.saved(r),
             Pending::Other => {}
             Pending::PickerSearch | Pending::Contacts => {
                 if let Payload::Peers(peers) = &r.payload {
@@ -1104,7 +1178,7 @@ mod tests {
         let all = vec![e(EntityKind::Code, 0, 3), link];
         assert_eq!(decode_entities(&encode_entities(&all)), all);
         let mut s = crate::store::Store::in_memory().unwrap();
-        s.outbox_enqueue(&crate::outbox::Outgoing { peer_id: 7, text: "код и ссылка", entities: &all, reply_to: 0, random_id: 9 }, 1, 100).unwrap();
+        s.outbox_enqueue(&crate::outbox::Outgoing { peer_id: 7, text: "код и ссылка", entities: &all, reply_to: 0, random_id: 9, ..Default::default() }, 1, 100).unwrap();
         assert_eq!(s.outbox_ready(100).unwrap()[0].entities, all);
         let w = s.history_window(7, crate::history::Anchor::Latest, 10, 0).unwrap();
         assert_eq!(w.messages[0].entities, all, "локальная строка очереди тоже с форматированием");
@@ -1264,7 +1338,7 @@ mod tests {
         assert_ne!(*r1, r2);
 
         // Очередь: отправка готовых, повтор одного и того же не дублируется.
-        let item = |local_id: i64| OutboxItem { local_id, peer_id: 10, access_hash: 30, random_id: 5, text: "привет".into(), reply_to: 0, entities: vec![] };
+        let item = |local_id: i64| OutboxItem { local_id, peer_id: 10, access_hash: 30, random_id: 5, text: "привет".into(), reply_to: 0, entities: vec![], media: None, group: 0 };
         let fx = m.set_outbox_ready(vec![item(1)]);
         assert_eq!(fx[0], ChatEffect::Db(DbOp::OutboxSending { local_id: 1 }));
         let (id, cmd) = sends(&fx)[0].clone();

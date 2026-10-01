@@ -2,10 +2,13 @@ package fakeserver
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
+	_ "image/png" // выгруженные PNG
 	"math/rand"
+	"time"
 
 	"nuncio/net/tl"
 )
@@ -124,4 +127,136 @@ func (m *fakeMsg) vote(options [][]byte) bool {
 	t := *r.TotalVoters + 1
 	r.TotalVoters = &t
 	return true
+}
+
+// Выгрузка и отправка вложений (приём частей, sendMedia, uploadMedia, sendMultiMedia).
+
+func (a *Account) savePart(id int64, part int32, b []byte) {
+	if a.uploads == nil {
+		a.uploads = map[int64]map[int32][]byte{}
+	}
+	if a.uploads[id] == nil {
+		a.uploads[id] = map[int32][]byte{}
+	}
+	a.uploads[id][part] = append([]byte(nil), b...)
+}
+
+// assemble — выгруженный файл целиком по InputFile / InputFileBig.
+func (a *Account) assemble(f tl.InputFileClass) ([]byte, string, error) {
+	var id int64
+	var parts int32
+	var name string
+	switch v := f.(type) {
+	case *tl.InputFile:
+		id, parts, name = v.Id, v.Parts, v.Name
+	case *tl.InputFileBig:
+		id, parts, name = v.Id, v.Parts, v.Name
+	default:
+		return nil, "", &rpcErr{400, "FILE_PARTS_INVALID"}
+	}
+	var out []byte
+	for p := int32(0); p < parts; p++ {
+		b, ok := a.uploads[id][p]
+		if !ok {
+			return nil, "", &rpcErr{400, fmt.Sprintf("FILE_PART_%d_MISSING", p)}
+		}
+		out = append(out, b...)
+	}
+	delete(a.uploads, id)
+	return out, name, nil
+}
+
+func (a *Account) newFileID() int64 {
+	if a.Files == nil {
+		a.Files = map[int64][]byte{}
+	}
+	a.nextFile++
+	return 20000 + a.nextFile
+}
+
+// mediaOf — сообщение-вложение из InputMedia запроса.
+func (a *Account) mediaOf(in tl.InputMediaClass) (tl.MessageMediaClass, error) {
+	switch v := in.(type) {
+	case *tl.InputMediaUploadedPhoto:
+		data, _, err := a.assemble(v.File)
+		if err != nil {
+			return nil, err
+		}
+		cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+		if err != nil {
+			return nil, &rpcErr{400, "PHOTO_INVALID"}
+		}
+		id := a.newFileID()
+		a.Files[id] = data
+		return &tl.MessageMediaPhoto{Photo: &tl.Photo{Id: id, AccessHash: id * 7, FileReference: []byte{1}, Date: 1, DcId: 2,
+			Sizes: []tl.PhotoSizeClass{&tl.PhotoSize{Type: "x", W: int32(cfg.Width), H: int32(cfg.Height), Size: int32(len(data))}}}}, nil
+	case *tl.InputMediaUploadedDocument:
+		data, _, err := a.assemble(v.File)
+		if err != nil {
+			return nil, err
+		}
+		id := a.newFileID()
+		a.Files[id] = data
+		return &tl.MessageMediaDocument{Document: &tl.Document{Id: id, AccessHash: id * 7, FileReference: []byte{1}, Date: 1,
+			MimeType: v.MimeType, Size: int64(len(data)), DcId: 2, Attributes: v.Attributes}}, nil
+	case *tl.InputMediaPhoto, *tl.InputMediaDocument:
+		var id int64
+		if p, ok := v.(*tl.InputMediaPhoto); ok {
+			id = p.Id.(*tl.InputPhoto).Id
+		} else {
+			id = v.(*tl.InputMediaDocument).Id.(*tl.InputDocument).Id
+		}
+		if m, ok := a.uploadedMedia[id]; ok {
+			return m, nil
+		}
+		return nil, &rpcErr{400, "MEDIA_INVALID"}
+	}
+	return nil, &rpcErr{400, "MEDIA_INVALID"}
+}
+
+// remember — вложение после messages.uploadMedia (для альбома по ссылке).
+func (a *Account) remember(m tl.MessageMediaClass) {
+	if a.uploadedMedia == nil {
+		a.uploadedMedia = map[int64]tl.MessageMediaClass{}
+	}
+	switch v := m.(type) {
+	case *tl.MessageMediaPhoto:
+		a.uploadedMedia[v.Photo.(*tl.Photo).Id] = m
+	case *tl.MessageMediaDocument:
+		a.uploadedMedia[v.Document.(*tl.Document).Id] = m
+	}
+}
+
+// postMedia — своё сообщение с вложением: в историю и в ответ Updates.
+func (a *Account) postMedia(peer int64, text string, media tl.MessageMediaClass, grouped, random int64,
+	u *tl.Updates) error {
+	if a.randoms == nil {
+		a.randoms = map[int64]int32{}
+	}
+	if _, dup := a.randoms[random]; dup {
+		return &rpcErr{400, "RANDOM_ID_DUPLICATE"}
+	}
+	a.pts++
+	m := fakeMsg{id: int32(len(a.msgs) + 1), peer: peer, out: true, text: text, date: int32(time.Now().Unix()),
+		media: media, grouped: grouped}
+	a.msgs = append(a.msgs, m)
+	a.randoms[random] = m.id
+	u.Updates = append(u.Updates, &tl.UpdateMessageID{Id: m.id, RandomId: random},
+		&tl.UpdateNewMessage{Message: m.tl(), Pts: a.pts, PtsCount: 1})
+	return nil
+}
+
+func (a *Account) peerOf(p tl.InputPeerClass) (int64, error) {
+	switch v := p.(type) {
+	case *tl.InputPeerUser:
+		return v.UserId, nil
+	case *tl.InputPeerSelf:
+		return a.UserID, nil
+	}
+	return 0, &rpcErr{400, "PEER_ID_INVALID"}
+}
+
+func (a *Account) newUpdates() *tl.Updates {
+	return &tl.Updates{Updates: []tl.UpdateClass{}, Users: a.contactUsers(), Chats: []tl.ChatClass{},
+		Date: int32(time.Now().Unix())}
 }

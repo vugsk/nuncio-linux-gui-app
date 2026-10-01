@@ -211,6 +211,21 @@ pub struct Media {
     pub emoji: String,
     pub webpage: Option<WebPage>,
     pub poll: Option<Poll>,
+    /// Своё неотправленное (очередь): файл на диске — для показа до выгрузки.
+    #[serde(default)]
+    pub local_path: String,
+}
+
+/// Вложение для отправки (`Command::SendMedia`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MediaUpload {
+    pub path: String,
+    pub name: String,
+    pub mime: String,
+    pub as_photo: bool,
+    pub random_id: i64,
+    pub caption: String,
+    pub entities: Vec<Entity>,
 }
 
 /// Вид форматирования (как `MessageEntity` в client.proto).
@@ -453,6 +468,12 @@ pub enum Command {
     DownloadFile { file: FileRef, name: String, peer: PeerRef, msg_id: i32 },
     CancelTransfer { cmd_id: u64 },
     SendVote { peer: PeerRef, msg_id: i32, options: Vec<Vec<u8>> },
+    /// Системный диалог выбора файлов (Св-4); результат — `Payload::FilePaths`.
+    PickFiles { multiple: bool, title: String },
+    /// Сохранить файл из кэша через системный диалог; результат — `Payload::File`.
+    SaveFileAs { src: String, name: String, title: String },
+    /// Отправить вложения (одно или альбомом); результат — `Payload::SentList`.
+    SendMedia { peer: PeerRef, items: Vec<MediaUpload>, reply_to: i32 },
 }
 
 /// Шаг входа.
@@ -569,6 +590,8 @@ pub enum Payload {
     Peers(Vec<Peer>),
     Folders(Vec<Folder>),
     ChatInfo(ChatInfo),
+    FilePaths(Vec<String>),
+    SentList(Vec<Message>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

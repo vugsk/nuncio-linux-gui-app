@@ -31,6 +31,10 @@ func payload(id uint64, p any) *pb.Event {
 		r.Payload = &pb.CommandResult_Folders{Folders: v}
 	case *pb.ChatInfo:
 		r.Payload = &pb.CommandResult_ChatInfo{ChatInfo: v}
+	case *pb.FilePaths:
+		r.Payload = &pb.CommandResult_FilePaths{FilePaths: v}
+	case *pb.SentList:
+		r.Payload = &pb.CommandResult_SentList{SentList: v}
 	}
 	return &pb.Event{Body: &pb.Event_Result{Result: r}}
 }

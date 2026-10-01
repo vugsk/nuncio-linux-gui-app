@@ -13,12 +13,31 @@ pub const RADIUS: f32 = 10.0;
 /// JPEG или PNG → RGB.
 pub fn decode(data: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     if data.starts_with(&[0x89, b'P', b'N', b'G']) {
-        let px = crate::decode_png(data)?;
-        let (w, h) = (px.width() as usize, px.height() as usize);
-        let rgb = px.as_slice().iter().flat_map(|p| [p.r, p.g, p.b]).collect();
-        return Some((w, h, rgb));
+        return decode_png_rgb(data);
     }
     decode_jpeg(data)
+}
+
+/// PNG любого вида (палитра, серый, с прозрачностью, 16 бит) → RGB;
+/// прозрачное — на тёмном фоне ленты.
+fn decode_png_rgb(data: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+    let mut dec = png::Decoder::new(std::io::Cursor::new(data));
+    dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = dec.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    buf.truncate(info.buffer_size());
+    let (w, h) = (info.width as usize, info.height as usize);
+    const BG: [u16; 3] = [0x18, 0x25, 0x33];
+    let blend = |c: u8, a: u8, bg: u16| ((u16::from(c) * u16::from(a) + bg * (255 - u16::from(a))) / 255) as u8;
+    let rgb: Vec<u8> = match info.color_type {
+        png::ColorType::Rgb => buf,
+        png::ColorType::Rgba => buf.chunks_exact(4).flat_map(|p| [0, 1, 2].map(|i| blend(p[i], p[3], BG[i]))).collect(),
+        png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g]).collect(),
+        png::ColorType::GrayscaleAlpha => buf.chunks_exact(2).flat_map(|p| [0, 1, 2].map(|i| blend(p[0], p[1], BG[i]))).collect(),
+        png::ColorType::Indexed => return None, // EXPAND превращает палитру в RGB(A)
+    };
+    (rgb.len() == w * h * 3).then_some((w, h, rgb))
 }
 
 /// Уменьшение до `tw`×`th` (заполнение с обрезкой по центру) усреднением;
@@ -129,9 +148,81 @@ pub fn load_full(path: &str, max_w: u32, max_h: u32) -> Option<SharedPixelBuffer
     Some(rounded(w, h, &rgb, tw, th, 0.0))
 }
 
+/// Стороны картинки по заголовку (JPEG — маркер SOF, PNG — IHDR), без раскодирования.
+pub fn image_size(path: &str) -> Option<(u32, u32)> {
+    use std::io::Read;
+    let mut head = Vec::with_capacity(64 * 1024);
+    std::fs::File::open(path).ok()?.take(256 * 1024).read_to_end(&mut head).ok()?;
+    header_size(&head)
+}
+
+fn header_size(b: &[u8]) -> Option<(u32, u32)> {
+    if b.starts_with(&[0x89, b'P', b'N', b'G']) && b.len() >= 24 {
+        let be = |i: usize| u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        return Some((be(16), be(20)));
+    }
+    if !b.starts_with(&[0xff, 0xd8]) {
+        return None;
+    }
+    let mut i = 2;
+    while i + 9 < b.len() {
+        if b[i] != 0xff {
+            i += 1;
+            continue;
+        }
+        let marker = b[i + 1];
+        if marker == 0xff {
+            i += 1;
+            continue;
+        }
+        let len = usize::from(u16::from_be_bytes([b[i + 2], b[i + 3]]));
+        // SOF0…SOF15, кроме DHT (C4), JPG (C8) и DAC (CC).
+        if (0xc0..=0xcf).contains(&marker) && !matches!(marker, 0xc4 | 0xc8 | 0xcc) {
+            let h = u32::from(u16::from_be_bytes([b[i + 5], b[i + 6]]));
+            let w = u32::from(u16::from_be_bytes([b[i + 7], b[i + 8]]));
+            return Some((w, h));
+        }
+        i += 2 + len;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn png_rgb_and_gray_decode() {
+        let enc = |color, bytes: &[u8], w: u32, h: u32| {
+            let mut out = Vec::new();
+            let mut e = png::Encoder::new(&mut out, w, h);
+            e.set_color(color);
+            e.set_depth(png::BitDepth::Eight);
+            e.write_header().unwrap().write_image_data(bytes).unwrap();
+            out
+        };
+        let rgb = enc(png::ColorType::Rgb, &[10, 20, 30].repeat(6), 3, 2);
+        assert_eq!(decode(&rgb), Some((3, 2, [10, 20, 30].repeat(6))));
+        let gray = enc(png::ColorType::Grayscale, &[7; 4], 2, 2);
+        assert_eq!(decode(&gray).map(|d| d.2), Some(vec![7; 12]));
+        let rgba = enc(png::ColorType::Rgba, &[255, 255, 255, 255, 0, 0, 0, 0], 2, 1);
+        assert_eq!(decode(&rgba).map(|d| d.2), Some(vec![255, 255, 255, 0x18, 0x25, 0x33]), "прозрачное — фон ленты");
+    }
+
+    #[test]
+    fn header_sizes() {
+        let mut png = vec![0x89, b'P', b'N', b'G', 13, 10, 26, 10, 0, 0, 0, 13, b'I', b'H', b'D', b'R'];
+        png.extend(640u32.to_be_bytes());
+        png.extend(480u32.to_be_bytes());
+        assert_eq!(header_size(&png), Some((640, 480)));
+        // JPEG: APP0 (длина 16), затем SOF0 с высотой 300 и шириной 400.
+        let mut jpg = vec![0xff, 0xd8, 0xff, 0xe0, 0, 16];
+        jpg.extend([0u8; 14]);
+        jpg.extend([0xff, 0xc0, 0, 17, 8, 0x01, 0x2c, 0x01, 0x90, 3]);
+        jpg.extend([0u8; 9]);
+        assert_eq!(header_size(&jpg), Some((400, 300)));
+        assert_eq!(header_size(b"GIF89a"), None);
+    }
 
     #[test]
     fn rounded_corners_and_size() {

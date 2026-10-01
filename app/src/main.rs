@@ -65,6 +65,30 @@ struct Domain {
     bench_sent: bool,
 }
 
+/// Миниатюра файла в панели подготовки, px (2× для 48 px в интерфейсе).
+const PREP_PX: u32 = 96;
+
+/// Выбранный файл: размер, MIME по расширению, стороны картинки по заголовку.
+fn inspect_file(path: &str) -> Option<domain::attach::PrepFile> {
+    let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
+    let name = std::path::Path::new(path).file_name()?.to_string_lossy().into_owned();
+    let mime = domain::attach::mime_of(&name).to_string();
+    let (width, height) = if mime == "image/jpeg" || mime == "image/png" {
+        ui::photo::image_size(path).map(|(w, h)| (w as i32, h as i32)).unwrap_or((0, 0))
+    } else {
+        (0, 0)
+    };
+    Some(domain::attach::PrepFile {
+        path: path.to_string(),
+        name,
+        mime,
+        size: meta.len() as i64,
+        image: width > 0,
+        width,
+        height,
+    })
+}
+
 /// Отложенное раскодирование картинки (выполняется, только если её ещё нет).
 type Decode = Box<dyn FnOnce() -> Option<SharedPixelBuffer<Rgba8Pixel>>>;
 
@@ -178,6 +202,13 @@ impl Domain {
                             chat.set_folders(f);
                         }
                     }
+                    ChatEffect::InspectFiles { paths, append } => {
+                        let files = paths.iter().filter_map(|p| inspect_file(p)).collect();
+                        if let Some(chat) = self.chat.as_mut() {
+                            chat.set_prepared(files, append);
+                        }
+                    }
+                    ChatEffect::ClearCache => self.clear_cache(),
                     ChatEffect::OpenFile(path) => {
                         if let Err(e) = std::process::Command::new("xdg-open").arg(&path).spawn() {
                             log::warn!("xdg-open: {e}");
@@ -352,6 +383,37 @@ impl Domain {
         self.sync_media_images();
     }
 
+    /// Очистить кэш файлов (временный пункт меню до настроек В9): индекс и
+    /// весь каталог `cache/media`, в том числе недокачанное.
+    fn clear_cache(&mut self) {
+        let indexed = self.db.as_ref().and_then(|db| db.call(|s| s.media_clear())).and_then(Result::ok).unwrap_or_default();
+        let dir = self.paths.cache.join("media");
+        let mut freed = 0u64;
+        let mut remove = |p: &std::path::Path| {
+            if let Ok(m) = std::fs::metadata(p) {
+                if m.is_file() && std::fs::remove_file(p).is_ok() {
+                    freed += m.len();
+                }
+            }
+        };
+        for p in &indexed {
+            remove(std::path::Path::new(p));
+        }
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                remove(&e.path());
+            }
+        }
+        log::info!("кэш очищен: {} файлов в индексе, освобождено {} КБ", indexed.len(), freed / 1024);
+        self.avatars.retain(|k, _| !k.starts_with("photo:") && !k.starts_with("full:"));
+        self.images_ver += 1;
+        if let Some(chat) = self.chat.as_mut() {
+            let ru = chat.lang == "ru";
+            let size = domain::media::size_label(freed as i64, ru);
+            chat.toast(&if ru { format!("Кэш очищен: {size}") } else { format!("Cache cleared: {size}") });
+        }
+    }
+
     /// Картинки вложений окна истории: фото для ленты (скачанное), размытое
     /// мини-превью (ещё нет), полное — для окна просмотра. Всё вне окна —
     /// выбрасывается: память ограничена окном (План, В7).
@@ -361,7 +423,10 @@ impl Domain {
         let mut keep: HashSet<String> = HashSet::new();
         for (id, f) in domain::media::feed_images(&chat.history) {
             let (tw, th) = (f.w as u32, f.h as u32);
-            let path = f.file.as_ref().and_then(|file| chat.media_paths.get(&file.key()));
+            let path = match &f.file {
+                Some(file) => chat.media_paths.get(&file.key()),
+                None => Some(&f.local).filter(|l| !l.is_empty()),
+            };
             match (path, f.photo_key()) {
                 (Some(path), Some(k)) => {
                     keep.insert(k.clone());
@@ -381,6 +446,15 @@ impl Domain {
                 _ => {}
             }
         }
+        // Миниатюры панели подготовки (Св-4).
+        for f in chat.prepare.iter().flat_map(|p| &p.files).filter(|f| f.image) {
+            let k = format!("prep:{}", f.path);
+            keep.insert(k.clone());
+            if !self.avatars.contains_key(&k) && !self.bad_avatars.contains(&k) {
+                let path = f.path.clone();
+                want.push((k, Box::new(move || ui::photo::load_feed(&path, PREP_PX, PREP_PX))));
+            }
+        }
         if let Some(key) = chat.viewer_key() {
             if let Some(path) = chat.media_paths.get(&key) {
                 let k = format!("full:{key}");
@@ -393,7 +467,7 @@ impl Domain {
         }
         let before = self.avatars.len();
         self.avatars.retain(|k, _| {
-            !(k.starts_with("photo:") || k.starts_with("strip:") || k.starts_with("full:")) || keep.contains(k)
+            !["photo:", "strip:", "full:", "local:", "prep:"].iter().any(|p| k.starts_with(p)) || keep.contains(k)
         });
         let mut changed = before != self.avatars.len();
         for (k, load) in want {
@@ -418,8 +492,13 @@ impl Domain {
         let self_id = self.chat.as_ref().map(|c| c.self_id).unwrap_or(0);
         let now = now();
         let res = db.call(move |s| match op {
+            DbOp::EnqueueMedia { peer_id, items, reply_to, group } => items.iter().try_for_each(|it| {
+                let o = domain::outbox::Outgoing { peer_id, text: &it.text, entities: &it.entities, reply_to,
+                    random_id: it.random_id, media: Some(&it.media), group };
+                s.outbox_enqueue(&o, self_id, now).map(|_| ())
+            }),
             DbOp::Enqueue { peer_id, text, entities, reply_to, random_id } => {
-                let o = domain::outbox::Outgoing { peer_id, text: &text, entities: &entities, reply_to, random_id };
+                let o = domain::outbox::Outgoing { peer_id, text: &text, entities: &entities, reply_to, random_id, ..Default::default() };
                 s.outbox_enqueue(&o, self_id, now).map(|_| ())
             }
             DbOp::OutboxSending { local_id } => s.outbox_sending(local_id),

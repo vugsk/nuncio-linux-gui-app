@@ -15,8 +15,8 @@ use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPix
 
 use crate::richtext::{self, Fonts, Span, Style};
 use crate::scroller::Scroller;
-use crate::{avatar, AlbumCell, App, Chat, DialogItem, FolderItem, MemberItem, MessageItem, PickerItem, PollRow, RichLine,
-    RichSeg, SearchRow, ViewerWindow};
+use crate::{avatar, AlbumCell, App, Chat, DialogItem, FolderItem, MemberItem, MessageItem, PickerItem, PollRow, PrepItem,
+    RichLine, RichSeg, SearchRow, ViewerWindow};
 
 /// Подписи на языке интерфейса (в Rust: собираются из данных, не из разметки).
 pub fn media_label(kind: &str, ru: bool) -> &'static str {
@@ -79,6 +79,10 @@ pub fn send_error_label(err: &str, ru: bool) -> String {
     match (err, ru) {
         ("", _) => String::new(),
         ("expired", true) => "Не отправлено: истёк срок".into(),
+        ("cancelled", true) => "Не отправлено: отменено".into(),
+        ("cancelled", false) => "Not sent: cancelled".into(),
+        ("FILE_NOT_FOUND", true) => "Не отправлено: файл не найден".into(),
+        ("FILE_NOT_FOUND", false) => "Not sent: file not found".into(),
         ("expired", false) => "Not sent: expired".into(),
         ("CHAT_WRITE_FORBIDDEN" | "CHAT_RESTRICTED" | "USER_BANNED_IN_CHANNEL", true) => {
             "Не отправлено: нет прав писать в этот чат".into()
@@ -703,6 +707,7 @@ impl ChatRenderer {
         chat.set_sending(m.sending);
         crate::composer::sync_model(app, m);
         chat.set_error(m.error.clone().unwrap_or_default().into());
+        self.sync_prepare(app, m, avatars, ru);
         self.sync_viewer(m, avatars, ru);
     }
 
@@ -721,6 +726,7 @@ impl ChatRenderer {
         let peer = m.open.unwrap_or(0);
         for (it, msg) in items.iter_mut().zip(&m.history) {
             let Some(mi) = &msg.media_info else { continue };
+            it.mid = msg.id.to_string().into();
             if let Some(f) = feed.get(&msg.id) {
                 let img = match f.photo_key().and_then(|k| self.media_image(&k, images)) {
                     Some(i) => Some(i),
@@ -731,8 +737,12 @@ impl ChatRenderer {
                 it.mhas_img = img.is_some();
                 it.mimg = img.unwrap_or_else(no_image);
             }
-            // Файл: скачивается, скачан или нет.
-            let key = mi.file.as_ref().map(|f| f.key()).unwrap_or_default();
+            // Файл: скачивается (своё — выгружается), скачан или нет.
+            let key = if msg.id < 0 {
+                domain::attach::upload_key(-i64::from(msg.id))
+            } else {
+                mi.file.as_ref().map(|f| f.key()).unwrap_or_default()
+            };
             let size = mi.file.as_ref().map(|f| f.size).filter(|s| *s > 0).unwrap_or(mi.size);
             if let Some(t) = m.transfers.get(&key) {
                 let total = if t.total > 0 { t.total } else { size };
@@ -741,7 +751,8 @@ impl ChatRenderer {
                 let of = if ru { "из" } else { "of" };
                 it.file_info = format!("{} {of} {}", size_label(t.done, ru), size_label(total, ru)).into();
             } else {
-                it.file_state = if m.media_paths.contains_key(&key) { 2 } else { 0 };
+                // Своё неотправленное — файл уже на диске: не «скачать».
+                it.file_state = if m.media_paths.contains_key(&key) || msg.id < 0 { 2 } else { 0 };
                 it.file_info = if size > 0 { size_label(size, ru).into() } else { "".into() };
             }
             let has_feed = feed.contains_key(&msg.id);
@@ -839,7 +850,7 @@ impl ChatRenderer {
                     .iter()
                     .zip(cells)
                     .map(|(g, c)| AlbumCell {
-                        id: g.id.clone(),
+                        id: g.mid.clone(),
                         img: g.mimg.clone(),
                         has_img: g.mhas_img,
                         play: g.mplay,
@@ -855,6 +866,37 @@ impl ChatRenderer {
             base.mh = height as f32;
             items.insert(r.start, base);
         }
+    }
+
+    /// Панель подготовки вложений (Св-4).
+    fn sync_prepare(&mut self, app: &App, m: &ChatModel, images: &HashMap<String, SharedPixelBuffer<Rgba8Pixel>>, ru: bool) {
+        let chat = app.global::<Chat>();
+        chat.set_prepare_open(m.prepare.is_some());
+        let Some(p) = &m.prepare else { return };
+        let n = p.files.len();
+        let title = match (p.as_photo, ru) {
+            (true, true) => format!("Отправить {n} {}", plural(n, "фото", "фото", "фото")),
+            (false, true) => format!("Отправить {n} {}", plural(n, "файл", "файла", "файлов")),
+            (true, false) => format!("Send {n} photo{}", if n == 1 { "" } else { "s" }),
+            (false, false) => format!("Send {n} file{}", if n == 1 { "" } else { "s" }),
+        };
+        chat.set_prepare_title(title.into());
+        chat.set_prepare_as_photo(p.as_photo);
+        chat.set_prepare_can_photo(p.can_photo());
+        let items: Vec<PrepItem> = p
+            .files
+            .iter()
+            .map(|f| {
+                let img = self.media_image(&format!("prep:{}", f.path), images);
+                PrepItem {
+                    name: f.name.clone().into(),
+                    info: domain::media::size_label(f.size, ru).into(),
+                    has_img: img.is_some(),
+                    img: img.unwrap_or_else(no_image),
+                }
+            })
+            .collect();
+        chat.set_prepare_files(model(items));
     }
 
     /// Окно просмотра фото (Св-3): создать по запросу, наполнить, закрыть.
@@ -873,6 +915,12 @@ impl ChatRenderer {
                 w.on_step(move |d| s(ChatIntent::ViewerStep(d)));
                 let s = send.clone();
                 w.on_close_viewer(move || s(ChatIntent::CloseViewer));
+                let s = send.clone();
+                w.on_save(move || s(ChatIntent::ViewerSave));
+                let s = send.clone();
+                w.on_forward(move || s(ChatIntent::ViewerForward));
+                let s = send.clone();
+                w.on_show_in_chat(move || s(ChatIntent::ViewerShowInChat));
                 w.window().on_close_requested(move || {
                     send(ChatIntent::CloseViewer);
                     slint::CloseRequestResponse::HideWindow
@@ -912,6 +960,13 @@ impl ChatRenderer {
         w.set_can_prev(pos.is_some_and(|p| p > 0));
         w.set_can_next(pos.is_some_and(|p| p + 1 < ids.len()));
         w.set_caption(msg.text.chars().take(500).collect::<String>().into());
+        let author = if msg.out {
+            if ru { "Вы".to_string() } else { "You".to_string() }
+        } else {
+            m.senders.get(&msg.from_id).cloned().or_else(|| m.open_peer().map(|p| peer_name(p, ru))).unwrap_or_default()
+        };
+        w.set_author(author.into());
+        w.set_date(format!("{}, {}", timefmt::date_label(msg.date, m.now, &m.lang), timefmt::message_time(msg.date)).into());
         w.set_progress(match m.transfers.get(&key) {
             Some(t) if t.total > 0 => format!("{} {}%", if ru { "Загрузка" } else { "Loading" }, t.done * 100 / t.total).into(),
             Some(_) => if ru { "Загрузка…" } else { "Loading…" }.into(),
@@ -965,6 +1020,15 @@ impl ChatRenderer {
 }
 
 /// Вид чата для разметки: 0 личный, 1 группа, 2 канал.
+/// Форма слова по числу: 1 файл, 2 файла, 5 файлов.
+fn plural<'a>(n: usize, one: &'a str, few: &'a str, many: &'a str) -> &'a str {
+    match (n % 10, n % 100) {
+        (1, x) if x != 11 => one,
+        (2..=4, x) if !(12..=14).contains(&x) => few,
+        _ => many,
+    }
+}
+
 /// «5 голосов».
 fn count_votes(n: i32) -> String {
     let w = match (n % 10, n % 100) {

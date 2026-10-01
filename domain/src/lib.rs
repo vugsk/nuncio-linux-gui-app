@@ -2,6 +2,7 @@
 //! (Архитектура/nuncio - Приложение (Rust и Slint).md, Данные и хранилище.md).
 //! Домен не знает, что за сетью стоит Go: он видит трейт `Backend`.
 
+pub mod attach;
 pub mod backend;
 pub mod chat;
 pub mod chatlist;

@@ -21,7 +21,8 @@ chmod 600 "$T/home/config/api.env"
 "$T/fakeserver" -listen "127.0.0.1:$PORT" -key "$T/key" -push "$PUSH" -every 15ms -start 4s -dump "$T/server.json" \
   > "$T/server.log" 2>&1 &
 SRV=$!
-trap 'kill $SRV 2>/dev/null || true; pkill -KILL -f "$T/app" 2>/dev/null || true' EXIT
+source "$ROOT/tests/common.sh"
+trap 'rc=$?; kill $SRV 2>/dev/null || true; pkill -KILL -f "$T/app" 2>/dev/null || true; tmp_done $rc' EXIT
 until grep -q готов "$T/server.log"; do sleep 0.1; done
 cp "$ROOT/target/release/nuncio" "$T/app"
 

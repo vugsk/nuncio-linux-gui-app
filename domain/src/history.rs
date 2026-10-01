@@ -339,7 +339,7 @@ mod tests {
     fn locals_only_at_the_end() {
         let mut s = Store::in_memory().unwrap();
         page(&mut s, 7, 0, 0, 3, &[10, 9, 8]);
-        s.outbox_enqueue(&crate::outbox::Outgoing { peer_id: 7, text: "в очереди", entities: &[], reply_to: 0, random_id: 42 }, 1, 100).unwrap();
+        s.outbox_enqueue(&crate::outbox::Outgoing { peer_id: 7, text: "в очереди", entities: &[], reply_to: 0, random_id: 42, ..Default::default() }, 1, 100).unwrap();
         let w = s.history_window(7, Anchor::Latest, 50, 0).unwrap();
         assert_eq!(w.messages.last().unwrap().text, "в очереди");
         let w = s.history_window(7, Anchor::At(9), 1, 1).unwrap();

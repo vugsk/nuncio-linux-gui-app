@@ -17,7 +17,8 @@ chmod 600 "$T/home/config/api.env"
 (cd "$ROOT/net" && go build -o "$T/fakeserver" ./cmd/fakeserver)
 "$T/fakeserver" -listen "127.0.0.1:$PORT" -key "$T/key" -history 20 -dump "$T/server.json" > "$T/server.log" 2>&1 &
 SRV=$!
-trap 'setxkbmap -display "$DISPLAY_NUM" -layout us 2>/dev/null || true; kill $SRV 2>/dev/null || true; pkill -KILL -f "$T/app" 2>/dev/null || true' EXIT
+source "$ROOT/tests/common.sh"
+trap 'rc=$?; setxkbmap -display "$DISPLAY_NUM" -layout us 2>/dev/null || true; kill $SRV 2>/dev/null || true; pkill -KILL -f "$T/app" 2>/dev/null || true; tmp_done $rc' EXIT
 until grep -q готов "$T/server.log"; do sleep 0.1; done
 cp "$ROOT/target/release/nuncio" "$T/app"
 setxkbmap -display "$DISPLAY_NUM" -layout us

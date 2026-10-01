@@ -463,6 +463,22 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
             }
         });
         let s = send.clone();
+        chat.on_attach(move || s(Action::Chat(ChatIntent::Attach)));
+        let s = send.clone();
+        chat.on_prepare_more(move || s(Action::Chat(ChatIntent::PrepareMore)));
+        let s = send.clone();
+        chat.on_prepare_photo(move |on| s(Action::Chat(ChatIntent::PrepareAsPhoto(on))));
+        let s = send.clone();
+        chat.on_prepare_remove(move |i| {
+            if let Ok(i) = usize::try_from(i) {
+                s(Action::Chat(ChatIntent::PrepareRemove(i)));
+            }
+        });
+        let s = send.clone();
+        chat.on_prepare_cancel(move || s(Action::Chat(ChatIntent::PrepareCancel)));
+        let s = send.clone();
+        chat.on_clear_cache(move || s(Action::Chat(ChatIntent::ClearCache)));
+        let s = send.clone();
         chat.on_vote(move |id, option| {
             if let (Ok(id), Ok(option)) = (id.parse(), usize::try_from(option)) {
                 s(Action::Chat(ChatIntent::Vote(id, option)));
