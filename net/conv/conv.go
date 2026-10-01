@@ -211,7 +211,7 @@ var EmptyLog func(format string, args ...any)
 func Message(m tl.MessageClass) *pb.Message {
 	switch v := m.(type) {
 	case *tl.Message:
-		if v.Message == "" && EmptyLog != nil {
+		if v.Message == "" && v.RichMessage == nil && EmptyLog != nil {
 			if _, empty := v.Media.(*tl.MessageMediaEmpty); v.Media == nil || empty {
 				EmptyLog("сообщение без текста и вложения: id %d, вложение %T, кнопки %T, сущностей %d, ответ %T",
 					v.Id, v.Media, v.ReplyMarkup, len(v.Entities), v.ReplyTo)
@@ -237,6 +237,14 @@ func Message(m tl.MessageClass) *pb.Message {
 		out.Pinned = v.Pinned
 		out.Entities = Entities(v.Entities)
 		out.MediaInfo = MediaInfo(v.Media)
+		if v.RichMessage != nil && v.Message == "" {
+			// Богатое сообщение (блоки статьи): текст с форматированием и первое фото.
+			text, ents, photo := RichMessage(v.RichMessage)
+			out.Text, out.Entities = text, ents
+			if out.MediaInfo == nil && photo != nil {
+				out.MediaInfo, out.Media = photo, "photo"
+			}
+		}
 		if v.GroupedId != nil {
 			out.GroupedId = *v.GroupedId
 		}
