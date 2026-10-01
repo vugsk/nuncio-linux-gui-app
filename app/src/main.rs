@@ -766,7 +766,8 @@ fn pump(b: Arc<dyn Backend>) {
 fn domain_loop(mut d: Domain, rx: mpsc::Receiver<Msg>) {
     d.publish(Some(d.model.lang.clone()));
     while !d.quit {
-        let wait = if d.model.needs_tick() {
+        // Всплывающее сообщение живёт 3 с: пока оно видно — тик раз в секунду.
+        let wait = if d.model.needs_tick() || d.chat.as_ref().is_some_and(|c| c.toast.is_some()) {
             Duration::from_secs(1)
         } else if d.chat.is_some() {
             Duration::from_secs(10) // очередь отправки и время в списке
