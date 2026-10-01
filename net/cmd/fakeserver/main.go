@@ -33,6 +33,7 @@ func main() {
 	extras := flag.Bool("extras", false, "ещё собеседники и папка (поиск, папки, архив — В6)")
 	media := flag.Bool("media", false, "чат «Вложения»: фото, альбом, файл, опрос, превью ссылки (В7)")
 	partDelay := flag.Duration("part-delay", 0, "задержка на часть файла при скачивании")
+	photos := flag.Int("photos", 0, "чат «Фото» из стольких фото, самый новый (замер памяти при прокрутке)")
 	flag.Parse()
 
 	msgs := []string{"начало"}
@@ -65,6 +66,14 @@ func main() {
 			Messages: texts, Attach: att})
 		acc.Files = files
 		acc.PartDelay = *partDelay
+	}
+	if *photos > 0 {
+		if acc.Files == nil {
+			acc.Files = map[int64][]byte{}
+		}
+		texts, att := fakeserver.PhotoChat(*photos, acc.Files)
+		acc.Contacts = append(acc.Contacts, fakeserver.Contact{ID: 104, Name: "Фото", AccessHash: 15, Unread: -1,
+			Messages: texts, Attach: att})
 	}
 	srv, err := fakeserver.StartAt(*listen, fakeserver.Options{DC: 2, Account: acc})
 	if err != nil {

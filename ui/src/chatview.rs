@@ -333,6 +333,8 @@ pub struct ChatRenderer {
     asked_newer: Option<u64>,
     window_version: u64,
     seen_sent: i32,
+    /// Последние отправленные видимые строки (ключи) — без повторов.
+    visible_sent: Option<(i32, i32)>,
     sender: Option<Rc<dyn Fn(ChatIntent)>>,
     /// Окно просмотра фото (Св-3): есть, пока открыто.
     viewer: Option<ViewerWindow>,
@@ -611,6 +613,7 @@ impl ChatRenderer {
             self.asked_older = None;
             self.asked_newer = None;
             self.seen_sent = 0;
+            self.visible_sent = None;
         }
         let group = m.open.is_some_and(|id| PeerKind::of(id) != PeerKind::User);
         let read_out = m.open_row().map(|r| r.dialog.read_outbox_max_id).unwrap_or(0);
@@ -1009,6 +1012,13 @@ impl ChatRenderer {
         if v.need_newer && !self.items.is_empty() && self.asked_newer != w {
             self.asked_newer = w;
             send(ChatIntent::NeedNewer);
+        }
+        let vis = v.top_row.zip(v.bottom_row).and_then(|(t, b)| Some((self.items.get(t)?.key, self.items.get(b)?.key)));
+        if vis.is_some() && vis != self.visible_sent {
+            self.visible_sent = vis;
+            if let Some((t, b)) = vis {
+                send(ChatIntent::Visible(t, b));
+            }
         }
         let seen = v.seen_row.and_then(|b| self.items[..=b].iter().rev().find(|x| x.key > 0)).map(|x| x.key);
         if let Some(id) = seen.filter(|id| *id > self.seen_sent) {

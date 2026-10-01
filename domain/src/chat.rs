@@ -178,6 +178,8 @@ pub enum ChatIntent {
     /// Окно просмотра: соседнее фото (−1, +1) или закрыть.
     ViewerStep(i32),
     CloseViewer,
+    /// Видимые строки истории: ключи верхней и нижней (интерфейс, при смене).
+    Visible(i32, i32),
     /// Окно просмотра: сохранить, переслать, показать в чате.
     ViewerSave,
     ViewerForward,
@@ -291,6 +293,9 @@ pub struct ChatModel {
     pub lang: String,
     /// Ширина ленты истории, px (0 — ещё неизвестна).
     pub view_width: i32,
+    /// Видимые строки истории (ключи верхней и нижней): картинки вложений
+    /// раскодируются только около них (память — по экрану, не по окну).
+    pub visible: Option<(i32, i32)>,
     next_id: u64,
     pub(crate) pending: HashMap<u64, Pending>,
     pages: u32,
@@ -766,6 +771,7 @@ impl ChatModel {
                 }
             }
             ChatIntent::ViewWidth(w) => self.view_width = w.max(0),
+            ChatIntent::Visible(top, bottom) => self.visible = Some((top, bottom)),
             ChatIntent::NeedOlder => {
                 let Some(peer_id) = self.open else { return out };
                 if self.window.start || self.history_request_pending(peer_id) {

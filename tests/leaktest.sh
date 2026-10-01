@@ -5,6 +5,8 @@
 # сдвиги окна, смена строк). Рост от прохода к проходу — подозрение на утечку.
 #
 #   tests/leaktest.sh [сообщений] [проходов]
+#   PHOTOS=300 tests/leaktest.sh 3000 4   — открыт чат из 300 фото (В7: кэш
+#                                           картинок ограничен окном истории)
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 N=${1:-3000}
@@ -17,7 +19,7 @@ printf 'API_ID=1\nAPI_HASH=00000000000000000000000000000000\n' > "$T/home/config
 chmod 600 "$T/home/config/api.env"
 
 (cd "$ROOT/net" && go build -o "$T/fakeserver" ./cmd/fakeserver)
-"$T/fakeserver" -listen "127.0.0.1:$PORT" -key "$T/key" -history "$N" > "$T/server.log" 2>&1 &
+"$T/fakeserver" -listen "127.0.0.1:$PORT" -key "$T/key" -history "$N" -photos "${PHOTOS:-0}" > "$T/server.log" 2>&1 &
 SRV=$!
 source "$ROOT/tests/common.sh"
 trap 'rc=$?; kill $SRV 2>/dev/null || true; pkill -KILL -f "$T/app" 2>/dev/null || true; tmp_done $rc' EXIT

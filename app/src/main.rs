@@ -421,7 +421,8 @@ impl Domain {
         let Some(chat) = self.chat.as_ref() else { return };
         let mut want: Vec<(String, Decode)> = Vec::new();
         let mut keep: HashSet<String> = HashSet::new();
-        for (id, f) in domain::media::feed_images(&chat.history) {
+        let near = chat.near_visible();
+        for (id, f) in domain::media::feed_images(&chat.history).into_iter().filter(|(id, _)| near.contains(id)) {
             let (tw, th) = (f.w as u32, f.h as u32);
             let path = match &f.file {
                 Some(file) => chat.media_paths.get(&file.key()),

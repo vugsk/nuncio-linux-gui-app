@@ -273,6 +273,20 @@ impl ChatModel {
         mi.full.as_ref().or(mi.file.as_ref()).or(mi.webpage.as_ref().and_then(|w| w.photo.as_ref())).map(|f| f.key())
     }
 
+    /// Сообщения около видимых (запас `NEAR` с каждой стороны): только их
+    /// картинки держатся раскодированными. Пока вид не сообщил — последние.
+    pub fn near_visible(&self) -> HashSet<i32> {
+        const NEAR: usize = 10;
+        let n = self.history.len();
+        let idx = |id: i32| self.history.iter().position(|m| m.id == id);
+        let (a, b) = match self.visible.and_then(|(t, b)| Some((idx(t)?, idx(b)?))) {
+            Some((t, b)) => (t.min(b), t.max(b)),
+            None => (n.saturating_sub(NEAR), n.saturating_sub(1)),
+        };
+        let (from, to) = (a.saturating_sub(NEAR), (b + NEAR + 1).min(n));
+        self.history[from..to].iter().map(|m| m.id).collect()
+    }
+
     /// Фото чата в окне истории по порядку (стрелки окна просмотра).
     pub fn photo_ids(&self) -> Vec<i32> {
         self.history
@@ -497,6 +511,16 @@ mod tests {
         assert_eq!((f[&3].w, f[&3].h, f[&3].album), (159, 159, (1, 3)));
         assert!(!f.contains_key(&5));
         assert!(f[&3].photo_key().is_none() && f[&3].strip_key(1, 3) == "strip:1:3:159x159");
+    }
+
+    #[test]
+    fn decoded_only_near_visible() {
+        let mut m = ChatModel::new(1, "ru", 0);
+        m.history = (1..=100).map(|id| Message { id, ..Default::default() }).collect();
+        assert_eq!(m.near_visible().len(), 20, "до вида — последние (с запасом)");
+        m.visible = Some((50, 55));
+        let near = m.near_visible();
+        assert!(near.contains(&40) && near.contains(&65) && !near.contains(&39) && !near.contains(&66));
     }
 
     #[test]

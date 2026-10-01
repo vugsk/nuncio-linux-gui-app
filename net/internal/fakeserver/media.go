@@ -260,3 +260,24 @@ func (a *Account) newUpdates() *tl.Updates {
 	return &tl.Updates{Updates: []tl.UpdateClass{}, Users: a.contactUsers(), Chats: []tl.ChatClass{},
 		Date: int32(time.Now().Unix())}
 }
+
+// PhotoChat — чат из n фото (каждое своё, каждые десять — три альбомом) для
+// замера памяти при долгой прокрутке; файлы — в files.
+func PhotoChat(n int, files map[int64][]byte) ([]string, []Attach) {
+	texts := make([]string, n)
+	att := make([]Attach, n)
+	for i := 0; i < n; i++ {
+		w, h := 800, 600
+		if i%3 == 1 {
+			w, h = 600, 800
+		}
+		var g int64
+		if i%10 < 3 {
+			g = int64(1000 + i/10)
+		}
+		texts[i] = fmt.Sprintf("фото %d", i+1)
+		att[i] = Attach{Index: i, Grouped: g,
+			Media: &tl.MessageMediaPhoto{Photo: fakePhoto(files, int64(30000+i), w, h, uint8(i*37))}}
+	}
+	return texts, att
+}
