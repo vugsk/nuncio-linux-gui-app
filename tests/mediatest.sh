@@ -157,14 +157,29 @@ def poll_option(img, below, left):
 
 # Чат «Вложения» — первый в списке.
 click(180, 52 + 32)
-wait(lambda: db("SELECT count(*) FROM media WHERE state = 1 AND file_id LIKE 'p_%'") == [(5,)], 20)
+wait(lambda: db("SELECT count(*) FROM media WHERE state = 1 AND file_id LIKE 'p_%'") == [(6,)], 20)
 time.sleep(0.5)
 img = shot("1-chat")
 photos = db("SELECT file_id, cache_path, size FROM media WHERE state = 1 AND file_id LIKE 'p_%'")
-check(len(photos) == 5, f"фото окна скачаны в кэш сами (5 из 5: одиночное, альбом из трёх, превью ссылки): {len(photos)}")
+check(len(photos) == 6, f"фото окна скачаны в кэш сами (6 из 6: два одиночных, альбом из трёх, превью ссылки): {len(photos)}")
 check(all(os.path.getsize(p) == s for _, p, s in photos), "размеры файлов кэша совпадают с индексом")
 mj = db("SELECT media_json FROM messages WHERE peer_id = 103 AND grouped_id = 77")
 check(len(mj) == 3, "альбом: у трёх сообщений один grouped_id")
+
+# Начало чата: фото с длинной подписью и таблица псевдографикой — текст
+# не вылезает за пузырь и не наезжает на соседние (снимок для глаз).
+def wheel(btn, n):
+    xtest.fake_input(d, X.MotionNotify, x=ox + W // 2 + 150, y=oy + H // 2)
+    for _ in range(n):
+        xtest.fake_input(d, X.ButtonPress, btn)
+        xtest.fake_input(d, X.ButtonRelease, btn)
+        d.sync()
+        time.sleep(0.02)
+wheel(4, 40)
+time.sleep(1.5)
+shot("0-top")
+wheel(5, 80)
+time.sleep(1.5)
 
 btn = file_button(img)
 check(btn is not None, f"кнопка файла найдена на снимке: {btn}")

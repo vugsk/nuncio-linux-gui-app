@@ -204,9 +204,19 @@ func replyTo(r tl.MessageReplyHeaderClass) int32 {
 }
 
 // Message — сообщение в доменное (nil — пустое сообщение).
+// EmptyLog — куда сообщить о сообщении без текста и без вложения (только id и
+// имена типов, без содержимого): такие приходят и показываются пустым пузырём.
+var EmptyLog func(format string, args ...any)
+
 func Message(m tl.MessageClass) *pb.Message {
 	switch v := m.(type) {
 	case *tl.Message:
+		if v.Message == "" && EmptyLog != nil {
+			if _, empty := v.Media.(*tl.MessageMediaEmpty); v.Media == nil || empty {
+				EmptyLog("сообщение без текста и вложения: id %d, вложение %T, кнопки %T, сущностей %d, ответ %T",
+					v.Id, v.Media, v.ReplyMarkup, len(v.Entities), v.ReplyTo)
+			}
+		}
 		out := &pb.Message{PeerId: PeerID(v.PeerId), Id: v.Id, Date: int64(v.Date), Out: v.Out, Text: v.Message,
 			ReplyTo: replyTo(v.ReplyTo), Media: mediaKind(v.Media)}
 		out.FromId = PeerID(v.FromId)

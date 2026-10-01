@@ -496,8 +496,11 @@ impl RichCache {
     /// Заполняет `rich`, `lines`, `big_emoji`: сообщение с эмодзи или
     /// форматированием раскладывается в строки из сегментов.
     fn enrich(&mut self, it: &mut MessageItem, msg: &Message, view: i32, width: f32) {
+        // Весь текст сообщений — своей раскладкой (не только с эмодзи): у Text
+        // Slint с переносом высота считается не по той ширине, в которую его
+        // ставят, — текст вылезал за пузырь и наезжал на соседние строки.
         let styled = msg.entities.iter().any(|e| entity_style(e.kind).is_some());
-        if it.service || it.text.is_empty() || (!styled && !richtext::has_emoji(&it.text)) {
+        if it.service || it.text.is_empty() {
             return;
         }
         let text = it.text.to_string();
@@ -1499,7 +1502,10 @@ mod tests {
         assert!(!big.rich && big.big_emoji.row_count() == 2);
         let mut plain = item("без эмодзи 1 #");
         c.enrich(&mut plain, &Message::default(), 700, text_width(700));
-        assert!(!plain.rich && plain.big_emoji.row_count() == 0);
+        assert!(plain.rich && plain.big_emoji.row_count() == 0, "и без эмодзи — своей раскладкой (точная высота)");
+        let mut long = item(&"─".repeat(300));
+        c.enrich(&mut long, &Message::default(), 700, text_width(700));
+        assert!(long.lines.row_count() > 3, "слово длиннее строки переносится по графемам");
         assert_eq!(text_width(1000), 460.0);
         assert_eq!(text_width(400), 280.0);
     }

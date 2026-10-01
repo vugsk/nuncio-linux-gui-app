@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"nuncio/net/auth"
+	"nuncio/net/conv"
 	"nuncio/net/core"
 	"nuncio/net/dc"
 	pb "nuncio/net/gen"
@@ -123,6 +124,7 @@ func (s *Service) Start(req []byte) error {
 			}
 		}
 	}
+	conv.EmptyLog = s.log.Printf
 	s.initNetwork()
 	s.started = true
 	s.wg.Add(1)

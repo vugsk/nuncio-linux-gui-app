@@ -21,7 +21,7 @@ func TestMediaChatEncodes(t *testing.T) {
 	if !ok || len(b) != 512*1024 {
 		t.Fatalf("часть файла: %v %d", ok, len(b))
 	}
-	m := fakeMsg{media: att[5].Media}
+	m := fakeMsg{media: att[6].Media}
 	if !m.vote([][]byte{{0}}) {
 		t.Fatal("голос не принят")
 	}

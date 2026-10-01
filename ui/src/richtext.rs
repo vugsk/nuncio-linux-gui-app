@@ -208,11 +208,6 @@ pub struct Fonts {
 /// первая — `(0, 0)`, последняя — `(len, ширина)`.
 pub type Stops = Vec<(usize, f32)>;
 
-fn is_wide(c: char) -> bool {
-    matches!(c as u32, 0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF | 0xFE30..=0xFE4F
-        | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x20000..=0x3FFFD)
-}
-
 impl Fonts {
     pub fn new() -> Self {
         Self::default()
@@ -262,9 +257,11 @@ impl Fonts {
             let mut w: f32 = per_byte.iter().filter(|a| a.0 >= off && a.0 < end).map(|a| a.1).sum();
             let missing = per_byte.is_empty() || per_byte.iter().any(|a| a.0 >= off && a.0 < end && a.2);
             if missing {
-                // Нет глифа — Slint возьмёт другой шрифт; оценка.
-                let c = g.chars().next().unwrap_or(' ');
-                w = if is_wide(c) { SIZE } else { SIZE * 0.6 };
+                // Нет глифа — Slint возьмёт запасной шрифт, и какой — заранее не
+                // узнать (псевдографику «─│» он берёт из CJK — шириной в кегль).
+                // Оценка с запасом: строка перенесётся чуть раньше, но за пузырь
+                // не вылезет.
+                w = SIZE;
             }
             x += w;
             stops.push((end, x));

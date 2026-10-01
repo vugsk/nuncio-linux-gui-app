@@ -8,6 +8,7 @@ import (
 	"image/jpeg"
 	_ "image/png" // выгруженные PNG
 	"math/rand"
+	"strings"
 	"time"
 
 	"nuncio/net/tl"
@@ -51,21 +52,27 @@ func textWE(s string) *tl.TextWithEntities {
 // содержимое файлов по id (для upload.getFile).
 func MediaChat() ([]string, []Attach, map[int64][]byte) {
 	files := map[int64][]byte{}
-	texts := []string{"фото", "", "", "подпись альбома", "отчёт", "опрос", "ссылка https://example.com", "после вложений"}
+	table := "Трек 2: компиляторы\n" + strings.Repeat("─", 120) + "\n│ 1 │ Tree-walking интерпретатор (Lox) │ ★★☆☆☆ │ 1–2 недели │ лексер, парсер, AST │\n" +
+		strings.Repeat("─", 120) + "\n│ 2 │ Мини-ассемблер │ ★★☆☆☆ │ 1 неделя │ текст ↔ байты инструкций │"
+	caption := "Небольшой процесс\nУ меня пока 2 новости, классная и не очень. " +
+		"Я простудился чутка, пока без температуры, но по общим ощущениям немного не очень. " +
+		"Ну и ещё готовится открытие одной большой штуки, буквально на днях. Наверное для этого понадобится модерация."
+	texts := []string{caption, table, "фото", "", "", "подпись альбома", "отчёт", "опрос", "ссылка https://example.com", "после вложений"}
 	doc := make([]byte, 1536*1024+123) // больше части (512 КБ) — скачивание несколькими частями
 	rand.New(rand.NewSource(1)).Read(doc)
 	files[9001] = doc
 	voters := func(n int32) *int32 { return &n }
 	site, title, desc := "Example", "Пример сайта", "Описание страницы для превью ссылки."
 	att := []Attach{
-		{Index: 0, Media: &tl.MessageMediaPhoto{Photo: fakePhoto(files, 8001, 800, 600, 40)}},
-		{Index: 1, Grouped: 77, Media: &tl.MessageMediaPhoto{Photo: fakePhoto(files, 8002, 600, 600, 120)}},
-		{Index: 2, Grouped: 77, Media: &tl.MessageMediaPhoto{Photo: fakePhoto(files, 8003, 600, 800, 200)}},
-		{Index: 3, Grouped: 77, Media: &tl.MessageMediaPhoto{Photo: fakePhoto(files, 8004, 640, 480, 250)}},
-		{Index: 4, Media: &tl.MessageMediaDocument{Document: &tl.Document{Id: 9001, AccessHash: 5, FileReference: []byte{4},
+		{Index: 0, Media: &tl.MessageMediaPhoto{Photo: fakePhoto(files, 8006, 900, 600, 160)}},
+		{Index: 2, Media: &tl.MessageMediaPhoto{Photo: fakePhoto(files, 8001, 800, 600, 40)}},
+		{Index: 3, Grouped: 77, Media: &tl.MessageMediaPhoto{Photo: fakePhoto(files, 8002, 600, 600, 120)}},
+		{Index: 4, Grouped: 77, Media: &tl.MessageMediaPhoto{Photo: fakePhoto(files, 8003, 600, 800, 200)}},
+		{Index: 5, Grouped: 77, Media: &tl.MessageMediaPhoto{Photo: fakePhoto(files, 8004, 640, 480, 250)}},
+		{Index: 6, Media: &tl.MessageMediaDocument{Document: &tl.Document{Id: 9001, AccessHash: 5, FileReference: []byte{4},
 			Date: 1, MimeType: "application/pdf", Size: int64(len(doc)), DcId: 2,
 			Attributes: []tl.DocumentAttributeClass{&tl.DocumentAttributeFilename{FileName: "отчёт.pdf"}}}}},
-		{Index: 5, Media: &tl.MessageMediaPoll{
+		{Index: 7, Media: &tl.MessageMediaPoll{
 			Poll: &tl.Poll{Id: 555, Question: textWE("Когда релиз?"), Answers: []tl.PollAnswerClass{
 				&tl.PollAnswer{Text: textWE("В пятницу"), Option: []byte{0}},
 				&tl.PollAnswer{Text: textWE("В понедельник"), Option: []byte{1}},
@@ -75,7 +82,7 @@ func MediaChat() ([]string, []Attach, map[int64][]byte) {
 				&tl.PollAnswerVoters{Option: []byte{1}, Voters: voters(1), RecentVoters: []tl.PeerClass{}},
 			}},
 		}},
-		{Index: 6, Media: &tl.MessageMediaWebPage{Webpage: &tl.WebPage{Id: 1, Url: "https://example.com",
+		{Index: 8, Media: &tl.MessageMediaWebPage{Webpage: &tl.WebPage{Id: 1, Url: "https://example.com",
 			DisplayUrl: "example.com", SiteName: &site, Title: &title, Description: &desc,
 			Photo: fakePhoto(files, 8005, 480, 270, 90)}}},
 	}
