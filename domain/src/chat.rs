@@ -80,6 +80,8 @@ pub enum ChatEffect {
     InspectFiles { paths: Vec<String>, append: bool },
     /// Очистить кэш файлов (временный пункт меню до настроек В9).
     ClearCache,
+    /// Взять картинку из буфера обмена (если там нет текста) в панель подготовки.
+    PasteImage,
 }
 
 /// Режим поля ввода: ответ или правка (одна панель над полем, Дз-2).
@@ -191,6 +193,8 @@ pub enum ChatIntent {
     PrepareRemove(usize),
     PrepareCancel,
     ClearCache,
+    /// Ctrl+V в поле ввода: картинка из буфера — в панель подготовки (Св-4).
+    PasteImage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -758,6 +762,11 @@ impl ChatModel {
             ChatIntent::PrepareAsPhoto(on) => self.prepare_as_photo(on),
             ChatIntent::PrepareRemove(i) => self.prepare_remove(i),
             ChatIntent::PrepareCancel => self.prepare = None,
+            ChatIntent::PasteImage => {
+                if self.open.is_some() {
+                    out.push(ChatEffect::PasteImage);
+                }
+            }
             ChatIntent::ClearCache => {
                 self.media_paths.clear();
                 out.push(ChatEffect::ClearCache);

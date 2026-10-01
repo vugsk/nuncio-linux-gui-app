@@ -209,6 +209,14 @@ impl Domain {
                         }
                     }
                     ChatEffect::ClearCache => self.clear_cache(),
+                    ChatEffect::PasteImage => {
+                        if let Some(path) = self.paste_image() {
+                            let files = inspect_file(&path).into_iter().collect();
+                            if let Some(chat) = self.chat.as_mut() {
+                                chat.set_prepared(files, true);
+                            }
+                        }
+                    }
                     ChatEffect::OpenFile(path) => {
                         if let Err(e) = std::process::Command::new("xdg-open").arg(&path).spawn() {
                             log::warn!("xdg-open: {e}");
@@ -381,6 +389,36 @@ impl Domain {
             }
         }
         self.sync_media_images();
+    }
+
+    /// Картинка из буфера обмена (если в нём нет текста — текст вставляет поле
+    /// ввода) — в PNG-файл `cache/paste`. Вставленное старше двух суток
+    /// удаляется: очередь отправки держит сообщение не дольше суток (О-12).
+    fn paste_image(&self) -> Option<String> {
+        let mut cb = arboard::Clipboard::new().ok()?;
+        if cb.get_text().is_ok_and(|t| !t.is_empty()) {
+            return None;
+        }
+        let img = cb.get_image().ok()?;
+        let dir = self.paths.cache.join("paste");
+        std::fs::create_dir_all(&dir).ok()?;
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600);
+            for e in rd.flatten() {
+                if e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < old) {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let path = dir.join(format!("paste-{stamp}.png"));
+        let (w, h) = (u32::try_from(img.width).ok()?, u32::try_from(img.height).ok()?);
+        if let Err(e) = ui::photo::save_png(&path, w, h, &img.bytes) {
+            log::warn!("картинка из буфера не сохранена: {e}");
+            return None;
+        }
+        log::info!("картинка из буфера: {w}×{h}");
+        Some(path.display().to_string())
     }
 
     /// Очистить кэш файлов (временный пункт меню до настроек В9): индекс и

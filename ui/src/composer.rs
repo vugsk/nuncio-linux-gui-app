@@ -924,6 +924,14 @@ pub fn bind(app: &App, send: impl Fn(ChatIntent) + 'static) {
             if (is(Key::Home) || is(Key::End)) && !ctrl {
                 return Some(v.c.home_end(is(Key::End), shift));
             }
+            if ctrl && !alt && matches!(text.as_str(), "v" | "V" | "м" | "М") {
+                // Текст вставит сам TextInput; картинку из буфера проверит поток домена.
+                if let Some(send) = &v.send {
+                    send(ChatIntent::PasteImage);
+                }
+                accepted = false;
+                return None;
+            }
             if ctrl && !alt {
                 match hotkey(&text, shift) {
                     Some(10) => return v.c.undo(),

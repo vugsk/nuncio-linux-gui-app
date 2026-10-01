@@ -3,7 +3,7 @@
 # альбомом из трёх, файлом 1,5 МБ, опросом и превью ссылки): автоскачивание фото
 # в кэш, скачивание файла с ходом и отменой, окно просмотра (отдельное окно,
 # Ctrl+S сохраняет, Esc закрывает), голос в опросе; отправка: альбом с подписью,
-# документ, отмена выгрузки; очистка кэша. Системный диалог выбора файлов
+# документ, отмена выгрузки, вставка картинки из буфера (Ctrl+V); очистка кэша. Системный диалог выбора файлов
 # подменён списком (NUNCIO_TEST_PICK=@файл), сохранения — каталогом.
 # Проверки — по базе, файлам кэша, окнам X и снимкам экрана (синтетические
 # данные). Кнопки находятся по цвету на снимке.
@@ -19,6 +19,7 @@ printf 'API_ID=1\nAPI_HASH=00000000000000000000000000000000\n' > "$T/home/config
 chmod 600 "$T/home/config/api.env"
 
 (cd "$ROOT/net" && go build -o "$T/fakeserver" ./cmd/fakeserver)
+(cd "$ROOT" && cargo build -q -p app --example setclip)
 "$T/fakeserver" -listen "127.0.0.1:$PORT" -key "$T/key" -unread -1 -media -part-delay 1s > "$T/server.log" 2>&1 &
 SRV=$!
 source "$ROOT/tests/common.sh"
@@ -35,7 +36,7 @@ APP=$!
 until grep -q "шаг READY" "$T/home/state/net.log" 2>/dev/null; do sleep 0.2; done
 sleep 4
 
-DISPLAY="$DISPLAY_NUM" python3 - "$T" "$APP" <<'PY'
+DISPLAY="$DISPLAY_NUM" ROOT="$ROOT" python3 - "$T" "$APP" <<'PY'
 import json, os, sqlite3, subprocess, sys, time
 from PIL import Image
 from Xlib import X, XK, display
@@ -281,7 +282,27 @@ if up:
         f"выгрузка отменена, «не отправлено»: {db('SELECT state, error FROM outbox')}")
     shot("11-cancelled")
 
-# Очистка кэша (временный пункт меню).
+# Вставка картинки из буфера (Ctrl+V в поле ввода) — панель подготовки, Enter.
+clip = subprocess.Popen(["env", "-u", "WAYLAND_DISPLAY", f"DISPLAY={os.environ['DISPLAY']}",
+    f"{os.environ['ROOT']}/target/debug/examples/setclip", f"{t}/two.png"], stdout=subprocess.PIPE)
+clip.stdout.readline()
+time.sleep(0.5)
+click(W // 2, H - 24)
+key("v", ctrl=True)
+check(wait(lambda: os.path.isdir(f"{t}/home/cache/paste") and os.listdir(f"{t}/home/cache/paste"), 5),
+    "картинка из буфера сохранена для отправки")
+time.sleep(1)
+shot("12a-pasted")
+key("Return")
+check(wait(lambda: len(sent("grouped_id = 0 AND media_json LIKE '%\"Photo\"%'")) == 1),
+    "вставленная картинка отправлена фото")
+clip.kill()
+
+# Очистка кэша (временный пункт меню) — когда скачивания затихли (идущие
+# скачивания доводятся до конца и пишут файл уже после очистки).
+media_dir = f"{t}/home/cache/media"
+wait(lambda: not any(n.endswith(".part") for n in os.listdir(media_dir)), 20)
+time.sleep(2)
 before = sum(os.path.getsize(os.path.join(f"{t}/home/cache/media", n)) for n in os.listdir(f"{t}/home/cache/media"))
 click(30, 26)
 click(100, 56 + 6 + 18)
