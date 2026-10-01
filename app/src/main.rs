@@ -364,7 +364,9 @@ impl Domain {
                                     let author = if src.out {
                                         String::new() // «Вы» подставит интерфейс
                                     } else {
-                                        s.peer(src.from_id)?.map(|p| p.name).unwrap_or_default()
+                                        // Пост канала — без отправителя-пользователя: автор — сам канал.
+                                        let from = if src.from_id != 0 { src.from_id } else { peer_id };
+                                        s.peer(from)?.map(|p| p.name).unwrap_or_default()
                                     };
                                     quotes.insert(m.reply_to, (author, domain::chat::snippet(&src)));
                                 }

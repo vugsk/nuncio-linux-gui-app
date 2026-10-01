@@ -29,7 +29,7 @@ mkdir -p "$T/saved"
 cp "$ROOT/target/release/nuncio" "$T/app"
 env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" SLINT_BACKEND=winit-software NUNCIO_HOME="$T/home" \
   NUNCIO_TEST_DC="127.0.0.1:$PORT" NUNCIO_TEST_RSA="$T/key" NUNCIO_KEYRING_APP=nuncio-mediatest \
-  NUNCIO_KEYRING_COLLECTION=session NUNCIO_WINDOW_SIZE=1300x800 \
+  NUNCIO_KEYRING_COLLECTION=session NUNCIO_WINDOW_SIZE=${WINDOW:-1300x800} \
   NUNCIO_TEST_PICK="@$T/pick.txt" NUNCIO_TEST_SAVE="$T/saved" \
   "$T/app" > "$T/app.log" 2>&1 &
 APP=$!
@@ -200,7 +200,7 @@ if opt:
     shot("4-voted")
 
 # Окно просмотра: нижняя правая ячейка альбома прямо над файлом.
-click(bx + 180, btop - 130)
+click(bx + 180, btop - 70)
 time.sleep(1.5)
 ws = windows()
 check(len(ws) == 2, f"окно просмотра открыто отдельным окном: окон {len(ws)}")

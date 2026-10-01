@@ -213,7 +213,8 @@ func Message(m tl.MessageClass) *pb.Message {
 		if out.FromId == 0 && Kind(out.PeerId) == pb.Peer_USER && !v.Out {
 			out.FromId = out.PeerId // в личке отправитель — собеседник
 		}
-		if v.EditDate != nil {
+		// edit_hide: правка не показывается («изм.» нет), как у опросов и реакций.
+		if v.EditDate != nil && !v.EditHide {
 			out.EditDate = int64(*v.EditDate)
 		}
 		if f, ok := v.FwdFrom.(*tl.MessageFwdHeader); ok {

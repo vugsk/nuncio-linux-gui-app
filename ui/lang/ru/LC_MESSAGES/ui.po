@@ -519,3 +519,6 @@ msgstr "По размеру"
 
 msgid "Show in chat"
 msgstr "В чате"
+
+msgid "Forwarded from"
+msgstr "Переслано из"

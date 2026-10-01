@@ -411,6 +411,38 @@ pub fn text_width(view: i32) -> f32 {
     (480.0f32).min(view as f32 * 0.75) - 20.0
 }
 
+/// Отступ вложения от края пузыря (фото почти вплотную, как в Telegram).
+const MEDIA_PAD: f32 = 4.0;
+
+/// Рамка пузыря вокруг вложения по ширине: фото — отступы, превью ссылки —
+/// ещё и полоса слева с текстовыми отступами (как в разметке Bubble).
+const CHROME_PHOTO: f32 = 2.0 * MEDIA_PAD;
+const CHROME_WEBPAGE: f32 = 39.0;
+
+/// Во сколько раз ужать вложение шириной `w`, чтобы пузырь не вылез за ленту
+/// (узкое окно, открытая правая панель).
+fn media_scale(w: f32, view: i32, chrome: f32) -> f32 {
+    let max = (text_width(view) + 20.0 - chrome).max(120.0);
+    if view <= 0 { 1.0 } else { (max / w.max(1.0)).min(1.0) }
+}
+
+/// Ширина подписи под вложением: пузырь шириной с вложение (Чт-11), текст
+/// переносится по нему. У превью ссылки — по ширине карточки.
+fn caption_widths(history: &[Message], view: i32) -> HashMap<i32, f32> {
+    use domain::model::MediaKind as K;
+    let feed = domain::media::feed_images(history);
+    let mut out = HashMap::new();
+    for m in history {
+        let (Some(f), Some(mi)) = (feed.get(&m.id), &m.media_info) else { continue };
+        let full = if f.album.1 > 1 { domain::media::ALBUM_W as f32 } else { f.w as f32 };
+        let web = mi.kind == K::WebPage;
+        let w = full * media_scale(full, view, if web { CHROME_WEBPAGE } else { CHROME_PHOTO });
+        let tw = if web { (w + CHROME_WEBPAGE - 20.0).min(text_width(view)) } else { w + CHROME_PHOTO - 20.0 };
+        out.insert(m.id, tw.max(80.0));
+    }
+    out
+}
+
 thread_local! {
     /// Картинки эмодзи (общие для истории и поля ввода).
     static EMOJI_IMAGES: RefCell<HashMap<String, Image>> = RefCell::new(HashMap::new());
@@ -463,13 +495,14 @@ impl RichCache {
 
     /// Заполняет `rich`, `lines`, `big_emoji`: сообщение с эмодзи или
     /// форматированием раскладывается в строки из сегментов.
-    fn enrich(&mut self, it: &mut MessageItem, msg: &Message, view: i32) {
+    fn enrich(&mut self, it: &mut MessageItem, msg: &Message, view: i32, width: f32) {
         let styled = msg.entities.iter().any(|e| entity_style(e.kind).is_some());
         if it.service || it.text.is_empty() || (!styled && !richtext::has_emoji(&it.text)) {
             return;
         }
         let text = it.text.to_string();
-        if !styled {
+        // 1–3 эмодзи крупно без пузыря (Чт-12) — только без вложения.
+        if !styled && msg.media_info.is_none() && msg.media.is_empty() {
             if let Some(es) = richtext::only_emoji(&text) {
                 if let Some(m) = self.big.get(&text) {
                     it.big_emoji = m.clone();
@@ -493,14 +526,14 @@ impl RichCache {
             self.lines.clear(); // окно истории ограничено; кэш не растёт без края
             self.fonts.trim_cache();
         }
-        let key = format!("{}\u{0}{}", text, domain::model::encode_entities(&msg.entities));
+        let key = format!("{}\u{0}{}\u{0}{width}", text, domain::model::encode_entities(&msg.entities));
         if let Some(m) = self.lines.get(&key) {
             it.rich = true;
             it.lines = m.clone();
             return;
         }
         let (spans, links) = spans_from_entities(&text, &msg.entities);
-        let lines = richtext::layout(&text, &spans, text_width(view), &self.fonts);
+        let lines = richtext::layout(&text, &spans, width, &self.fonts);
         let m = self.rich_lines(lines, &links);
         self.lines.insert(key, m.clone());
         it.rich = true;
@@ -509,6 +542,21 @@ impl RichCache {
 
     pub fn rich_lines(&mut self, lines: Vec<richtext::Line>, links: &[String]) -> ModelRc<RichLine> {
         rich_rows(lines, links)
+    }
+
+    /// Простой текст с эмодзи (опросы) — строками с картинками эмодзи; без эмодзи — None.
+    fn plain_lines(&mut self, text: &str, width: f32) -> Option<ModelRc<RichLine>> {
+        if !richtext::has_emoji(text) {
+            return None;
+        }
+        let key = format!("{text}\u{0}\u{0}{width}");
+        if let Some(m) = self.lines.get(&key) {
+            return Some(m.clone());
+        }
+        let lines = richtext::layout(text, &[], width, &self.fonts);
+        let m = self.rich_lines(lines, &[]);
+        self.lines.insert(key, m.clone());
+        Some(m)
     }
 }
 
@@ -621,8 +669,10 @@ impl ChatRenderer {
             peer: m.open_peer() };
         let mut items = message_items(&m.history, &cx);
         let mut divider = m.unread_mark;
+        let captions = caption_widths(&m.history, m.view_width);
         for (it, msg) in items.iter_mut().zip(&m.history) {
-            self.rich.enrich(it, msg, m.view_width);
+            let w = captions.get(&msg.id).copied().unwrap_or_else(|| text_width(m.view_width));
+            self.rich.enrich(it, msg, m.view_width, w);
             if divider.is_some_and(|mark| it.key > mark && !it.out) {
                 it.unread_divider = true;
                 divider = None;
@@ -735,8 +785,11 @@ impl ChatRenderer {
                     Some(i) => Some(i),
                     None => self.media_image(&f.strip_key(peer, msg.id), images),
                 };
-                it.mw = f.w as f32;
-                it.mh = f.h as f32;
+                // Узкое окно — вложение ужимается (картинка масштабируется при показе).
+                let chrome = if mi.kind == K::WebPage { CHROME_WEBPAGE } else { CHROME_PHOTO };
+                let k = media_scale(f.w as f32, m.view_width, chrome);
+                it.mw = f.w as f32 * k;
+                it.mh = f.h as f32 * k;
                 it.mhas_img = img.is_some();
                 it.mimg = img.unwrap_or_else(no_image);
             }
@@ -801,6 +854,11 @@ impl ChatRenderer {
                     let voted = poll.closed || poll.options.iter().any(|o| o.chosen);
                     it.poll_voted = voted;
                     it.poll_question = poll.question.clone().into();
+                    let tw = text_width(m.view_width);
+                    if let Some(l) = self.rich.plain_lines(&poll.question, tw) {
+                        it.poll_qrich = true;
+                        it.poll_qlines = l;
+                    }
                     let kind = match (poll.quiz, ru) {
                         (true, true) => "Викторина",
                         (true, false) => "Quiz",
@@ -819,6 +877,8 @@ impl ChatRenderer {
                         poll.options
                             .iter()
                             .map(|o| PollRow {
+                                lines: self.rich.plain_lines(&o.text, tw - 70.0).unwrap_or_default(),
+                                rich: richtext::has_emoji(&o.text),
                                 text: o.text.clone().into(),
                                 share: o.voters as f32 / total as f32,
                                 percent: format!("{}%", (o.voters * 100 + total / 2) / total).into(),
@@ -837,6 +897,7 @@ impl ChatRenderer {
         // Альбомы: строки подряд → одна; ключ — последнего сообщения (прочитано до конца альбома).
         for r in albums(&m.history).into_iter().rev() {
             let (cells, height) = album_layout(r.len());
+            let k = media_scale(ALBUM_W as f32, m.view_width, CHROME_PHOTO);
             let group: Vec<MessageItem> = items.drain(r.clone()).collect();
             let mut base = group[0].clone();
             if let Some(cap) = group.iter().find(|g| !g.text.is_empty()) {
@@ -857,16 +918,16 @@ impl ChatRenderer {
                         img: g.mimg.clone(),
                         has_img: g.mhas_img,
                         play: g.mplay,
-                        x: c.x as f32,
-                        y: c.y as f32,
-                        w: c.w as f32,
-                        h: c.h as f32,
+                        x: c.x as f32 * k,
+                        y: c.y as f32 * k,
+                        w: c.w as f32 * k,
+                        h: c.h as f32 * k,
                     })
                     .collect(),
             );
             base.mkind = 5;
-            base.mw = ALBUM_W as f32;
-            base.mh = height as f32;
+            base.mw = ALBUM_W as f32 * k;
+            base.mh = height as f32 * k;
             items.insert(r.start, base);
         }
     }
@@ -1425,19 +1486,19 @@ mod tests {
         let mut c = RichCache::default();
         let item = |t: &str| MessageItem { text: t.into(), mimg: no_image(), ..Default::default() };
         let mut a = item("привет 👋 мир");
-        c.enrich(&mut a, &Message::default(), 700);
+        c.enrich(&mut a, &Message::default(), 700, text_width(700));
         assert!(a.rich && a.lines.row_count() == 1);
         let mut b = item("привет 👋 мир");
-        c.enrich(&mut b, &Message::default(), 700);
+        c.enrich(&mut b, &Message::default(), 700, text_width(700));
         assert!(a == b, "тот же текст и ширина — та же модель строк (строка списка не меняется)");
         let mut narrow = item("привет 👋 мир ".repeat(8).trim());
-        c.enrich(&mut narrow, &Message::default(), 200);
+        c.enrich(&mut narrow, &Message::default(), 200, text_width(200));
         assert!(narrow.lines.row_count() > 1, "узкая лента — перенос");
         let mut big = item("🔥 🔥");
-        c.enrich(&mut big, &Message::default(), 700);
+        c.enrich(&mut big, &Message::default(), 700, text_width(700));
         assert!(!big.rich && big.big_emoji.row_count() == 2);
         let mut plain = item("без эмодзи 1 #");
-        c.enrich(&mut plain, &Message::default(), 700);
+        c.enrich(&mut plain, &Message::default(), 700, text_width(700));
         assert!(!plain.rich && plain.big_emoji.row_count() == 0);
         assert_eq!(text_width(1000), 460.0);
         assert_eq!(text_width(400), 280.0);
@@ -1464,7 +1525,7 @@ mod tests {
         let mut c = RichCache::default();
         let msg = Message { text: text.into(), entities: es, ..Default::default() };
         let mut it = MessageItem { text: text.into(), ..Default::default() };
-        c.enrich(&mut it, &msg, 1000);
+        c.enrich(&mut it, &msg, 1000, text_width(1000));
         assert!(it.rich, "форматированное — сегментами");
         let segs = it.lines.row_data(0).unwrap().segs;
         assert!((0..segs.row_count()).any(|i| segs.row_data(i).unwrap().bold));

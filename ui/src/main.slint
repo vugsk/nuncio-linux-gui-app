@@ -92,6 +92,8 @@ export struct PrepItem {
 // Вариант ответа опроса (Чт-13).
 export struct PollRow {
     text: string,
+    rich: bool,          // с эмодзи — строками с картинками
+    lines: [RichLine],
     share: float,  // доля голосов 0…1 (видна после голосования)
     percent: string,
     chosen: bool,
@@ -161,6 +163,8 @@ export struct MessageItem {
     wp-title: string,
     wp-desc: string,
     poll-question: string,
+    poll-qrich: bool,
+    poll-qlines: [RichLine],
     poll-info: string,
     poll-voted: bool,
     poll-options: [PollRow],
@@ -661,9 +665,41 @@ component SearchResult inherits Rectangle {
     }
 }
 
+// Тонкая полоса прокрутки для списков (вместо стандартной: та в покое еле
+// видна, а при наведении становится широкой белой). Тот же вид, что у
+// полосы чата: ползунок шире и ярче при наведении, перетаскивается.
+component ThinScrollbar inherits Rectangle {
+    in property <length> content;
+    in property <length> view;
+    in-out property <length> pos; // viewport-y списка (≤ 0)
+    property <length> range: max(1px, root.content - root.view);
+    property <length> th: max(28px, root.height * min(1, root.view / max(1px, root.content)));
+    property <length> start;
+    width: 10px;
+    visible: root.content > root.view + 1px;
+    ta := TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.start = -root.pos - self.mouse-y * root.range / max(1px, root.height - root.th);
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.pos = -max(0px, min(root.range, root.start + self.mouse-y * root.range / max(1px, root.height - root.th)));
+            }
+        }
+    }
+    Rectangle {
+        x: ta.has-hover || ta.pressed ? 2px : 4px;
+        width: ta.has-hover || ta.pressed ? 6px : 4px;
+        y: (-root.pos) / root.range * (root.height - root.th);
+        height: root.th;
+        border-radius: 3px;
+        background: ta.pressed ? Theme.link : ta.has-hover ? #8a9bb0c0 : #8a9bb080;
+    }
+}
+
 component DialogList inherits Rectangle {
-    in-out property <bool> menu-open;
-    in-out property <bool> filter-open;
     background: Theme.window-bg;
     VerticalLayout {
         // Шапка списка: меню, фильтр папок (В6), поиск (В6), новый чат (В5).
@@ -679,7 +715,7 @@ component DialogList inherits Rectangle {
                 border-color: Theme.card-border;
                 accessible-role: button;
                 accessible-label: @tr("Menu");
-                menu-touch := TouchArea { clicked => { root.menu-open = !root.menu-open; } }
+                menu-touch := TouchArea { clicked => { menu-pop.show(); } }
                 Path {
                     width: 16px;
                     height: 12px;
@@ -697,7 +733,7 @@ component DialogList inherits Rectangle {
                 background: filter-touch.has-hover ? Theme.row-bg : transparent;
                 accessible-role: button;
                 accessible-label: Chat.filter-title;
-                filter-touch := TouchArea { clicked => { root.filter-open = !root.filter-open; } }
+                filter-touch := TouchArea { clicked => { filter-pop.show(); } }
                 HorizontalLayout {
                     padding-left: 6px;
                     spacing: 6px;
@@ -797,13 +833,21 @@ component DialogList inherits Rectangle {
                 color: Theme.text-muted;
                 font-size: 13px;
             }
-            ListView {
+            sl := ListView {
+                vertical-scrollbar-policy: always-off;
                 for r in Chat.search-rows: SearchResult { item: r; clicked => { Chat.open-result(r.peer, r.msg); } }
                 changed viewport-y => {
                     if (self.content-y < self.visible-height - self.content-height + 200px) {
                         Chat.search-more();
                     }
                 }
+            }
+            ThinScrollbar {
+                x: parent.width - self.width;
+                height: parent.height;
+                content: sl.content-height;
+                view: sl.visible-height;
+                pos <=> sl.content-y;
             }
         }
         if !searching && Chat.dialogs.length == 0: Rectangle {
@@ -815,18 +859,30 @@ component DialogList inherits Rectangle {
                 font-size: 13px;
             }
         }
-        if !searching && Chat.dialogs.length > 0: ListView {
+        if !searching && Chat.dialogs.length > 0: Rectangle {
             vertical-stretch: 1;
-            for d in Chat.dialogs: DialogRow {
-                item: d;
-                clicked => { Chat.open(d.id); }
+            dl := ListView {
+                vertical-scrollbar-policy: always-off;
+                for d in Chat.dialogs: DialogRow {
+                    item: d;
+                    clicked => { Chat.open(d.id); }
+                }
+            }
+            ThinScrollbar {
+                x: parent.width - self.width;
+                height: parent.height;
+                content: dl.content-height;
+                view: dl.visible-height;
+                pos <=> dl.content-y;
             }
         }
     }
-    if root.filter-open: Rectangle {
+    // Всплывающие меню закрываются щелчком мимо и не накладываются друг на друга.
+    filter-pop := PopupWindow {
         x: 56px;
         y: 50px;
         width: 250px;
+        Rectangle {
         height: filters.preferred-height;
         background: Theme.card-bg;
         border-radius: Theme.radius;
@@ -838,7 +894,7 @@ component DialogList inherits Rectangle {
                 height: 36px;
                 border-radius: 4px;
                 background: f.selected ? Theme.row-selected : ft.has-hover ? Theme.row-bg : transparent;
-                ft := TouchArea { clicked => { root.filter-open = false; Chat.set-filter(f.kind, f.id); } }
+                ft := TouchArea { clicked => { Chat.set-filter(f.kind, f.id); } }
                 HorizontalLayout {
                     padding-left: 10px;
                     padding-right: 10px;
@@ -847,11 +903,13 @@ component DialogList inherits Rectangle {
                 }
             }
         }
+        }
     }
-    if root.menu-open: Rectangle {
+    menu-pop := PopupWindow {
         x: 8px;
         y: 56px;
         width: 220px;
+        Rectangle {
         height: menu.preferred-height;
         background: Theme.card-bg;
         border-radius: Theme.radius;
@@ -863,7 +921,7 @@ component DialogList inherits Rectangle {
                 height: 36px;
                 border-radius: 4px;
                 background: cache-touch.has-hover ? Theme.row-bg : transparent;
-                cache-touch := TouchArea { clicked => { root.menu-open = false; Chat.clear-cache(); } }
+                cache-touch := TouchArea { clicked => { Chat.clear-cache(); } }
                 Text {
                     x: 10px;
                     text: @tr("Clear cache");
@@ -877,7 +935,7 @@ component DialogList inherits Rectangle {
                 height: 36px;
                 border-radius: 4px;
                 background: out-touch.has-hover ? Theme.row-bg : transparent;
-                out-touch := TouchArea { clicked => { root.menu-open = false; Chat.confirm-logout = true; } }
+                out-touch := TouchArea { clicked => { Chat.confirm-logout = true; } }
                 Text {
                     x: 10px;
                     text: @tr("Log out");
@@ -887,6 +945,7 @@ component DialogList inherits Rectangle {
                     height: parent.height;
                 }
             }
+        }
         }
     }
 }
@@ -962,6 +1021,21 @@ component RichText inherits Rectangle {
     if root.seg.link != "": TouchArea {
         mouse-cursor: pointer;
         clicked => { Chat.open-link(root.seg.link); }
+    }
+}
+
+// Строки текста с эмодзи-картинками и стилями (раскладка — в Rust, О-14).
+component RichLines inherits VerticalLayout {
+    in property <[RichLine]> lines;
+    for line in root.lines: HorizontalLayout {
+        height: 20px;
+        alignment: start;
+        for seg in line.segs: HorizontalLayout {
+            // Эмодзи 18 px в ячейке 20 px (спайк О-14).
+            padding: seg.emoji ? 1px : 0px;
+            if seg.emoji: Image { source: seg.image; width: 18px; height: 18px; }
+            if !seg.emoji: RichText { seg: seg; }
+        }
     }
 }
 
@@ -1099,10 +1173,11 @@ component MediaBlock inherits VerticalLayout {
     if root.item.mkind == 4: VerticalLayout {
         spacing: 6px;
         min-width: 260px;
-        Text { text: root.item.poll-question; color: Theme.text; font-size: 13px; font-weight: 600; wrap: word-wrap; }
+        if !root.item.poll-qrich: Text { text: root.item.poll-question; color: Theme.text; font-size: 13px; font-weight: 600; wrap: word-wrap; }
+        if root.item.poll-qrich: RichLines { lines: root.item.poll-qlines; }
         Text { text: root.item.poll-info; color: Theme.text-muted; font-size: 11px; }
         for o[i] in root.item.poll-options: Rectangle {
-            height: 32px;
+            height: o.rich ? max(32px, o.lines.length * 20px + 12px) : 32px;
             border-radius: 6px;
             border-width: root.item.poll-voted ? 0px : 1px;
             border-color: Theme.card-border;
@@ -1125,12 +1200,17 @@ component MediaBlock inherits VerticalLayout {
                     vertical-alignment: center;
                     width: 36px;
                 }
-                Text {
-                    text: (o.chosen ? "✓ " : "") + o.text;
+                if o.chosen: Text { text: "✓"; color: Theme.link; font-size: 12px; font-weight: 700; vertical-alignment: center; }
+                if !o.rich: Text {
+                    text: o.text;
                     color: Theme.text;
                     font-size: 12px;
                     vertical-alignment: center;
                     overflow: elide;
+                }
+                if o.rich: VerticalLayout {
+                    alignment: center;
+                    RichLines { lines: o.lines; }
                 }
             }
             ta := TouchArea {
@@ -1157,46 +1237,74 @@ component Bubble inherits VerticalLayout {
             padding-bottom: 6px;
             Meta { item: root.item; hover: root.hover; }
         }
-        Rectangle {
+        bub := Rectangle {
             property <bool> big: root.item.big-emoji.length > 0 && root.item.send-state != 3;
-            max-width: min(480px, root.width * 0.75);
+            // Фото, видео, альбом — пузырь шириной с вложение, подпись под ним
+            // переносится по этой ширине (Чт-11); превью ссылки — с карточку.
+            property <bool> visual: root.item.mkind == 1 || root.item.mkind == 5;
+            property <length> full: min(480px, root.width * 0.75);
+            property <length> fit: self.visual ? root.item.mw + 8px
+                : root.item.mkind == 3 && root.item.mhas-img ? min(self.full, root.item.mw + 39px) : 0px;
+            property <length> inset: self.visual ? 6px : 0px;
+            max-width: self.fit > 0 ? self.fit : self.full;
+            min-width: self.fit;
             background: self.big ? transparent : root.item.send-state == 3 ? #3a2530 : root.item.out ? Theme.accent : Theme.row-bg;
             border-radius: 10px;
             border-width: self.big ? 0px : 1px;
             border-color: root.item.send-state == 3 ? Theme.error : root.item.out ? Theme.accent-border : Theme.card-border;
             VerticalLayout {
-                padding: 8px;
-                padding-left: 10px;
-                padding-right: 10px;
-                spacing: 2px;
-                if root.item.sender != "" && root.item.first-in-series: Text {
-                    text: root.item.sender;
-                    color: root.item.sender-color;
-                    font-size: 12px;
-                    font-weight: 600;
-                }
-                if root.item.fwd-name != "": Text {
-                    text: @tr("Forwarded from {}", root.item.fwd-name);
-                    color: Theme.link;
-                    font-size: 11px;
-                }
-                if root.item.reply-author != "" || root.item.reply-text != "": Rectangle {
-                    height: quote.preferred-height;
-                    // Клик по цитате — к исходному сообщению сменой окна (Дз, Чт-3).
-                    TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { Chat.jump-to(root.item.reply-id); }
+                padding: bub.visual ? 4px : 8px;
+                padding-left: bub.visual ? 4px : 10px;
+                padding-right: bub.visual ? 4px : 10px;
+                spacing: bub.visual ? 4px : 2px;
+                if (root.item.sender != "" && root.item.first-in-series) || root.item.fwd-name != ""
+                    || root.item.reply-author != "" || root.item.reply-text != "": VerticalLayout {
+                    padding-left: bub.inset;
+                    padding-right: bub.inset;
+                    padding-top: bub.visual ? 3px : 0px;
+                    spacing: 3px;
+                    if root.item.sender != "" && root.item.first-in-series: Text {
+                        text: root.item.sender;
+                        color: root.item.sender-color;
+                        font-size: 12px;
+                        font-weight: 600;
                     }
-                    quote := HorizontalLayout {
+                    // Пересланное (Чт-2): две строки — пометка и источник крупнее, со стрелкой.
+                    if root.item.fwd-name != "": HorizontalLayout {
                         spacing: 6px;
-                        Rectangle { width: 3px; background: root.item.reply-color; border-radius: 1px; }
+                        Path {
+                            width: 14px;
+                            height: 12px;
+                            y: 3px;
+                            stroke: Theme.link;
+                            stroke-width: 1.6px;
+                            viewbox-width: 14;
+                            viewbox-height: 12;
+                            commands: "M 8 1 L 13 5.5 L 8 10 M 13 5.5 L 6 5.5 A 5 5 0 0 0 1 10.5";
+                        }
                         VerticalLayout {
-                            Text { text: root.item.reply-author; color: root.item.reply-color; font-size: 11px; font-weight: 600; overflow: elide; }
-                            Text { text: root.item.reply-text; color: #c9d6e2; font-size: 11px; overflow: elide; }
+                            Text { text: @tr("Forwarded from"); color: Theme.text-muted; font-size: 11px; }
+                            Text { text: root.item.fwd-name; color: Theme.link; font-size: 13px; font-weight: 700; overflow: elide; }
+                        }
+                    }
+                    if root.item.reply-author != "" || root.item.reply-text != "": Rectangle {
+                        height: quote.preferred-height;
+                        // Клик по цитате — к исходному сообщению сменой окна (Дз, Чт-3).
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { Chat.jump-to(root.item.reply-id); }
+                        }
+                        quote := HorizontalLayout {
+                            spacing: 6px;
+                            Rectangle { width: 3px; background: root.item.reply-color; border-radius: 1px; }
+                            VerticalLayout {
+                                Text { text: root.item.reply-author; color: root.item.reply-color; font-size: 11px; font-weight: 600; overflow: elide; }
+                                Text { text: root.item.reply-text; color: #c9d6e2; font-size: 11px; overflow: elide; }
+                            }
                         }
                     }
                 }
-                if root.item.mkind != 0: MediaBlock { item: root.item; }
+                if root.item.mkind != 0 && root.item.mkind != 3: MediaBlock { item: root.item; }
                 if root.item.media != "" && root.item.mkind == 0: Text {
                     text: root.item.media;
                     color: Theme.link;
@@ -1208,29 +1316,24 @@ component Bubble inherits VerticalLayout {
                     spacing: 4px;
                     for e in root.item.big-emoji: Image { source: e; width: 48px; height: 48px; }
                 }
-                if root.item.text != "" && !root.item.rich && root.item.big-emoji.length == 0: Text {
-                    text: root.item.text;
-                    color: Theme.text;
-                    font-size: 13px;
-                    wrap: word-wrap;
-                }
-                if root.item.rich: VerticalLayout {
-                    for line in root.item.lines: HorizontalLayout {
-                        height: 20px;
-                        alignment: start;
-                        for seg in line.segs: HorizontalLayout {
-                            // Эмодзи 18 px в ячейке 20 px (спайк О-14).
-                            padding: seg.emoji ? 1px : 0px;
-                            if seg.emoji: Image { source: seg.image; width: 18px; height: 18px; }
-                            if !seg.emoji: RichText { seg: seg; }
-                        }
+                if root.item.text != "" && root.item.big-emoji.length == 0: VerticalLayout {
+                    padding-left: bub.inset;
+                    padding-right: bub.inset;
+                    if !root.item.rich: Text {
+                        text: root.item.text;
+                        color: Theme.text;
+                        font-size: 13px;
+                        wrap: word-wrap;
                     }
+                    if root.item.rich: RichLines { lines: root.item.lines; }
                 }
-                if root.item.edited: Text {
-                    text: @tr("edited");
-                    color: Theme.text-muted;
-                    font-size: 10px;
-                    horizontal-alignment: right;
+                // Превью ссылки — под текстом сообщения, как в Telegram.
+                if root.item.mkind == 3: MediaBlock { item: root.item; }
+                if root.item.edited: HorizontalLayout {
+                    alignment: end;
+                    padding-right: bub.inset;
+                    padding-bottom: bub.visual ? 2px : 0px;
+                    Text { text: @tr("edited"); color: Theme.text-muted; font-size: 10px; }
                 }
             }
         }
@@ -1726,7 +1829,7 @@ component ChatPane inherits Rectangle {
                     y: (bar.pressed ? parent.drag : Chat.thumb) * (parent.height - parent.th);
                     height: parent.th;
                     border-radius: 3px;
-                    background: bar.pressed ? Theme.link : bar.has-hover ? #8a9bb0c0 : #8a9bb070;
+                    background: bar.pressed ? Theme.link : bar.has-hover ? #8a9bb0c0 : #8a9bb080;
                 }
             }
             // «Вниз» со счётчиком (Чт-10): вне конца истории.
@@ -2074,8 +2177,9 @@ component RightPanel inherits Rectangle {
         }
         Rectangle { height: 1px; background: Theme.card-border; }
         // Сведения.
-        if Chat.panel == 1: Flickable {
+        if Chat.panel == 1: Rectangle {
             vertical-stretch: 1;
+            pf := Flickable {
             VerticalLayout {
                 alignment: start;
                 padding-top: 18px;
@@ -2167,6 +2271,14 @@ component RightPanel inherits Rectangle {
                     clicked => { Chat.dialog-action(Chat.open-id, 9); }
                 }
             }
+            }
+            ThinScrollbar {
+                x: parent.width - self.width;
+                height: parent.height;
+                content: pf.content-height;
+                view: pf.height;
+                pos <=> pf.content-y;
+            }
         }
         // Поиск по чату (Дз-18): поле, стрелки и счётчик, фильтры, результаты.
         if Chat.panel == 2: VerticalLayout {
@@ -2220,13 +2332,21 @@ component RightPanel inherits Rectangle {
                     color: Theme.text-muted;
                     font-size: 12px;
                 }
-                ListView {
+                csl := ListView {
+                    vertical-scrollbar-policy: always-off;
                     for r in Chat.cs-rows: SearchResult { item: r; clicked => { Chat.cs-open(r.msg); } }
                     changed viewport-y => {
                         if (self.content-y < self.visible-height - self.content-height + 200px) {
                             Chat.cs-more();
                         }
                     }
+                }
+                ThinScrollbar {
+                    x: parent.width - self.width;
+                    height: parent.height;
+                    content: csl.content-height;
+                    view: csl.visible-height;
+                    pos <=> csl.content-y;
                 }
             }
         }
@@ -2313,26 +2433,36 @@ export component MainScreen inherits Rectangle {
                     escape => { Chat.picker-close(); }
                     init => { self.focus-input(); }
                 }
-                ListView {
+                Rectangle {
                     vertical-stretch: 1;
-                    for p in Chat.picker-items: Rectangle {
-                        height: 52px;
-                        border-radius: 6px;
-                        background: p.selected ? Theme.row-selected : pt.has-hover ? Theme.row-bg : transparent;
-                        pt := TouchArea { clicked => { Chat.picker-toggle(p.id); } }
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 10px;
-                            spacing: 10px;
-                            Avatar { y: 6px; size: 40px; initials: p.initials; tint: p.color; }
-                            VerticalLayout {
-                                alignment: center;
-                                horizontal-stretch: 1;
-                                Text { text: p.name; color: Theme.text; font-size: 13px; overflow: elide; }
-                                if p.subtitle != "": Text { text: p.subtitle; color: Theme.text-muted; font-size: 11px; overflow: elide; }
+                    pl := ListView {
+                        vertical-scrollbar-policy: always-off;
+                        for p in Chat.picker-items: Rectangle {
+                            height: 52px;
+                            border-radius: 6px;
+                            background: p.selected ? Theme.row-selected : pt.has-hover ? Theme.row-bg : transparent;
+                            pt := TouchArea { clicked => { Chat.picker-toggle(p.id); } }
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 10px;
+                                spacing: 10px;
+                                Avatar { y: 6px; size: 40px; initials: p.initials; tint: p.color; }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 1;
+                                    Text { text: p.name; color: Theme.text; font-size: 13px; overflow: elide; }
+                                    if p.subtitle != "": Text { text: p.subtitle; color: Theme.text-muted; font-size: 11px; overflow: elide; }
+                                }
+                                if Chat.picker-forward: CheckBox { y: 15px; checked: p.selected; toggled => { Chat.picker-toggle(p.id); } }
                             }
-                            if Chat.picker-forward: CheckBox { y: 15px; checked: p.selected; toggled => { Chat.picker-toggle(p.id); } }
                         }
+                    }
+                    ThinScrollbar {
+                        x: parent.width - self.width;
+                        height: parent.height;
+                        content: pl.content-height;
+                        view: pl.visible-height;
+                        pos <=> pl.content-y;
                     }
                 }
                 HorizontalLayout {

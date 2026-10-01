@@ -297,12 +297,16 @@ impl ChatModel {
     }
 }
 
-/// Размер для ленты (Чт-11): до 320 px по большей стороне, не больше исходного.
+/// Наибольший размер картинки в ленте (крупнее прежних 320 px — как в Telegram).
+pub const FEED_MAX_W: i32 = 420;
+pub const FEED_MAX_H: i32 = 460;
+
+/// Размер для ленты (Чт-11): вписать в 420×460; маленькое — не больше чем вдвое.
 pub fn feed_size(w: i32, h: i32) -> (i32, i32) {
     if w <= 0 || h <= 0 {
-        return (240, 180);
+        return (320, 240);
     }
-    let k = (320.0 / w.max(h) as f32).min(1.0);
+    let k = (FEED_MAX_W as f32 / w as f32).min(FEED_MAX_H as f32 / h as f32).min(2.0);
     (((w as f32) * k).round().max(60.0) as i32, ((h as f32) * k).round().max(60.0) as i32)
 }
 
@@ -336,7 +340,7 @@ impl FeedImage {
 }
 
 /// Ширина альбома и промежуток между ячейками.
-pub const ALBUM_W: i32 = 320;
+pub const ALBUM_W: i32 = 420;
 pub const ALBUM_GAP: i32 = 2;
 
 /// Ячейка альбома.
@@ -356,8 +360,8 @@ pub fn album_layout(n: usize) -> (Vec<Cell>, i32) {
     let mut y = 0;
     let mut rest = n;
     if n % 2 == 1 {
-        cells.push(Cell { x: 0, y: 0, w: ALBUM_W, h: 200 });
-        y = 200 + ALBUM_GAP;
+        cells.push(Cell { x: 0, y: 0, w: ALBUM_W, h: 260 });
+        y = 260 + ALBUM_GAP;
         rest -= 1;
     }
     for i in 0..rest {
@@ -501,16 +505,16 @@ mod tests {
         let h = vec![photo(1, 0), photo(2, 7), photo(3, 7), photo(4, 7), text(5), photo(6, 9), photo(7, 8)];
         assert_eq!(albums(&h), vec![1..4], "одиночные с grouped_id — не альбом");
         let (cells, height) = album_layout(3);
-        assert_eq!(cells[0], Cell { x: 0, y: 0, w: 320, h: 200 });
-        assert_eq!(cells[2].x, 161);
-        assert_eq!(height, 200 + 2 + 159);
+        assert_eq!(cells[0], Cell { x: 0, y: 0, w: 420, h: 260 });
+        assert_eq!(cells[2].x, 211);
+        assert_eq!(height, 260 + 2 + 209);
         let (cells, height) = album_layout(4);
-        assert_eq!((cells.len(), height), (4, 159 * 2 + 2));
+        assert_eq!((cells.len(), height), (4, 209 * 2 + 2));
         let f = feed_images(&h);
-        assert_eq!((f[&1].w, f[&1].h, f[&1].album), (320, 240, (0, 1)));
-        assert_eq!((f[&3].w, f[&3].h, f[&3].album), (159, 159, (1, 3)));
+        assert_eq!((f[&1].w, f[&1].h, f[&1].album), (420, 315, (0, 1)));
+        assert_eq!((f[&3].w, f[&3].h, f[&3].album), (209, 209, (1, 3)));
         assert!(!f.contains_key(&5));
-        assert!(f[&3].photo_key().is_none() && f[&3].strip_key(1, 3) == "strip:1:3:159x159");
+        assert!(f[&3].photo_key().is_none() && f[&3].strip_key(1, 3) == "strip:1:3:209x209");
     }
 
     #[test]
@@ -525,9 +529,10 @@ mod tests {
 
     #[test]
     fn labels_and_sizes() {
-        assert_eq!(feed_size(1280, 960), (320, 240));
-        assert_eq!(feed_size(200, 100), (200, 100), "маленькое не растягивается");
-        assert_eq!(feed_size(100, 4000), (60, 320), "узкое — не уже 60 px");
+        assert_eq!(feed_size(1280, 960), (420, 315));
+        assert_eq!(feed_size(600, 900), (307, 460), "высокое — по высоте");
+        assert_eq!(feed_size(100, 50), (200, 100), "маленькое — не больше чем вдвое");
+        assert_eq!(feed_size(100, 4000), (60, 460), "узкое — не уже 60 px");
         assert_eq!(size_label(1_500_000, true), "1,4 МБ");
         assert_eq!(size_label(10, false), "1 KB");
         assert_eq!(duration_label(65), "1:05");
