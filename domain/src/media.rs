@@ -264,6 +264,29 @@ impl ChatModel {
         if !keys.is_empty() {
             out.push(ChatEffect::Db(DbOp::MediaLookup { keys }));
         }
+        self.refetch_incomplete(out);
+    }
+
+    /// Сообщения окна, сохранённые неполно: вложение без описания (из базы до
+    /// подробных вложений) или совсем пустое, — один раз перечитать с сервера
+    /// (только чтение, getMessages); ответ сохраняется и окно перерисовывается.
+    fn refetch_incomplete(&mut self, out: &mut Vec<ChatEffect>) {
+        let Some(peer_id) = self.open else { return };
+        let Some(peer) = self.peer_ref(peer_id) else { return };
+        let ids: Vec<i32> = self
+            .history
+            .iter()
+            .filter(|m| m.id > 0 && m.service.is_empty() && m.media_info.is_none())
+            .filter(|m| !m.media.is_empty() || m.text.is_empty())
+            .map(|m| m.id)
+            .filter(|id| !self.refetched.contains(&(peer_id, *id)))
+            .take(100)
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.refetched.extend(ids.iter().map(|id| (peer_id, *id)));
+        self.send(Command::LoadMessages { peer, ids }, Pending::Quotes { peer_id }, out);
     }
 
     /// Ключ файла, открытого в окне просмотра.
@@ -515,6 +538,29 @@ mod tests {
         assert_eq!((f[&3].w, f[&3].h, f[&3].album), (209, 209, (1, 3)));
         assert!(!f.contains_key(&5));
         assert!(f[&3].photo_key().is_none() && f[&3].strip_key(1, 3) == "strip:1:3:209x209");
+    }
+
+    #[test]
+    fn incomplete_refetched_once() {
+        let mut m = ChatModel::new(1, "ru", 0);
+        m.open = Some(10);
+        m.extra_peers.insert(10, crate::model::Peer { id: 10, access_hash: 3, ..Default::default() });
+        m.history = vec![
+            Message { id: 1, text: "текст".into(), ..Default::default() },
+            Message { id: 2, media: "photo".into(), ..Default::default() },
+            Message { id: 3, ..Default::default() },
+            Message { id: 4, media: "photo".into(), media_info: Some(Box::default()), ..Default::default() },
+        ];
+        let mut out = Vec::new();
+        m.media_window_changed(&mut out);
+        let asked: Vec<_> = out.iter().filter_map(|e| match e {
+            ChatEffect::Send { cmd: Command::LoadMessages { ids, .. }, .. } => Some(ids.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(asked, vec![vec![2, 3]], "фото без описания и пустое; полное и обычный текст — нет");
+        let mut again = Vec::new();
+        m.media_window_changed(&mut again);
+        assert!(!again.iter().any(|e| matches!(e, ChatEffect::Send { .. })), "один раз за сеанс");
     }
 
     #[test]

@@ -245,6 +245,9 @@ pub struct ChatModel {
     pub transfers: HashMap<String, crate::media::Transfer>,
     pub media_paths: HashMap<String, String>,
     pub(crate) media_failed: HashSet<String>,
+    /// Неполные сообщения (до подробных вложений или пустые), уже перечитанные
+    /// с сервера в этом сеансе: повторно не просить.
+    pub(crate) refetched: HashSet<(i64, i32)>,
     /// Окно просмотра фото (Св-3): сообщение и номер открытия.
     pub viewer: Option<i32>,
     pub viewer_seq: u64,
