@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -78,16 +79,23 @@ func main() {
 			Messages: texts, Attach: att})
 	}
 	if *video != "" {
-		v, err1 := os.ReadFile(*video)
-		a, err2 := os.ReadFile(*voice)
-		if err1 != nil || err2 != nil {
-			fmt.Fprintln(os.Stderr, "файлы для -video/-voice:", err1, err2)
-			os.Exit(1)
+		// Рядом с -video лежат gif.mp4, gif.jpg, round.mp4, round.jpg.
+		dir := filepath.Dir(*video)
+		read := func(name string) []byte {
+			b, err := os.ReadFile(name)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "файл для чата «Видео»:", err)
+				os.Exit(1)
+			}
+			return b
 		}
 		if acc.Files == nil {
 			acc.Files = map[int64][]byte{}
 		}
-		texts, att := fakeserver.VideoChat(v, a, acc.Files)
+		acc.Thumbs = map[int64][]byte{}
+		texts, att := fakeserver.VideoChat(read(filepath.Join(dir, "gif.mp4")), read(filepath.Join(dir, "gif.jpg")),
+			read(filepath.Join(dir, "round.mp4")), read(filepath.Join(dir, "round.jpg")), read(*video), read(*voice),
+			acc.Files, acc.Thumbs)
 		acc.Contacts = append(acc.Contacts, fakeserver.Contact{ID: 105, Name: "Видео", AccessHash: 16, Unread: -1,
 			Messages: texts, Attach: att})
 	}

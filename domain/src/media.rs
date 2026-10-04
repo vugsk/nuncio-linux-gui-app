@@ -113,13 +113,25 @@ pub fn auto_files(m: &Media) -> Vec<&FileRef> {
     let mut v = Vec::new();
     match m.kind {
         MediaKind::Photo => v.extend(m.file.as_ref()),
-        MediaKind::Video | MediaKind::Document | MediaKind::VideoNote | MediaKind::Audio => v.extend(m.thumb.as_ref()),
+        MediaKind::Video | MediaKind::Document | MediaKind::VideoNote | MediaKind::Audio | MediaKind::Gif => {
+            v.extend(m.thumb.as_ref())
+        }
         MediaKind::WebPage => v.extend(m.webpage.as_ref().and_then(|w| w.photo.as_ref())),
         _ => {}
     }
     v.retain(|f| f.size <= AUTO_MAX_SIZE);
+    // GIF и кружки играют в ленте сами (без звука) — сам файл, если небольшой.
+    if matches!(m.kind, MediaKind::Gif | MediaKind::VideoNote) {
+        v.extend(m.file.as_ref().filter(|f| f.size <= AUTOPLAY_MAX_SIZE));
+    }
     v
 }
+
+/// GIF и кружки до этого размера скачиваются сами и играют в ленте.
+pub const AUTOPLAY_MAX_SIZE: i64 = 8 * 1024 * 1024;
+
+/// Сторона кружка (видеосообщения) в ленте, px.
+pub const ROUND_SIZE: i32 = 240;
 
 impl ChatModel {
     /// Ключи файлов, нужных окну истории (для поиска в кэше).
@@ -202,7 +214,7 @@ impl ChatModel {
         }
         let Some(file) = mi.file.clone() else { return };
         let key = file.key();
-        if matches!(mi.kind, MediaKind::Voice | MediaKind::Audio) && !self.transfers.contains_key(&key) {
+        if matches!(mi.kind, MediaKind::Voice | MediaKind::Audio | MediaKind::VideoNote) && !self.transfers.contains_key(&key) {
             // Голосовое и аудио — играть в ленте; не скачано — сначала скачать.
             self.audio_play = Some(msg_id);
             self.audio_seq += 1;
@@ -338,7 +350,8 @@ pub const FEED_MAX_H: i32 = 460;
 /// Открывается в окне просмотра: фото, видео (В8), превью ссылки с фото.
 pub fn viewable(mi: &Media) -> bool {
     match mi.kind {
-        MediaKind::Photo | MediaKind::Video | MediaKind::VideoNote | MediaKind::Gif => true,
+        // Кружок играет в ленте (со звуком по щелчку), не в окне просмотра.
+        MediaKind::Photo | MediaKind::Video | MediaKind::Gif => true,
         MediaKind::WebPage => mi.webpage.as_ref().is_some_and(|w| w.photo.is_some()),
         _ => false,
     }
@@ -364,13 +377,15 @@ pub struct FeedImage {
     pub album: (usize, usize),
     /// Своё неотправленное: файл на диске (показывается до выгрузки).
     pub local: String,
+    /// Кружок (видеосообщение): квадрат с круглой маской.
+    pub round: bool,
 }
 
 impl FeedImage {
     /// Ключ раскодированной картинки скачанного файла (размер — часть ключа).
     pub fn photo_key(&self) -> Option<String> {
         match &self.file {
-            Some(f) => Some(format!("photo:{}:{}x{}", f.key(), self.w, self.h)),
+            Some(f) => Some(format!("photo:{}:{}x{}{}", f.key(), self.w, self.h, if self.round { "r" } else { "" })),
             None if !self.local.is_empty() => Some(format!("local:{}:{}x{}", self.local, self.w, self.h)),
             None => None,
         }
@@ -378,7 +393,7 @@ impl FeedImage {
 
     /// Ключ размытого мини-превью.
     pub fn strip_key(&self, peer_id: i64, msg_id: i32) -> String {
-        format!("strip:{peer_id}:{msg_id}:{}x{}", self.w, self.h)
+        format!("strip:{peer_id}:{msg_id}:{}x{}{}", self.w, self.h, if self.round { "r" } else { "" })
     }
 }
 
@@ -470,8 +485,9 @@ pub fn feed_images(history: &[Message]) -> HashMap<i32, FeedImage> {
         if file.is_none() && stripped.is_empty() && mi.local_path.is_empty() {
             continue;
         }
-        let (w, h) = feed_size(w, h);
-        out.insert(m.id, FeedImage { file, stripped, w, h, album: (0, 1), local: mi.local_path.clone() });
+        let round = mi.kind == MediaKind::VideoNote;
+        let (w, h) = if round { (ROUND_SIZE, ROUND_SIZE) } else { feed_size(w, h) };
+        out.insert(m.id, FeedImage { file, stripped, w, h, album: (0, 1), local: mi.local_path.clone(), round });
     }
     for r in albums(history) {
         let (cells, _) = album_layout(r.len());

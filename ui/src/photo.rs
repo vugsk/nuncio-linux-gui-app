@@ -126,17 +126,46 @@ pub fn rounded(w: usize, h: usize, rgb: &[u8], tw: u32, th: u32, radius: f32) ->
     out
 }
 
+/// Скругление: обычное или круг (кружок — видеосообщение).
+pub fn radius_for(tw: u32, th: u32, round: bool) -> f32 {
+    if round { tw.min(th) as f32 / 2.0 } else { RADIUS }
+}
+
 /// Файл фото → картинка для ленты.
 pub fn load_feed(path: &str, tw: u32, th: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    load_feed_with(path, tw, th, false)
+}
+
+pub fn load_feed_with(path: &str, tw: u32, th: u32, round: bool) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     let data = std::fs::read(path).ok()?;
     let (w, h, rgb) = decode(&data)?;
-    Some(rounded(w, h, &rgb, tw, th, RADIUS))
+    Some(rounded(w, h, &rgb, tw, th, radius_for(tw, th, round)))
 }
 
 /// Мини-превью (JPEG ~40 px) → размытая картинка размера для ленты.
 pub fn stripped(jpeg: &[u8], tw: u32, th: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    stripped_with(jpeg, tw, th, false)
+}
+
+pub fn stripped_with(jpeg: &[u8], tw: u32, th: u32, round: bool) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     let (w, h, rgb) = decode_jpeg(jpeg)?;
-    Some(rounded(w, h, &rgb, tw, th, RADIUS))
+    Some(rounded(w, h, &rgb, tw, th, radius_for(tw, th, round)))
+}
+
+/// Маска скругления (покрытие 0…255 на пиксель) для кадров видео в ленте:
+/// считается один раз на размер, к кадру применяется умножением альфы.
+pub fn mask(w: u32, h: u32, radius: f32) -> Vec<u8> {
+    let (w, h) = (w as usize, h as usize);
+    (0..w * h).map(|i| coverage(i % w, i / w, w, h, radius)).collect()
+}
+
+/// Кадр RGBA → с маской (прозрачные углы или круг).
+pub fn apply_mask(rgba: &mut [u8], mask: &[u8]) {
+    for (px, &m) in rgba.chunks_exact_mut(4).zip(mask) {
+        if m != 255 {
+            px[3] = m;
+        }
+    }
 }
 
 /// Файл фото → для окна просмотра: вписать в `max_w`×`max_h`, не увеличивая.

@@ -204,6 +204,12 @@ fn detach_audio(shared: &Arc<Shared>) {
 impl Player {
     /// Открыть файл и начать воспроизведение. Кадр вписывается в `max_w`×`max_h`.
     pub fn open(path: &Path, max_w: u32, max_h: u32) -> Result<Self, String> {
+        Self::open_with(path, max_w, max_h, false)
+    }
+
+    /// `muted` — без звука вовсе (звук не декодируется, устройство не занимается):
+    /// GIF и кружки, играющие в ленте сами (В8).
+    pub fn open_with(path: &Path, max_w: u32, max_h: u32, muted: bool) -> Result<Self, String> {
         ff::init().map_err(|e| e.to_string())?;
         ff::util::log::set_level(ff::util::log::Level::Error);
         let shared = Arc::new(Shared {
@@ -220,7 +226,7 @@ impl Player {
             seek: Mutex::new(None),
             volume: AtomicU32::new(1.0f32.to_bits()),
         });
-        let audio = attach_audio(&shared);
+        let audio = if muted { None } else { attach_audio(&shared) };
         let (out_rate, out_ch) = audio.unwrap_or((48_000, 2));
         lock(&shared.clock).rate = out_rate;
         shared.channels.store(u32::from(out_ch), Ordering::Relaxed);

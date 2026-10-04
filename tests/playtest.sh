@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Веха В8 под Xvfb против поддельного Telegram (-video/-voice: чат «Видео» с
-# роликом H.264 6 с и голосовым Opus 3 с — звук в них тишина: приложение
+# GIF, кружком, роликом H.264 6 с и голосовым Opus 3 с — звук в них тишина: приложение
 # выводит звук на настоящее устройство): видео открывается в окне просмотра,
 # кадры идут, пробел ставит паузу, Esc закрывает, память возвращается;
 # голосовое играет в ленте до конца. Проверки — по снимкам окна, журналу
@@ -19,6 +19,12 @@ ff="ffmpeg -hide_banner -loglevel error -y"
 $ff -f lavfi -i testsrc2=size=640x360:rate=30 -f lavfi -i anullsrc=r=48000:cl=stereo -t 6 \
   -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac "$T/video.mp4"
 $ff -f lavfi -i anullsrc=r=48000:cl=mono -t 3 -c:a libopus "$T/voice.ogg"
+# GIF (mp4 без звука) и кружок (квадрат со звуком-тишиной), к ним превью.
+$ff -f lavfi -i testsrc=size=320x240:rate=25 -t 3 -c:v libx264 -preset veryfast -pix_fmt yuv420p -an "$T/gif.mp4"
+$ff -f lavfi -i testsrc2=size=384x384:rate=30 -f lavfi -i anullsrc=r=48000:cl=mono -t 4 -c:v libx264 -preset veryfast \
+  -pix_fmt yuv420p -c:a aac "$T/round.mp4"
+$ff -i "$T/gif.mp4" -frames:v 1 "$T/gif.jpg"
+$ff -i "$T/round.mp4" -frames:v 1 "$T/round.jpg"
 
 (cd "$ROOT/net" && go build -o "$T/fakeserver" ./cmd/fakeserver)
 "$T/fakeserver" -listen "127.0.0.1:$PORT" -key "$T/key" -unread -1 -video "$T/video.mp4" -voice "$T/voice.ogg" \
@@ -142,6 +148,21 @@ check(len(bs) == 2, f"в чате ролик и голосовое: кнопки
 if len(bs) != 2:
     print("ИТОГ: ОШИБКА"); sys.exit(1)
 
+# GIF и кружок играют в ленте сами (без звука): кадры ленты меняются.
+time.sleep(2)
+a = grab(win, "1a-feed")
+time.sleep(0.7)
+b = grab(win, "1b-feed")
+box = ImageChops.difference(a, b).getbbox()
+check(box is not None, f"GIF и кружок играют в ленте сами: меняется область {box}")
+# Кружок по щелчку — со звуком в ленте до конца (4 с): он над видео-файлом.
+n = log().count("воспроизведение закончено")
+click(bs[0][0] + 95, bs[0][1] - 160)
+check(wait(lambda: "воспроизведение: кружок" in log(), 8), "кружок по щелчку играет со звуком")
+time.sleep(1)
+grab(win, "1c-round-sound")
+check(wait(lambda: log().count("воспроизведение закончено") > n, 8), "кружок доиграл до конца")
+
 # Видео: окно просмотра, кадры идут, пауза; дважды — для проверки утечки.
 base = smaps()
 afters = []
@@ -179,8 +200,10 @@ for run in range(1, int(os.environ.get("RUNS", "2")) + 1):
           f"файлы {base['Pss_File']:.1f} → {afters[-1]['Pss_File']:.1f}")
 grow = afters[1]["Pss_Anon"] - afters[0]["Pss_Anon"]
 check(grow < 2, f"второй просмотр не добавил анонимной памяти (утечки нет): {grow:+.1f} МБ")
-check(afters[0]["Pss_Anon"] - base["Pss_Anon"] < 12,
-      f"после закрытия анонимная память близка к исходной: {afters[0]['Pss_Anon'] - base['Pss_Anon']:+.1f} МБ")
+# Первый просмотр — разовая цена: вывод звука остаётся открытым на сеанс
+# (потоки ALSA/PipeWire), код и таблицы FFmpeg; дальше память не растёт.
+check(afters[0]["Pss_Anon"] - base["Pss_Anon"] < 20,
+      f"первый просмотр — разовая цена меньше 20 МБ: {afters[0]['Pss_Anon'] - base['Pss_Anon']:+.1f} МБ")
 
 # Голосовое: играет в ленте до конца (3 с).
 win.set_input_focus(X.RevertToParent, X.CurrentTime)

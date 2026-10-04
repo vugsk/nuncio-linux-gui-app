@@ -15,8 +15,8 @@ use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPix
 
 use crate::richtext::{self, Fonts, Span, Style};
 use crate::scroller::Scroller;
-use crate::{avatar, AlbumCell, App, Chat, DialogItem, FolderItem, MemberItem, MessageItem, PickerItem, PollRow, PrepItem,
-    RichLine, RichSeg, SearchRow, ViewerWindow};
+use crate::{avatar, AlbumCell, App, Chat, DialogItem, FolderItem, LiveFrame, MemberItem, MessageItem, PickerItem, PollRow,
+    PrepItem, RichLine, RichSeg, SearchRow, ViewerWindow};
 
 /// Подписи на языке интерфейса (в Rust: собираются из данных, не из разметки).
 pub fn media_label(kind: &str, ru: bool) -> &'static str {
@@ -232,10 +232,45 @@ fn schedule(app: &App) {
 struct Playback {
     player: player::Player,
     msg: i32,
+    /// В окне просмотра.
     video: bool,
+    /// Кружок со звуком в ленте: кадры — в слой живых кадров.
+    row: Option<Masked>,
     ended: bool,
     tick: u32,
 }
+
+/// GIF или кружок, играющий в ленте сам, без звука (В8).
+struct Preview {
+    mid: i32,
+    player: player::Player,
+    masked: Masked,
+}
+
+/// Маска кадров ленты (скругление или круг): по размеру кадра, один раз.
+struct Masked {
+    round: bool,
+    size: (u32, u32),
+    mask: Vec<u8>,
+}
+
+impl Masked {
+    fn new(round: bool) -> Self {
+        Self { round, size: (0, 0), mask: Vec::new() }
+    }
+
+    fn image(&mut self, f: &mut player::Frame) -> Image {
+        if self.size != (f.width, f.height) {
+            self.size = (f.width, f.height);
+            self.mask = crate::photo::mask(f.width, f.height, crate::photo::radius_for(f.width, f.height, self.round));
+        }
+        crate::photo::apply_mask(&mut f.rgba, &self.mask);
+        Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&f.rgba, f.width, f.height))
+    }
+}
+
+/// Играют в ленте сами не больше стольких видимых GIF и кружков.
+const PREVIEWS_MAX: usize = 3;
 
 fn mmss(secs: f64) -> String {
     let s = secs.max(0.0) as i64;
@@ -369,6 +404,8 @@ pub struct ChatRenderer {
     viewer_shown: bool,
     /// Воспроизведение (В8): видео в окне просмотра или голосовое в ленте.
     playback: Option<Playback>,
+    previews: Vec<Preview>,
+    live: Option<Rc<VecModel<LiveFrame>>>,
     play_timer: slint::Timer,
     app: slint::Weak<App>,
     /// Последняя просьба домена играть голосовое и ещё не начатое (файл качается).
@@ -687,6 +724,8 @@ impl ChatRenderer {
             chat.set_open_id(peer.id.to_string().into());
         }
         // Те же модели (повторная установка без изменений ничего не стоит).
+        let live = self.live.get_or_insert_with(|| Rc::new(VecModel::default())).clone();
+        chat.set_live(ModelRc::from(live));
         chat.set_above(ModelRc::from(self.above.model()));
         chat.set_below(ModelRc::from(self.below.model()));
         if self.open != m.open {
@@ -729,7 +768,14 @@ impl ChatRenderer {
                 .and_then(|mi| mi.file.as_ref()).and_then(|f| m.media_paths.get(&f.key())).cloned();
             if let Some(path) = path {
                 self.audio_want = None;
-                self.start_playback(&path, id, false, (0, 0));
+                let round = m.history.iter().find(|x| x.id == id).and_then(|x| x.media_info.as_deref())
+                    .is_some_and(|mi| mi.kind == domain::model::MediaKind::VideoNote);
+                if round {
+                    let s = domain::media::ROUND_SIZE as u32;
+                    self.start_row_playback(&path, id, s);
+                } else {
+                    self.start_playback(&path, id, false, (0, 0));
+                }
             }
         }
         self.items = items;
@@ -872,8 +918,14 @@ impl ChatRenderer {
                 K::Photo if has_feed => it.mkind = 1,
                 K::Video | K::Gif | K::VideoNote if has_feed => {
                     it.mkind = 1;
-                    it.mplay = mi.kind != K::Gif;
+                    it.mplay = mi.kind == K::Video;
+                    it.mround = mi.kind == K::VideoNote;
+                    it.mgif = mi.kind == K::Gif;
                     it.mdur = if mi.duration > 0 { duration_label(mi.duration).into() } else { "".into() };
+                    // Скачанный GIF или кружок — играет в ленте сам (без звука).
+                    if it.mround || it.mgif {
+                        it.mpath = m.media_paths.get(&key).cloned().unwrap_or_default().into();
+                    }
                 }
                 K::Document | K::Audio | K::Voice | K::Video | K::VideoNote => {
                     it.mkind = 2;
@@ -1149,8 +1201,18 @@ impl ChatRenderer {
     }
 
     fn stop_playback(&mut self) {
-        self.play_timer.stop();
-        if self.playback.take().is_some() {
+        if self.previews.is_empty() {
+            self.play_timer.stop();
+        }
+        if let Some(pb) = self.playback.take() {
+            if pb.row.is_some() {
+                // Кружок со звуком: убрать его кадр и время (дальше — снова превью).
+                self.drop_live(pb.msg);
+                if let Some(app) = self.app.upgrade() {
+                    app.global::<Chat>().set_sound_mid("".into());
+                }
+            }
+            drop(pb);
             player::trim_memory();
             // Окно просмотра и его кадры Slint освобождает позже, на следующих
             // проходах цикла: ещё раз через секунду (П-6: память после закрытия).
@@ -1169,18 +1231,100 @@ impl ChatRenderer {
                 if let Some(w) = self.viewer.as_ref().filter(|_| video) {
                     p.set_volume(w.get_volume());
                 }
-                self.playback = Some(Playback { player: p, msg, video, ended: false, tick: 0 });
-                let weak = self.app.clone();
-                self.play_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
-                    let Some(app) = weak.upgrade() else { return };
-                    RENDERER.with(|r| {
-                        if let Ok(mut r) = r.try_borrow_mut() {
-                            r.tick_playback(&app);
-                        }
-                    });
-                });
+                self.playback = Some(Playback { player: p, msg, video, row: None, ended: false, tick: 0 });
+                self.ensure_timer();
             }
             Err(e) => log::warn!("воспроизведение не началось: {e}"),
+        }
+    }
+
+    /// Кружок со звуком прямо в ленте (по щелчку, как в Telegram).
+    fn start_row_playback(&mut self, path: &str, msg: i32, side: u32) {
+        self.stop_playback();
+        self.stop_preview(msg);
+        match player::Player::open(std::path::Path::new(path), side, side) {
+            Ok(p) => {
+                log::info!("воспроизведение: кружок, {:.1} с", p.info().duration);
+                self.playback = Some(Playback { player: p, msg, video: false, row: Some(Masked::new(true)), ended: false,
+                    tick: 0 });
+                self.ensure_timer();
+            }
+            Err(e) => log::warn!("воспроизведение не началось: {e}"),
+        }
+    }
+
+    fn ensure_timer(&self) {
+        if self.play_timer.running() {
+            return;
+        }
+        let weak = self.app.clone();
+        self.play_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
+            let Some(app) = weak.upgrade() else { return };
+            RENDERER.with(|r| {
+                if let Ok(mut r) = r.try_borrow_mut() {
+                    r.tick_playback(&app);
+                }
+            });
+        });
+    }
+
+    /// Кадр в слой живых кадров ленты (строки ленты не трогаются).
+    fn set_live(&self, mid: i32, img: Image) {
+        let Some(live) = &self.live else { return };
+        let key: slint::SharedString = mid.to_string().into();
+        match (0..live.row_count()).find(|&i| live.row_data(i).is_some_and(|l| l.mid == key)) {
+            Some(i) => live.set_row_data(i, LiveFrame { mid: key, img }),
+            None => live.push(LiveFrame { mid: key, img }),
+        }
+    }
+
+    fn drop_live(&self, mid: i32) {
+        let Some(live) = &self.live else { return };
+        let key: slint::SharedString = mid.to_string().into();
+        if let Some(i) = (0..live.row_count()).find(|&i| live.row_data(i).is_some_and(|l| l.mid == key)) {
+            live.remove(i);
+        }
+    }
+
+    fn stop_preview(&mut self, mid: i32) {
+        if let Some(i) = self.previews.iter().position(|p| p.mid == mid) {
+            self.previews.remove(i);
+            self.drop_live(mid);
+        }
+    }
+
+    /// Видимые GIF и кружки играют сами (без звука, по кругу); ушедшие с экрана — стоп.
+    fn sync_previews(&mut self, rows: std::ops::RangeInclusive<usize>) {
+        let sound = self.playback.as_ref().map(|p| p.msg);
+        let want: Vec<(i32, String, u32, u32, bool)> = self
+            .items
+            .get(rows)
+            .unwrap_or_default()
+            .iter()
+            .filter(|i| (i.mgif || i.mround) && !i.mpath.is_empty())
+            .filter_map(|i| Some((i.mid.parse::<i32>().ok()?, i.mpath.to_string(), i.mw as u32, i.mh as u32, i.mround)))
+            .filter(|w| Some(w.0) != sound)
+            .take(PREVIEWS_MAX)
+            .collect();
+        let gone: Vec<i32> = self.previews.iter().map(|p| p.mid).filter(|m| !want.iter().any(|w| w.0 == *m)).collect();
+        for mid in gone {
+            self.stop_preview(mid);
+        }
+        let mut started = false;
+        for (mid, path, w, h, round) in want {
+            if self.previews.iter().any(|p| p.mid == mid) {
+                continue;
+            }
+            match player::Player::open_with(std::path::Path::new(&path), w.max(2), h.max(2), true) {
+                Ok(player) => {
+                    self.previews.push(Preview { mid, player, masked: Masked::new(round) });
+                    started = true;
+                }
+                Err(e) => log::warn!("превью не играет: {e}"),
+            }
+        }
+        if started {
+            self.ensure_timer();
         }
     }
 
@@ -1197,12 +1341,52 @@ impl ChatRenderer {
 
     /// Шаг таймера (60 Гц): кадр видео в окно просмотра, ход голосового в ленту.
     fn tick_playback(&mut self, app: &App) {
+        // GIF и кружки в ленте: кадр по часам, по кругу.
+        let mut frames = Vec::new();
+        for p in &mut self.previews {
+            if let Some(mut f) = p.player.take_frame() {
+                frames.push((p.mid, p.masked.image(&mut f)));
+                p.player.recycle(f);
+            }
+            if p.player.ended() {
+                p.player.seek(0.0);
+            }
+        }
+        for (mid, img) in frames {
+            self.set_live(mid, img);
+        }
         let Some(pb) = self.playback.as_mut() else {
-            self.play_timer.stop();
+            if self.previews.is_empty() {
+                self.play_timer.stop();
+            }
             return;
         };
         pb.tick += 1;
         let (video, tick) = (pb.video, pb.tick);
+        if let Some(masked) = pb.row.as_mut() {
+            // Кружок со звуком в ленте.
+            let frame = pb.player.take_frame().map(|mut f| {
+                let img = masked.image(&mut f);
+                pb.player.recycle(f);
+                img
+            });
+            let (msg, pos, ended) = (pb.msg, pb.player.position(), pb.player.ended());
+            let chat = app.global::<Chat>();
+            if tick % 6 == 0 || tick == 1 {
+                chat.set_sound_mid(msg.to_string().into());
+                chat.set_sound_time(mmss(pos).into());
+            }
+            if let Some(img) = frame {
+                self.set_live(msg, img);
+            }
+            if ended {
+                log::info!("воспроизведение закончено");
+                self.stop_playback();
+                self.drop_live(msg);
+                chat.set_sound_mid("".into());
+            }
+            return;
+        }
         if video {
             let frame = pb.player.take_frame();
             let info = pb.player.info();
@@ -1300,6 +1484,9 @@ impl ChatRenderer {
         if v.need_newer && !self.items.is_empty() && self.asked_newer != w {
             self.asked_newer = w;
             send(ChatIntent::NeedNewer);
+        }
+        if let Some((t, b)) = v.top_row.zip(v.bottom_row) {
+            self.sync_previews(t..=b);
         }
         let vis = v.top_row.zip(v.bottom_row).and_then(|(t, b)| Some((self.items.get(t)?.key, self.items.get(b)?.key)));
         if vis.is_some() && vis != self.visible_sent {

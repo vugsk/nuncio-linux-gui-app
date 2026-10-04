@@ -33,6 +33,7 @@ type Account struct {
 	Contacts   []Contact // собеседники-пользователи с историей (диалоги)
 	Folders    []FakeFolder
 	Files      map[int64][]byte // содержимое файлов вложений по id (upload.getFile)
+	Thumbs     map[int64][]byte // превью документов по id документа (thumb_size)
 	PartDelay  time.Duration    // задержка на часть файла (виден ход скачивания)
 
 	mu            sync.Mutex

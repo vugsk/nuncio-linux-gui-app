@@ -81,6 +81,12 @@ export struct RichLine {
     segs: [RichSeg],
 }
 
+// Живой кадр GIF или кружка, играющего в ленте (В8): поверх превью.
+export struct LiveFrame {
+    mid: string,
+    img: image,
+}
+
 // Файл в панели подготовки вложений (Св-4).
 export struct PrepItem {
     name: string,
@@ -153,6 +159,9 @@ export struct MessageItem {
     mw: length,
     mh: length,
     mplay: bool,          // видео: кнопка «играть»
+    mround: bool,         // кружок (видеосообщение): круг без пузыря
+    mgif: bool,           // GIF: плашка, играет в ленте сам
+    mpath: string,        // скачанный файл GIF или кружка — для игры в ленте
     mdur: string,         // длительность видео
     file-name: string,
     file-info: string,    // размер или «1,2 из 5,0 МБ»
@@ -356,6 +365,10 @@ export global Chat {
     // Вложения (В7): нажатие (просмотр, скачать, отмена, открыть), голос в опросе.
     callback media-click(string);
     callback vote(string, int);
+    // Кадры GIF и кружков, играющих в ленте; кружок со звуком — его время.
+    in property <[LiveFrame]> live;
+    in property <string> sound-mid;
+    in property <string> sound-time;
     // Отправка вложений (Св-4): панель подготовки над полем ввода, подпись — само поле.
     in property <bool> prepare-open;
     in property <string> prepare-title;
@@ -1049,10 +1062,60 @@ component MediaImage inherits Rectangle {
     in property <string> id;
     in property <int> state;
     in property <float> progress;
-    border-radius: 10px;
+    in property <bool> round;
+    in property <bool> gif;
+    border-radius: root.round ? self.width / 2 : 10px;
     background: root.has-img ? transparent : #ffffff10;
     clip: true;
     if root.has-img: Image { source: root.img; width: parent.width; height: parent.height; image-fit: fill; }
+    // Кадр, играющий в ленте, — поверх превью (маска уже наложена в Rust).
+    for lf in Chat.live: Image {
+        visible: lf.mid == root.id;
+        source: lf.img;
+        width: parent.width;
+        height: parent.height;
+        image-fit: fill;
+    }
+    if root.gif: Rectangle {
+        x: 6px;
+        y: 6px;
+        width: gif-text.preferred-width + 12px;
+        height: 18px;
+        border-radius: 9px;
+        background: #00000090;
+        gif-text := Text { text: "GIF"; color: white; font-size: 10px; font-weight: 600; }
+    }
+    // Кружок: «без звука» сверху, пока играет сам; длительность или ход внизу.
+    if root.round && Chat.sound-mid != root.id: Rectangle {
+        y: 10px;
+        width: 26px;
+        height: 26px;
+        border-radius: 13px;
+        background: #00000090;
+        Path {
+            width: 14px;
+            height: 12px;
+            fill: white;
+            stroke: white;
+            stroke-width: 1.2px;
+            viewbox-width: 14;
+            viewbox-height: 12;
+            commands: "M 1 4 L 4 4 L 7 1 L 7 11 L 4 8 L 1 8 Z M 9 4 L 13 8 M 13 4 L 9 8";
+        }
+    }
+    if root.round: Rectangle {
+        x: 18px;
+        y: parent.height - 30px;
+        width: round-dur.preferred-width + 14px;
+        height: 20px;
+        border-radius: 10px;
+        background: #00000090;
+        round-dur := Text {
+            text: Chat.sound-mid == root.id ? Chat.sound-time : root.dur;
+            color: white;
+            font-size: 11px;
+        }
+    }
     if root.play: Rectangle {
         width: 44px;
         height: 44px;
@@ -1068,7 +1131,7 @@ component MediaImage inherits Rectangle {
             commands: "M 0 0 L 16 9 L 0 18 Z";
         }
     }
-    if root.dur != "": Rectangle {
+    if root.dur != "" && !root.round && !root.gif: Rectangle {
         x: 6px;
         y: 6px;
         width: dur-text.preferred-width + 10px;
@@ -1103,6 +1166,8 @@ component MediaBlock inherits VerticalLayout {
         id: root.item.mid;
         state: root.item.file-state;
         progress: root.item.file-progress;
+        round: root.item.mround;
+        gif: root.item.mgif;
     }
     if root.item.mkind == 5: Rectangle {
         width: root.item.mw;
@@ -1243,15 +1308,17 @@ component Bubble inherits VerticalLayout {
             // Фото, видео, альбом — пузырь шириной с вложение, подпись под ним
             // переносится по этой ширине (Чт-11); превью ссылки — с карточку.
             property <bool> visual: root.item.mkind == 1 || root.item.mkind == 5;
+            // Кружок и GIF без подписи — без пузыря, как в Telegram.
+            property <bool> bare: (root.item.mround || root.item.mgif) && root.item.text == "";
             property <length> full: min(480px, root.width * 0.75);
             property <length> fit: self.visual ? root.item.mw + 8px
                 : root.item.mkind == 3 && root.item.mhas-img ? min(self.full, root.item.mw + 39px) : 0px;
             property <length> inset: self.visual ? 6px : 0px;
             max-width: self.fit > 0 ? self.fit : self.full;
             min-width: self.fit;
-            background: self.big ? transparent : root.item.send-state == 3 ? #3a2530 : root.item.out ? Theme.accent : Theme.row-bg;
+            background: self.big || self.bare ? transparent : root.item.send-state == 3 ? #3a2530 : root.item.out ? Theme.accent : Theme.row-bg;
             border-radius: 10px;
-            border-width: self.big ? 0px : 1px;
+            border-width: self.big || self.bare ? 0px : 1px;
             border-color: root.item.send-state == 3 ? Theme.error : root.item.out ? Theme.accent-border : Theme.card-border;
             VerticalLayout {
                 padding: bub.visual ? 4px : 8px;

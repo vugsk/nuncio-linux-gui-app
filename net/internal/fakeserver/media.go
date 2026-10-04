@@ -97,6 +97,11 @@ func (a *Account) fileBytes(loc tl.InputFileLocationClass, off int64, limit int3
 		id = l.Id
 	case *tl.InputDocumentFileLocation:
 		id = l.Id
+		if l.ThumbSize != "" {
+			if t, ok := a.Thumbs[id]; ok {
+				return slice(t, off, limit), true
+			}
+		}
 	default:
 		return nil, false
 	}
@@ -104,11 +109,14 @@ func (a *Account) fileBytes(loc tl.InputFileLocationClass, off int64, limit int3
 	if !ok {
 		return nil, false
 	}
+	return slice(data, off, limit), true
+}
+
+func slice(data []byte, off int64, limit int32) []byte {
 	if off >= int64(len(data)) {
-		return []byte{}, true
+		return []byte{}
 	}
-	end := min(off+int64(limit), int64(len(data)))
-	return data[off:end], true
+	return data[off:min(off+int64(limit), int64(len(data)))]
 }
 
 // vote — голос в опросе сообщения: отметить выбранное, прибавить голоса.
@@ -289,15 +297,29 @@ func PhotoChat(n int, files map[int64][]byte) ([]string, []Attach) {
 	return texts, att
 }
 
-// VideoChat — чат с видео и голосовым из готовых файлов (проверка плеера, В8).
-func VideoChat(video, voice []byte, files map[int64][]byte) ([]string, []Attach) {
-	files[9101], files[9102] = video, voice
-	return []string{"ролик", "голосовое"}, []Attach{
-		{Index: 0, Media: &tl.MessageMediaDocument{Video: true, Document: &tl.Document{Id: 9101, AccessHash: 3,
+// VideoChat — чат с GIF, кружком, видео и голосовым из готовых файлов
+// (проверка плеера, В8). У GIF и кружка — превью (thumb_size "m").
+func VideoChat(gif, gifThumb, round, roundThumb, video, voice []byte, files, thumbs map[int64][]byte) ([]string, []Attach) {
+	files[9101], files[9102], files[9103], files[9104] = video, voice, gif, round
+	thumbs[9103], thumbs[9104] = gifThumb, roundThumb
+	thumb := func(b []byte, w, h int32) []tl.PhotoSizeClass {
+		return []tl.PhotoSizeClass{&tl.PhotoSize{Type: "m", W: w, H: h, Size: int32(len(b))}}
+	}
+	return []string{"", "", "ролик", "голосовое"}, []Attach{
+		{Index: 0, Media: &tl.MessageMediaDocument{Document: &tl.Document{Id: 9103, AccessHash: 5,
+			FileReference: []byte{3}, Date: 1, MimeType: "video/mp4", Size: int64(len(gif)), DcId: 2,
+			Thumbs: thumb(gifThumb, 320, 240),
+			Attributes: []tl.DocumentAttributeClass{&tl.DocumentAttributeAnimated{},
+				&tl.DocumentAttributeVideo{Duration: 3, W: 320, H: 240}}}}},
+		{Index: 1, Media: &tl.MessageMediaDocument{Round: true, Document: &tl.Document{Id: 9104, AccessHash: 6,
+			FileReference: []byte{4}, Date: 1, MimeType: "video/mp4", Size: int64(len(round)), DcId: 2,
+			Thumbs:     thumb(roundThumb, 384, 384),
+			Attributes: []tl.DocumentAttributeClass{&tl.DocumentAttributeVideo{RoundMessage: true, Duration: 4, W: 384, H: 384}}}}},
+		{Index: 2, Media: &tl.MessageMediaDocument{Video: true, Document: &tl.Document{Id: 9101, AccessHash: 3,
 			FileReference: []byte{1}, Date: 1, MimeType: "video/mp4", Size: int64(len(video)), DcId: 2,
 			Attributes: []tl.DocumentAttributeClass{&tl.DocumentAttributeVideo{Duration: 6, W: 640, H: 360},
 				&tl.DocumentAttributeFilename{FileName: "ролик.mp4"}}}}},
-		{Index: 1, Media: &tl.MessageMediaDocument{Voice: true, Document: &tl.Document{Id: 9102, AccessHash: 4,
+		{Index: 3, Media: &tl.MessageMediaDocument{Voice: true, Document: &tl.Document{Id: 9102, AccessHash: 4,
 			FileReference: []byte{2}, Date: 1, MimeType: "audio/ogg", Size: int64(len(voice)), DcId: 2,
 			Attributes: []tl.DocumentAttributeClass{&tl.DocumentAttributeAudio{Voice: true, Duration: 3}}}}},
 	}

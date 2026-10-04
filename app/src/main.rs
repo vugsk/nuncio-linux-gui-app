@@ -473,7 +473,8 @@ impl Domain {
                     keep.insert(k.clone());
                     if !self.avatars.contains_key(&k) && !self.bad_avatars.contains(&k) {
                         let path = path.clone();
-                        want.push((k, Box::new(move || ui::photo::load_feed(&path, tw, th))));
+                        let round = f.round;
+                        want.push((k, Box::new(move || ui::photo::load_feed_with(&path, tw, th, round))));
                     }
                 }
                 _ if !f.stripped.is_empty() => {
@@ -481,7 +482,8 @@ impl Domain {
                     keep.insert(k.clone());
                     if !self.avatars.contains_key(&k) && !self.bad_avatars.contains(&k) {
                         let stripped = f.stripped;
-                        want.push((k, Box::new(move || ui::photo::stripped(&stripped, tw, th))));
+                        let round = f.round;
+                        want.push((k, Box::new(move || ui::photo::stripped_with(&stripped, tw, th, round))));
                     }
                 }
                 _ => {}
