@@ -11,6 +11,7 @@ export PATH := env_var('HOME') / "go/bin:" + env_var('PATH')
 # Полная сборка: шаги 1–5 (без deps — она тяжёлая и отдельная).
 build: tl core proto net emoji
     cargo build
+    tools/verify_skia.sh
 
 # Все тесты по слоям (ядро — ещё и под ASan/UBSan).
 test: core-asan
@@ -77,6 +78,7 @@ nettest *args: tl core
 # kill -9 посреди записи (Р-8) и очередь отправки без сети. Не входят в test: долгие.
 e2e:
     cargo build --release
+    tools/verify_skia.sh
     tests/killtest.sh 5 300 40
     tests/offlinetest.sh 10 15
     tests/scrolltest.sh 3000
@@ -96,6 +98,7 @@ lint:
     cargo clippy --all-targets -- -D warnings
     cargo deny check
     tools/go_licenses.sh
+    tools/verify_skia.sh
     cd net && test -z "$(gofmt -l .)" && go vet ./... && staticcheck ./...
     cd tools/tlgen && test -z "$(gofmt -l .)" && go vet ./... && staticcheck ./...
     cd core && clang-tidy -p build src/*.cpp tests/*.cpp

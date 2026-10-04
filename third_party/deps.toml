@@ -70,3 +70,13 @@ sha256 = "15671215ab769fdc7162a045d56fd7d7e477c51b04e6b3c761d914d8fdd6cc44"
 license_url = "https://raw.githubusercontent.com/googlefonts/noto-emoji/v2026-09-24-unicode18_0/2D/fonts/LICENSE"
 license_sha256 = "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
 artifacts = ["NotoColorEmoji.ttf", "NotoColorEmoji.LICENSE"]
+
+[skia]
+# Нс-8, «Графика: GPU» — рендерер Slint Skia (OpenGL). Готовые бинарники
+# скачивает сам skia-bindings при первой сборке (rust-skia/skia-binaries на
+# GitHub) без проверки; tools/verify_skia.sh сверяет скачанный архив с этой
+# суммой (входит в just build, lint, e2e). Сумма записана с первой загрузки
+# 2026-10-04 (доверие при первом использовании: подписи у rust-skia нет).
+# При обновлении skia-bindings ключ архива меняется — добавить новую строку.
+[skia.archives]
+"skia-binaries-b7f043e0b1e2a850e702-x86_64-unknown-linux-gnu-ganesh-gl-jpegd-jpege-pdf-vulkan.tar.gz" = "9ebe4c448cc9f789bad241cbd11739cdf759e27db5719c23a7635e096d5807b3"
