@@ -94,6 +94,7 @@ e2e:
 lint:
     cargo clippy --all-targets -- -D warnings
     cargo deny check
+    tools/go_licenses.sh
     cd net && test -z "$(gofmt -l .)" && go vet ./... && staticcheck ./...
     cd tools/tlgen && test -z "$(gofmt -l .)" && go vet ./... && staticcheck ./...
     cd core && clang-tidy -p build src/*.cpp tests/*.cpp

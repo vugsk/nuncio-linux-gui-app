@@ -34,9 +34,22 @@
 - Картинки эмодзи и флагов извлекаются при сборке (`ui/build.rs`); текст
   лицензии скачивается рядом (`target/native/NotoColorEmoji.LICENSE`).
 
+## Skia — BSD-3-Clause, статически (с 2026-10-04, «Графика: GPU»)
+
+- Рендерер Slint `renderer-skia-opengl` (Нс-8). Библиотеку собирает не
+  проект: `skia-bindings` при первой сборке скачивает готовые бинарники
+  Skia с GitHub (`rust-skia/skia-binaries`) и проверяет их только по
+  адресу и версии — подписи нет. Вопрос к ревью безопасности В10.
+- Вместе с Skia в бинарник входят её сторонние библиотеки (FreeType,
+  HarfBuzz, ICU и др.); их лицензии — в репозитории `rust-skia`. Полный
+  перечень для пакета — к выпуску.
+- Вместе с Skia из умолчаний Slint подтягивается `wgpu` (MIT/Apache-2.0,
+  проверяется `cargo deny`).
+
 ## Крейты Rust и модули Go
 
 Лицензии крейтов проверяет `cargo deny check` (`deny.toml`): разрешены
 MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0, CC0, Unlicense, BSL-1.0,
 WTFPL и GPL-3.0-only (Slint). Модули Go: `godbus/dbus` (BSD-2-Clause),
-`google.golang.org/protobuf` (BSD-3-Clause).
+`google.golang.org/protobuf` (BSD-3-Clause); проверяет `tools/go_licenses.sh`
+(входит в `just lint`).
