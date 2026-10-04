@@ -87,6 +87,7 @@ def build_openssl(dep: dict) -> None:
         shutil.rmtree(headers)
     shutil.copytree(src / "include" / "openssl", headers)
     print("  -> target/native/include/openssl/")
+    shutil.copy2(src / "LICENSE.txt", NATIVE / "OpenSSL.LICENSE.txt")
 
 
 def verify_signature(archive: Path, dep: dict) -> None:
@@ -127,6 +128,8 @@ def build_ffmpeg(dep: dict) -> None:
     run(["make", "install-libs", "install-headers"], cwd=src)
     for stale in dep["artifacts"]:
         (NATIVE / Path(stale).name).unlink(missing_ok=True)
+    # Текст лицензии рядом с библиотеками — для выпуска (third_party/NOTICES.md).
+    shutil.copy2(src / "COPYING.LGPLv2.1", prefix / "COPYING.LGPLv2.1")
     print("  -> target/native/ffmpeg/{lib,include}")
 
 
