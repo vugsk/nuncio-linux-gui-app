@@ -17,7 +17,7 @@ for size in 1100x800 1900x1000; do
     cp "$SRC/nuncio.db" "$SRC/session.bin" "$T/home/data/"
     cp "$HOME/.config/nuncio/api.env" "$T/home/config/"
     env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" SLINT_BACKEND=winit-software NUNCIO_HOME="$T/home" \
-      NUNCIO_WINDOW_SIZE="$size" NUNCIO_BENCH_OPEN="$OPEN" NUNCIO_BENCH_FRAMES=60 \
+      NUNCIO_WINDOW_SIZE="$size" NUNCIO_BENCH_OPEN="$OPEN" NUNCIO_BENCH_FRAMES=60 NUNCIO_NOTIFY_BUS=off \
       "$ROOT/target/release/nuncio" > "$T/app.log" 2>&1 &
     APP=$!
     # Процесс завершается при любом выходе из скрипта (иначе останется работать на копии данных).

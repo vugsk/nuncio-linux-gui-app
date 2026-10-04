@@ -303,7 +303,34 @@ fn proxy_from_ui(app: &App) -> ProxySettings {
 }
 
 /// Привязывает колбэки Slint к отправке действий.
+/// Фокус окна → модель чата: уведомления и для открытого чата, когда окно
+/// не в фокусе (В9). Фильтр событий winit у окна один — здесь же будет
+/// закрытие в трей.
+fn watch_window(app: &App, send: impl Fn(Action) + 'static) {
+    use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
+    app.window().on_winit_window_event(move |_, e| {
+        if let WindowEvent::Focused(f) = e {
+            send(Action::Chat(ChatIntent::WindowActive(*f)));
+        }
+        EventResult::Propagate
+    });
+}
+
+/// Показать окно поверх остальных (щелчок по уведомлению). На Wayland
+/// окружение может вместо этого подсветить окно — решает оно.
+pub fn raise_window(app: &App) {
+    use slint::winit_030::WinitWindowAccessor;
+    if let Err(e) = app.show() {
+        log::warn!("окно не показано: {e}");
+    }
+    app.window().with_winit_window(|w| {
+        w.set_minimized(false);
+        w.focus_window();
+    });
+}
+
 pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
+    watch_window(app, send.clone());
     let login = app.global::<Login>();
     let s = send.clone();
     let i = move |intent: Intent| s(Action::Login(intent));

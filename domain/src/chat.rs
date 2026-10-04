@@ -90,6 +90,10 @@ pub enum ChatEffect {
     SaveProxy(crate::model::ProxySettings),
     /// Измерить кэш и базу для раздела «Данные и кэш».
     MeasureStorage,
+    /// Показать уведомление о сообщении (В9, D-Bus): одно на чат.
+    Notify { peer_id: i64, title: String, body: String, sound: bool },
+    /// Показать окно (щелчок по уведомлению или значку в трее).
+    RaiseWindow,
 }
 
 /// Режим поля ввода: ответ или правка (одна панель над полем, Дз-2).
@@ -205,6 +209,11 @@ pub enum ChatIntent {
     PasteImage,
     /// Окно настроек (В9).
     Settings(crate::settings::SettingsIntent),
+    /// Щелчок по уведомлению: открыть чат и показать окно.
+    NotificationClicked(i64),
+    /// Окно в фокусе или нет (свёрнуто, за другим, в трее): для открытого
+    /// чата в неактивном окне уведомление тоже есть.
+    WindowActive(bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,6 +288,8 @@ pub struct ChatModel {
     pub settings: Option<crate::settings::SettingsView>,
     pub app_settings: crate::settings::AppSettings,
     pub proxy_settings: crate::model::ProxySettings,
+    /// Окно в фокусе: для открытого чата уведомлений нет.
+    pub window_active: bool,
     pub open: Option<i64>,
     /// Окно истории открытого чата, по возрастанию id (очередь отправки в конце).
     pub history: Vec<Message>,
@@ -345,6 +356,7 @@ impl ChatModel {
             lang: lang.into(),
             now,
             next_id: 1 << 32, // у модели входа id с 1: не пересекаются
+            window_active: true,
             ..Default::default()
         }
     }
@@ -792,6 +804,11 @@ impl ChatModel {
             ChatIntent::PrepareRemove(i) => self.prepare_remove(i),
             ChatIntent::PrepareCancel => self.prepare = None,
             ChatIntent::Settings(si) => self.settings_intent(si, &mut out),
+            ChatIntent::WindowActive(v) => self.window_active = v,
+            ChatIntent::NotificationClicked(peer_id) => {
+                out = self.intent(ChatIntent::OpenChat(peer_id));
+                out.push(ChatEffect::RaiseWindow);
+            }
             ChatIntent::PasteImage => {
                 if self.open.is_some() {
                     out.push(ChatEffect::PasteImage);
@@ -951,6 +968,7 @@ impl ChatModel {
             Event::Updates(b) => {
                 out.push(ChatEffect::Db(DbOp::ApplyBatch(b.clone())));
                 out.push(ChatEffect::Db(DbOp::ReloadRows));
+                self.notifications(b, &mut out);
                 // Входящие открытого чата становятся прочитанными, когда их видно
                 // (интерфейс сообщает `Seen`), а не сразу. Закреплённые — заново:
                 // закрепление, открепление и удаление приходят обновлениями.
@@ -977,6 +995,7 @@ impl ChatModel {
             }
             Event::Result(r) => self.result(r, &mut out),
             Event::Transfer { cmd_id, done, total } => self.transfer_progress(*cmd_id, *done, *total),
+            Event::NotificationClicked(peer_id) => out = self.intent(ChatIntent::NotificationClicked(*peer_id)),
             _ => {}
         }
         out

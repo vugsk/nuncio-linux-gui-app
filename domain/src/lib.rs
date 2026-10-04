@@ -12,6 +12,7 @@ pub mod history;
 pub mod login;
 pub mod media;
 pub mod model;
+pub mod notify;
 pub mod outbox;
 pub mod phone;
 pub mod settings;

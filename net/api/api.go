@@ -27,6 +27,7 @@ import (
 	"nuncio/net/dc"
 	pb "nuncio/net/gen"
 	"nuncio/net/keyring"
+	"nuncio/net/notify"
 	"nuncio/net/portal"
 	"nuncio/net/rpc"
 	"nuncio/net/session"
@@ -38,7 +39,7 @@ import (
 
 // ProtoVersion — версия client.proto, которую понимает эта сборка.
 // Rust передаёт свою в StartRequest; несовпадение — ошибка старта.
-const ProtoVersion = 10
+const ProtoVersion = 11
 
 // QueueSize — предел очереди событий (обратное давление, правило 5).
 const QueueSize = 1024
@@ -80,6 +81,7 @@ type Service struct {
 	wg        sync.WaitGroup
 	ctx       context.Context
 	watchOnce sync.Once
+	notifier  *notify.Notifier
 	cancel    context.CancelFunc
 
 	req      *pb.StartRequest
@@ -118,6 +120,9 @@ func (s *Service) Start(req []byte) error {
 	s.events = make(chan []byte, QueueSize)
 	s.done = make(chan struct{})
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.notifier = notify.New(func(peer int64) {
+		s.emit(&pb.Event{Body: &pb.Event_NotificationClicked{NotificationClicked: &pb.NotificationClicked{PeerId: peer}}})
+	})
 	s.log = log.New(io.Discard, "", 0)
 	if dir := sr.GetLogDir(); dir != "" {
 		if err := os.MkdirAll(dir, 0o700); err == nil {
@@ -532,6 +537,10 @@ func (s *Service) handle(c command) (ev *pb.Event) {
 				s.emit(&pb.Event{Body: &pb.Event_System{System: &pb.SystemPrefs{ColorScheme: v}}})
 			})
 		})
+		return payload(c.id, nil)
+	case *pb.Command_ShowNotification:
+		n := b.ShowNotification
+		go s.notifier.Show(s.ctx, n.GetPeerId(), n.GetTitle(), n.GetBody(), n.GetSound())
 		return payload(c.id, nil)
 	case *pb.Command_GetProfile:
 		return s.getProfile(ctx, c.id)

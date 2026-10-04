@@ -485,6 +485,8 @@ pub enum Command {
     GetSessions,
     /// Следить за темой рабочего стола (события `SystemTheme`).
     WatchSystem,
+    /// Уведомление рабочего стола о новом в чате; щелчок — `NotificationClicked`.
+    ShowNotification { peer_id: i64, title: String, body: String, sound: bool },
     /// Завершить сеанс; `hash` 0 — все, кроме текущего.
     TerminateSession { hash: i64 },
 }
@@ -653,4 +655,6 @@ pub enum Event {
     Transfer { cmd_id: u64, done: i64, total: i64 },
     /// Тема рабочего стола (портал): 0 — не задано, 1 — тёмная, 2 — светлая.
     SystemTheme(i32),
+    /// По уведомлению чата щёлкнули.
+    NotificationClicked(i64),
 }

@@ -484,6 +484,7 @@ impl LoginModel {
             }
             Event::Transfer { .. } => {}
             Event::SystemTheme(v) => self.system_theme = v,
+            Event::NotificationClicked(_) => {} // модель чата
             Event::Fatal(text) => {
                 self.screen = Some(Screen::Critical(Critical { kind: CriticalKind::NetworkFailed, detail: text }));
             }

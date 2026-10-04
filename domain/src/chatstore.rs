@@ -35,7 +35,7 @@ const MARK_READ_SQL: &str = "UPDATE dialogs SET
      WHERE peer_id = ?1";
 
 /// Строка списка: диалог, собеседник и последнее сообщение.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DialogRow {
     pub dialog: Dialog,
     pub peer: Peer,

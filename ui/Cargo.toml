@@ -21,6 +21,7 @@ slint = { version = "1", default-features = false, features = [
     "renderer-software",
     "software-renderer-systemfonts",
     "compat-1-2",
+    "unstable-winit-030",
 ] }
 unicode-linebreak = "0.1.5"
 unicode-segmentation = "1.13.3"

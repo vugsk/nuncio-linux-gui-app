@@ -394,6 +394,9 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
         Command::SetProfilePhoto { path } => C::SetProfilePhoto(proto::SetProfilePhoto { path }),
         Command::GetSessions => C::GetSessions(proto::GetSessions {}),
         Command::WatchSystem => C::WatchSystem(proto::WatchSystem {}),
+        Command::ShowNotification { peer_id, title, body, sound } => {
+            C::ShowNotification(proto::ShowNotification { peer_id, title, body, sound })
+        }
         Command::TerminateSession { hash } => C::TerminateSession(proto::TerminateSession { hash }),
         Command::SaveFileAs { src, name, title } => C::SaveFileAs(proto::SaveFileAs { src, name, title }),
         Command::SendMedia { peer, items, reply_to } => C::SendMedia(proto::SendMedia {
@@ -559,6 +562,7 @@ pub fn event_from(ev: proto::Event) -> Option<Event> {
         E::Fatal(f) => Event::Fatal(f.text),
         E::Transfer(t) => Event::Transfer { cmd_id: t.cmd_id, done: t.done, total: t.total },
         E::System(s) => Event::SystemTheme(s.color_scheme),
+        E::NotificationClicked(n) => Event::NotificationClicked(n.peer_id),
     })
 }
 

@@ -369,6 +369,7 @@ message Command {
     GetSessions get_sessions = 51;
     TerminateSession terminate_session = 52;
     WatchSystem watch_system = 59;
+    ShowNotification show_notification = 64;
     Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
   }
 }
@@ -482,6 +483,7 @@ message Event {
     StartupError startup = 7;
     TransferProgress transfer = 8;
     SystemPrefs system = 9;
+    NotificationClicked notification_clicked = 10;
   }
 }
 
@@ -489,6 +491,20 @@ message Event {
 // при старте и при каждой смене.
 // Следить за темой рабочего стола: SystemPrefs сразу и при каждой смене.
 message WatchSystem {}
+
+// Уведомление рабочего стола о новом в чате (В9, Нс-4): одно на чат, новое
+// заменяет прежнее. Результата нет; щелчок — событие NotificationClicked.
+message ShowNotification {
+  int64 peer_id = 1;
+  string title = 2;
+  string body = 3;
+  bool sound = 4;
+}
+
+// По уведомлению чата щёлкнули: открыть чат и показать окно.
+message NotificationClicked {
+  int64 peer_id = 1;
+}
 
 message SystemPrefs {
   int32 color_scheme = 1;   // 0 — не задано, 1 — тёмная, 2 — светлая

@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bridge::{GoBackend, StartParams};
 use domain::config::{self, Config, Paths};
-use domain::chat::{ChatEffect, ChatModel, DbOp, DIALOGS_WINDOW};
+use domain::chat::{ChatEffect, ChatIntent, ChatModel, DbOp, DIALOGS_WINDOW};
 use domain::history::Anchor;
 use domain::login::{CriticalKind, Effect, LoginModel, Screen};
 use domain::model::Event;
@@ -65,6 +65,8 @@ struct Domain {
     images_ver: u64,
     /// Язык, сменённый в настройках: применить при следующей публикации.
     pending_lang: Option<String>,
+    /// Окно в фокусе (для уведомлений модели чата, которой может ещё не быть).
+    window_active: bool,
     bad_avatars: HashSet<String>,
     bench_sent: bool,
 }
@@ -229,6 +231,22 @@ impl Domain {
                         }
                     }
                     ChatEffect::ClearCache => self.clear_cache(),
+                    ChatEffect::Notify { peer_id, title, body, sound } => {
+                        if let Some(b) = &self.backend {
+                            let cmd = domain::model::Command::ShowNotification { peer_id, title, body, sound };
+                            if let Err(e) = b.submit(u64::MAX, cmd) {
+                                log::warn!("уведомление: {e}");
+                            }
+                        }
+                    }
+                    ChatEffect::RaiseWindow => {
+                        let ui = self.ui.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(app) = ui.upgrade() {
+                                ui::raise_window(&app);
+                            }
+                        });
+                    }
                     ChatEffect::SettingsChanged(s) => {
                         self.cfg.app = s;
                         self.save_config();
@@ -660,6 +678,7 @@ impl Domain {
                 let mut chat = ChatModel::new(self_id, &self.model.lang, now());
                 chat.app_settings = self.cfg.app.clone();
                 chat.proxy_settings = self.cfg.proxy.clone();
+                chat.window_active = self.window_active;
                 let fx = chat.enter();
                 self.chat = Some(chat);
                 self.run_chat(fx);
@@ -693,6 +712,9 @@ impl Domain {
                 self.publish(None);
             }
             Msg::Action(Action::Chat(i)) => {
+                if let ChatIntent::WindowActive(v) = i {
+                    self.window_active = v;
+                }
                 if let Some(c) = self.chat.as_mut() {
                     let fx = c.intent(i);
                     self.run_chat(fx);
@@ -923,6 +945,7 @@ fn main() {
         avatars: HashMap::new(),
         images_ver: 0,
         pending_lang: None,
+        window_active: true,
         bad_avatars: HashSet::new(),
         bench_sent: false,
     };
