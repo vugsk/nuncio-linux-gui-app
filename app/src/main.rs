@@ -488,7 +488,10 @@ impl Domain {
         }
         let img = cb.get_image().ok()?;
         let dir = self.paths.cache.join("paste");
-        std::fs::create_dir_all(&dir).ok()?;
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).ok()?;
+        }
         if let Ok(rd) = std::fs::read_dir(&dir) {
             let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600);
             for e in rd.flatten() {

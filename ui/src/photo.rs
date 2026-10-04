@@ -178,8 +178,11 @@ pub fn load_full(path: &str, max_w: u32, max_h: u32) -> Option<SharedPixelBuffer
 }
 
 /// RGBA в PNG-файл (картинка из буфера обмена для отправки).
+/// Файл создаётся с правами 0600 (картинки из буфера — личные данные).
 pub fn save_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> std::io::Result<()> {
-    let f = std::io::BufWriter::new(std::fs::File::create(path)?);
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    let f = std::io::BufWriter::new(f);
     let mut enc = png::Encoder::new(f, w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);

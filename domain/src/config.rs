@@ -138,11 +138,14 @@ impl Config {
         std::fs::create_dir_all(config_dir)?;
         let text = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
         let tmp = config_dir.join(".config.toml.tmp");
-        std::fs::write(&tmp, text)?;
-        #[cfg(unix)]
+        // Сразу 0600: пароль прокси не должен быть читаем и на мгновение.
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let _ = std::fs::remove_file(&tmp);
+            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+            f.write_all(text.as_bytes())?;
+            f.sync_all()?;
         }
         std::fs::rename(tmp, config_dir.join("config.toml"))
     }
