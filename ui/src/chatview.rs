@@ -1062,7 +1062,7 @@ impl ChatRenderer {
                     let votes = if ru {
                         format!("{kind} · {}", count_votes(poll.total_voters))
                     } else {
-                        format!("{kind} · {} votes", poll.total_voters)
+                        format!("{kind} · {} vote{}", poll.total_voters, if poll.total_voters == 1 { "" } else { "s" })
                     };
                     it.poll_info = if poll.closed { format!("{votes} · {}", if ru { "завершён" } else { "closed" }) } else { votes }
                         .into();
