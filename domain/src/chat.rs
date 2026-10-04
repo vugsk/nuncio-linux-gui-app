@@ -290,6 +290,8 @@ pub struct ChatModel {
     pub proxy_settings: crate::model::ProxySettings,
     /// Окно в фокусе: для открытого чата уведомлений нет.
     pub window_active: bool,
+    /// Хост значка в трее есть (для подсказки в настройках).
+    pub tray_available: bool,
     pub open: Option<i64>,
     /// Окно истории открытого чата, по возрастанию id (очередь отправки в конце).
     pub history: Vec<Message>,
@@ -357,6 +359,7 @@ impl ChatModel {
             now,
             next_id: 1 << 32, // у модели входа id с 1: не пересекаются
             window_active: true,
+            tray_available: false,
             ..Default::default()
         }
     }
@@ -542,6 +545,16 @@ impl ChatModel {
         h.write_u64(self.random_seq);
         h.write_i64(self.now);
         (h.finish() >> 1) as i64 | 1
+    }
+
+    /// Счётчик значка в трее: непрочитанные сообщения чатов со звуком вне
+    /// архива; отмеченный непрочитанным без счётчика — один.
+    pub fn unread_badge(&self) -> i32 {
+        self.all_rows
+            .iter()
+            .filter(|r| !r.dialog.muted && r.dialog.folder != 1)
+            .map(|r| if r.dialog.unread_count > 0 { r.dialog.unread_count } else { i32::from(r.dialog.unread_mark) })
+            .sum()
     }
 
     pub fn intent(&mut self, i: ChatIntent) -> Vec<ChatEffect> {

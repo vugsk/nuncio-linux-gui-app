@@ -370,6 +370,7 @@ message Command {
     TerminateSession terminate_session = 52;
     WatchSystem watch_system = 59;
     ShowNotification show_notification = 64;
+    SetTray set_tray = 65;
     Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
   }
 }
@@ -484,6 +485,7 @@ message Event {
     TransferProgress transfer = 8;
     SystemPrefs system = 9;
     NotificationClicked notification_clicked = 10;
+    TrayEvent tray = 11;
   }
 }
 
@@ -504,6 +506,28 @@ message ShowNotification {
 // По уведомлению чата щёлкнули: открыть чат и показать окно.
 message NotificationClicked {
   int64 peer_id = 1;
+}
+
+// Значок в трее (В9, Нс-4/Нс-5): включить, обновить счётчик и подписи меню,
+// выключить. Результата нет; доступность и щелчки — событие TrayEvent.
+message SetTray {
+  bool enabled = 1;
+  int32 unread = 2;
+  string tooltip = 3;
+  string show_label = 4;
+  string quit_label = 5;
+}
+
+message TrayEvent {
+  enum Kind {
+    UNSPECIFIED = 0;
+    AVAILABLE = 1;     // хост значка есть: закрытие окна может прятать его
+    UNAVAILABLE = 2;   // хоста нет или трей выключен
+    TOGGLE = 3;        // щелчок по значку
+    SHOW = 4;          // «Открыть» в меню
+    QUIT = 5;          // «Выйти» в меню
+  }
+  Kind kind = 1;
 }
 
 message SystemPrefs {

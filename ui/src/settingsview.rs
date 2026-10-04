@@ -172,6 +172,8 @@ pub fn render(app: &App, m: &ChatModel, images: &HashMap<String, SharedPixelBuff
     g.set_hide_text(s.notify_hide_text);
     g.set_sound(s.notify_sound);
     g.set_tray(s.tray);
+    // Пока трей выключен, о хосте ничего не известно — без подсказки.
+    g.set_tray_available(!s.tray || m.tray_available);
     g.set_close_tray(s.close_to_tray);
     // Данные и кэш.
     g.set_cache_size(mb(v.cache_bytes, ru).into());

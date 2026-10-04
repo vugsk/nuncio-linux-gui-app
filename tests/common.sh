@@ -16,4 +16,4 @@ tmp_done() {
 
 # Уведомления рабочего стола в проверках — только на своей шине (notifytest),
 # иначе выключены: на рабочий стол человека ничего не попадает.
-export NUNCIO_NOTIFY_BUS=${NUNCIO_NOTIFY_BUS:-off}
+export NUNCIO_DESKTOP_BUS=${NUNCIO_DESKTOP_BUS:-off}

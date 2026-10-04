@@ -67,11 +67,27 @@ struct Domain {
     pending_lang: Option<String>,
     /// Окно в фокусе (для уведомлений модели чата, которой может ещё не быть).
     window_active: bool,
+    /// Хост значка в трее есть (событие сети).
+    tray_available: bool,
+    /// Последнее отправленное состояние значка.
+    tray_sent: Option<domain::model::TrayState>,
     bad_avatars: HashSet<String>,
     bench_sent: bool,
 }
 
 /// Размер каталога со всем содержимым, байт.
+/// Удалить содержимое каталога (сам каталог остаётся, права на него — тоже).
+fn wipe_dir(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        let r = if e.file_type().is_ok_and(|t| t.is_dir()) { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        if let Err(err) = r {
+            log::warn!("не удалено при выходе: {err}");
+        }
+    }
+}
+
 fn dir_size(dir: &std::path::Path) -> i64 {
     let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
     rd.flatten()
@@ -181,7 +197,8 @@ impl Domain {
                             }
                         });
                     }
-                    let _ = std::fs::remove_dir_all(self.paths.cache.join("media"));
+                    // Кэш целиком: вложения, аватарки, вставленные картинки.
+                    wipe_dir(&self.paths.cache);
                 }
                 Effect::Quit => self.quit = true,
             }
@@ -679,6 +696,7 @@ impl Domain {
                 chat.app_settings = self.cfg.app.clone();
                 chat.proxy_settings = self.cfg.proxy.clone();
                 chat.window_active = self.window_active;
+                chat.tray_available = self.tray_available;
                 let fx = chat.enter();
                 self.chat = Some(chat);
                 self.run_chat(fx);
@@ -691,6 +709,62 @@ impl Domain {
         }
     }
 
+    /// Значок в трее по настройкам, счётчику и языку; закрытие окна прячет
+    /// его в трей, только если трей включён, так настроено и хост есть (Нс-5).
+    fn sync_tray(&mut self) {
+        let Some(b) = &self.backend else { return };
+        let ru = self.model.lang == "ru";
+        let unread = self.chat.as_ref().map_or(0, ChatModel::unread_badge);
+        let want = domain::model::TrayState {
+            enabled: self.cfg.app.tray,
+            unread,
+            tooltip: match (unread, ru) {
+                (0, _) => String::new(),
+                (n, true) => format!("Непрочитанных: {n}"),
+                (n, false) => format!("Unread: {n}"),
+            },
+            show_label: if ru { "Открыть nuncio" } else { "Open nuncio" }.into(),
+            quit_label: if ru { "Выйти" } else { "Quit" }.into(),
+        };
+        ui::set_close_to_tray(self.cfg.app.tray && self.cfg.app.close_to_tray && self.tray_available);
+        if self.tray_sent.as_ref() == Some(&want) {
+            return;
+        }
+        if let Err(e) = b.submit(u64::MAX, domain::model::Command::SetTray(want.clone())) {
+            log::warn!("трей: {e}");
+            return;
+        }
+        self.tray_sent = Some(want);
+    }
+
+    fn tray_event(&mut self, e: domain::model::TrayEvent) {
+        use domain::model::TrayEvent as T;
+        log::info!("трей: {e:?}");
+        let ui = self.ui.clone();
+        let on_ui = move |f: fn(&ui::App)| {
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(app) = ui.upgrade() {
+                    f(&app);
+                }
+            });
+        };
+        match e {
+            T::Available | T::Unavailable => {
+                self.tray_available = e == T::Available;
+                if let Some(c) = self.chat.as_mut() {
+                    c.tray_available = self.tray_available;
+                }
+                // Без хоста спрятанное окно иначе не вернуть.
+                if e == T::Unavailable {
+                    on_ui(ui::show_window);
+                }
+            }
+            T::Toggle => on_ui(ui::toggle_window),
+            T::Show => on_ui(ui::raise_window),
+            T::Quit => self.quit = true,
+        }
+    }
+
     fn handle(&mut self, msg: Msg) {
         self.model.now = now();
         if let Some(c) = self.chat.as_mut() {
@@ -698,6 +772,10 @@ impl Domain {
             c.lang = self.model.lang.clone();
         }
         match msg {
+            Msg::Event(domain::model::Event::Tray(t)) => {
+                self.tray_event(t);
+                self.publish(None);
+            }
             Msg::Event(e) => {
                 let before = screen_name(&self.model);
                 let chat_fx = self.chat.as_mut().map(|c| c.event(&e)).unwrap_or_default();
@@ -873,7 +951,10 @@ fn domain_loop(mut d: Domain, rx: mpsc::Receiver<Msg>) {
             Duration::from_secs(30)
         };
         match rx.recv_timeout(wait) {
-            Ok(msg) => d.handle(msg),
+            Ok(msg) => {
+                d.handle(msg);
+                d.sync_tray();
+            }
             Err(RecvTimeoutError::Timeout) => {
                 d.model.now = now();
                 if let Some(c) = d.chat.as_mut() {
@@ -946,6 +1027,8 @@ fn main() {
         images_ver: 0,
         pending_lang: None,
         window_active: true,
+        tray_available: false,
+        tray_sent: None,
         bad_avatars: HashSet::new(),
         bench_sent: false,
     };
@@ -1006,7 +1089,10 @@ fn main() {
         });
         t
     });
-    app.run().expect("окно завершилось с ошибкой");
+    // Окно можно спрятать в трей: цикл событий живёт до явного выхода
+    // (закрытие окна без трея, «Выйти» в меню, сигнал).
+    app.show().expect("окно не показано");
+    slint::run_event_loop_until_quit().expect("окно завершилось с ошибкой");
     send(Msg::Stop);
     let _ = domain.join();
     log::info!("выход");

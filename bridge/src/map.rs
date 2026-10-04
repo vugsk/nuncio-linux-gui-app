@@ -4,7 +4,7 @@ use domain::model::{
     AuthState, AuthStep, ChatActionKind, ChatInfo, CodeInfo, Command, CommandResult, ConnState, Country, CountryCode,
     Dialog, DomainUpdate, Entity, EntityKind, ErrorInfo, FileRef, Folder, Media, MediaKind, Poll, PollOption,
     SearchFilter, WebPage, ErrorKind, Event, Message, Payload, Peer, PeerKind, PeerRef, ProxyKind, ProxySettings,
-    StartupErrorKind, UpdateState, UpdatesBatch, User,
+    StartupErrorKind, TrayEvent, UpdateState, UpdatesBatch, User,
 };
 
 use crate::proto::{self, command::Body as C, event::Body as E};
@@ -394,6 +394,13 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
         Command::SetProfilePhoto { path } => C::SetProfilePhoto(proto::SetProfilePhoto { path }),
         Command::GetSessions => C::GetSessions(proto::GetSessions {}),
         Command::WatchSystem => C::WatchSystem(proto::WatchSystem {}),
+        Command::SetTray(t) => C::SetTray(proto::SetTray {
+            enabled: t.enabled,
+            unread: t.unread,
+            tooltip: t.tooltip,
+            show_label: t.show_label,
+            quit_label: t.quit_label,
+        }),
         Command::ShowNotification { peer_id, title, body, sound } => {
             C::ShowNotification(proto::ShowNotification { peer_id, title, body, sound })
         }
@@ -563,6 +570,16 @@ pub fn event_from(ev: proto::Event) -> Option<Event> {
         E::Transfer(t) => Event::Transfer { cmd_id: t.cmd_id, done: t.done, total: t.total },
         E::System(s) => Event::SystemTheme(s.color_scheme),
         E::NotificationClicked(n) => Event::NotificationClicked(n.peer_id),
+        E::Tray(t) => {
+            use proto::tray_event::Kind as K;
+            Event::Tray(match K::try_from(t.kind).unwrap_or(K::Unspecified) {
+                K::Available => TrayEvent::Available,
+                K::Toggle => TrayEvent::Toggle,
+                K::Show => TrayEvent::Show,
+                K::Quit => TrayEvent::Quit,
+                K::Unavailable | K::Unspecified => TrayEvent::Unavailable,
+            })
+        }
     })
 }
 

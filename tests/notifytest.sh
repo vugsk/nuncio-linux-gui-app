@@ -15,7 +15,7 @@ mkdir -p "$T/home/config"
 printf 'API_ID=1\nAPI_HASH=00000000000000000000000000000000\n' > "$T/home/config/api.env"
 chmod 600 "$T/home/config/api.env"
 
-(cd "$ROOT/net" && go build -o "$T/fakeserver" ./cmd/fakeserver && go build -o "$T/fakenotify" ./cmd/fakenotify)
+(cd "$ROOT/net" && go build -o "$T/fakeserver" ./cmd/fakeserver && go build -o "$T/fakedesk" ./cmd/fakedesk)
 # Входящие раз в 6 с: первое и второе — до щелчка, третье — в открытый чат.
 "$T/fakeserver" -listen "127.0.0.1:$PORT" -key "$T/key" -history 5 -unread -1 -start 4s -push 3 -every 6s \
   > "$T/server.log" 2>&1 &
@@ -24,16 +24,16 @@ dbus-daemon --session --nofork --nopidfile --print-address=3 --address="unix:pat
 BUS=$!
 NTF=
 source "$ROOT/tests/common.sh"
-trap 'rc=$?; kill $SRV $BUS $NTF 2>/dev/null || true; pkill -KILL -f "$T/app" 2>/dev/null || true; rm -f "$T/fakenotify"; tmp_done $rc' EXIT
+trap 'rc=$?; kill $SRV $BUS $NTF 2>/dev/null || true; pkill -KILL -f "$T/app" 2>/dev/null || true; rm -f "$T/fakedesk"; tmp_done $rc' EXIT
 until [ -s "$T/bus.addr" ]; do sleep 0.1; done
 ADDR=$(head -1 "$T/bus.addr")
-DBUS_SESSION_BUS_ADDRESS=$ADDR "$T/fakenotify" > "$T/notify.log" 2>&1 &
+DBUS_SESSION_BUS_ADDRESS=$ADDR "$T/fakedesk" > "$T/notify.log" 2>&1 &
 NTF=$!
 until grep -q готов "$T/server.log" && grep -q готов "$T/notify.log"; do sleep 0.1; done
 cp "$ROOT/target/release/nuncio" "$T/app"
 env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" SLINT_BACKEND=winit-software NUNCIO_HOME="$T/home" \
   NUNCIO_TEST_DC="127.0.0.1:$PORT" NUNCIO_TEST_RSA="$T/key" NUNCIO_KEYRING_APP=nuncio-notifytest \
-  NUNCIO_KEYRING_COLLECTION=session NUNCIO_WINDOW_SIZE=1100x800 NUNCIO_NOTIFY_BUS="$ADDR" \
+  NUNCIO_KEYRING_COLLECTION=session NUNCIO_WINDOW_SIZE=1100x800 NUNCIO_DESKTOP_BUS="$ADDR" \
   "$T/app" > "$T/app.log" 2>&1 &
 APP=$!
 until grep -q "шаг READY" "$T/home/state/net.log" 2>/dev/null; do kill -0 $APP 2>/dev/null || { echo "приложение завершилось:"; tail -5 "$T/app.log"; exit 1; }; sleep 0.2; done

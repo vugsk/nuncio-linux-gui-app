@@ -86,6 +86,7 @@ e2e:
     tests/playtest.sh
     tests/settingstest.sh
     tests/notifytest.sh
+    tests/traytest.sh
 
 # Проверки качества (раздел 4 заметки о сборке).
 lint:

@@ -304,16 +304,57 @@ fn proxy_from_ui(app: &App) -> ProxySettings {
 
 /// Привязывает колбэки Slint к отправке действий.
 /// Фокус окна → модель чата: уведомления и для открытого чата, когда окно
-/// не в фокусе (В9). Фильтр событий winit у окна один — здесь же будет
-/// закрытие в трей.
+/// не в фокусе (В9); крестик — в трей или выход.
 fn watch_window(app: &App, send: impl Fn(Action) + 'static) {
     use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
+    let s = std::rc::Rc::new(send);
+    let s2 = s.clone();
     app.window().on_winit_window_event(move |_, e| {
         if let WindowEvent::Focused(f) = e {
-            send(Action::Chat(ChatIntent::WindowActive(*f)));
+            FOCUSED.set(*f);
+            s(Action::Chat(ChatIntent::WindowActive(*f)));
         }
         EventResult::Propagate
     });
+    // Крестик: в трей, если он есть и так настроено (Нс-5), иначе выход.
+    app.window().on_close_requested(move || {
+        if CLOSE_TO_TRAY.load(std::sync::atomic::Ordering::Relaxed) {
+            FOCUSED.set(false);
+            s2(Action::Chat(ChatIntent::WindowActive(false)));
+        } else {
+            s2(Action::Quit);
+        }
+        slint::CloseRequestResponse::HideWindow
+    });
+}
+
+static CLOSE_TO_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+thread_local! {
+    static FOCUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Закрытие окна прячет его в трей (иначе — выход из приложения).
+pub fn set_close_to_tray(on: bool) {
+    CLOSE_TO_TRAY.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Показать окно, если оно спрятано (без подъёма поверх).
+pub fn show_window(app: &App) {
+    if !app.window().is_visible() {
+        if let Err(e) = app.show() {
+            log::warn!("окно не показано: {e}");
+        }
+    }
+}
+
+/// Щелчок по значку в трее: окно в фокусе — спрятать, иначе — показать поверх.
+pub fn toggle_window(app: &App) {
+    if app.window().is_visible() && FOCUSED.get() && CLOSE_TO_TRAY.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = app.hide();
+    } else {
+        raise_window(app);
+    }
 }
 
 /// Показать окно поверх остальных (щелчок по уведомлению). На Wayland

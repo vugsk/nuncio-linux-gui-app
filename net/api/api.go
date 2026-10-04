@@ -34,12 +34,13 @@ import (
 	"nuncio/net/tl"
 	"nuncio/net/tlbin"
 	"nuncio/net/transport"
+	"nuncio/net/tray"
 	"nuncio/net/updates"
 )
 
 // ProtoVersion — версия client.proto, которую понимает эта сборка.
 // Rust передаёт свою в StartRequest; несовпадение — ошибка старта.
-const ProtoVersion = 11
+const ProtoVersion = 12
 
 // QueueSize — предел очереди событий (обратное давление, правило 5).
 const QueueSize = 1024
@@ -82,6 +83,7 @@ type Service struct {
 	ctx       context.Context
 	watchOnce sync.Once
 	notifier  *notify.Notifier
+	tray      *tray.Tray
 	cancel    context.CancelFunc
 
 	req      *pb.StartRequest
@@ -122,6 +124,9 @@ func (s *Service) Start(req []byte) error {
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.notifier = notify.New(func(peer int64) {
 		s.emit(&pb.Event{Body: &pb.Event_NotificationClicked{NotificationClicked: &pb.NotificationClicked{PeerId: peer}}})
+	})
+	s.tray = tray.New(func(k tray.Kind) {
+		s.emit(&pb.Event{Body: &pb.Event_Tray{Tray: &pb.TrayEvent{Kind: pb.TrayEvent_Kind(k)}}})
 	})
 	s.log = log.New(io.Discard, "", 0)
 	if dir := sr.GetLogDir(); dir != "" {
@@ -541,6 +546,11 @@ func (s *Service) handle(c command) (ev *pb.Event) {
 	case *pb.Command_ShowNotification:
 		n := b.ShowNotification
 		go s.notifier.Show(s.ctx, n.GetPeerId(), n.GetTitle(), n.GetBody(), n.GetSound())
+		return payload(c.id, nil)
+	case *pb.Command_SetTray:
+		t := b.SetTray
+		s.tray.Set(s.ctx, tray.State{Enabled: t.GetEnabled(), Unread: t.GetUnread(), Tooltip: t.GetTooltip(),
+			ShowLabel: t.GetShowLabel(), QuitLabel: t.GetQuitLabel()})
 		return payload(c.id, nil)
 	case *pb.Command_GetProfile:
 		return s.getProfile(ctx, c.id)

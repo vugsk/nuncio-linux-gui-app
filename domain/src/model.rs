@@ -487,6 +487,8 @@ pub enum Command {
     WatchSystem,
     /// Уведомление рабочего стола о новом в чате; щелчок — `NotificationClicked`.
     ShowNotification { peer_id: i64, title: String, body: String, sound: bool },
+    /// Значок в трее: состояние целиком (выключить — `enabled: false`).
+    SetTray(TrayState),
     /// Завершить сеанс; `hash` 0 — все, кроме текущего.
     TerminateSession { hash: i64 },
 }
@@ -657,4 +659,30 @@ pub enum Event {
     SystemTheme(i32),
     /// По уведомлению чата щёлкнули.
     NotificationClicked(i64),
+    /// Значок в трее: доступность и щелчки.
+    Tray(TrayEvent),
+}
+
+/// Желаемое состояние значка в трее.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrayState {
+    pub enabled: bool,
+    pub unread: i32,
+    pub tooltip: String,
+    pub show_label: String,
+    pub quit_label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayEvent {
+    /// Хост значка есть: закрытие окна может прятать его в трей.
+    Available,
+    /// Хоста нет или трей выключен: закрытие окна завершает приложение.
+    Unavailable,
+    /// Щелчок по значку: показать или спрятать окно.
+    Toggle,
+    /// «Открыть» в меню значка.
+    Show,
+    /// «Выйти» в меню значка.
+    Quit,
 }

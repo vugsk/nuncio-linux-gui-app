@@ -468,6 +468,7 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 		}
 		delete(a.authorized, key)
 		a.loggedOut++
+		fmt.Println("выход из аккаунта")
 		return &tl.AuthLoggedOut{}, nil
 	case *tl.UpdatesGetDifferenceRequest:
 		if !a.authorized[key] {

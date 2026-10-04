@@ -3,14 +3,14 @@
 // заменяет прежнее (replaces_id). Щелчок по уведомлению (действие "default")
 // сообщается обратно номером чата.
 //
-// Шина — сессионная; NUNCIO_NOTIFY_BUS задаёт другой адрес (сквозные проверки
-// поднимают свою шину с поддельным сервером уведомлений), "off" — не показывать.
+// Шина — desk.Bus.
 package notify
 
 import (
 	"context"
-	"os"
 	"sync"
+
+	"nuncio/net/desk"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -41,28 +41,13 @@ func New(clicked func(peer int64)) *Notifier {
 	return &Notifier{clicked: clicked, byPeer: map[int64]uint32{}, byID: map[uint32]int64{}}
 }
 
-func connect() (*dbus.Conn, error) {
-	addr := os.Getenv("NUNCIO_NOTIFY_BUS")
-	if addr == "" {
-		return dbus.ConnectSessionBus()
-	}
-	return dbus.Connect(addr)
-}
-
-// Off — уведомления выключены переменной окружения.
-func Off() bool { return os.Getenv("NUNCIO_NOTIFY_BUS") == "off" }
-
 // conn — соединение, при первом обращении — с подпиской на сигналы.
 // Без шины или сервера уведомлений — nil, и больше не пытаться.
 func (n *Notifier) connLocked(ctx context.Context) *dbus.Conn {
 	if n.conn != nil || n.failed {
 		return n.conn
 	}
-	if Off() {
-		n.failed = true
-		return nil
-	}
-	conn, err := connect()
+	conn, err := desk.Bus()
 	if err != nil {
 		n.failed = true
 		return nil
