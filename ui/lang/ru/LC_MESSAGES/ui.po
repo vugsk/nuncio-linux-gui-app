@@ -28,9 +28,6 @@ msgstr "Отмена"
 msgid "Change number"
 msgstr "Изменить номер"
 
-msgid "Chats will appear in the next version."
-msgstr "Чаты появятся в следующей версии."
-
 msgid "Check connection"
 msgstr "Проверить подключение"
 
@@ -353,7 +350,7 @@ msgid "Reply"
 msgstr "Ответить"
 
 msgid "Reply to {}"
-msgstr "Ответ {}"
+msgstr "В ответ: {}"
 
 msgid "Unpin"
 msgstr "Открепить"
@@ -459,9 +456,6 @@ msgstr "Голосовые"
 
 msgid "Search members"
 msgstr "Поиск участников"
-
-msgid "Shared media will appear in the next version"
-msgstr "Общие медиа появятся в следующей версии"
 
 msgid "Block"
 msgstr "Заблокировать"
@@ -617,7 +611,7 @@ msgid "Clear media cache"
 msgstr "Очистить кэш медиа"
 
 msgid "Clearing does not delete messages or the session."
-msgstr "Очистка не удаляет сообщения и сессию."
+msgstr "Очистка не удаляет сообщения и сеанс."
 
 msgid "Downloads"
 msgstr "Загрузки"
@@ -672,3 +666,9 @@ msgstr "Аккаунт"
 
 msgid "Public username"
 msgstr "Имя пользователя"
+
+msgid "Nothing here yet"
+msgstr "Здесь пока ничего нет"
+
+msgid "Show more"
+msgstr "Показать ещё"

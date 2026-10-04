@@ -547,7 +547,9 @@ impl Domain {
         let mut want: Vec<(String, Decode)> = Vec::new();
         let mut keep: HashSet<String> = HashSet::new();
         let near = chat.near_visible();
-        for (id, f) in domain::media::feed_images(&chat.history).into_iter().filter(|(id, _)| near.contains(id)) {
+        // Лента — только около видимого; сетка «Медиа» в «Сведениях» — вся загруженная.
+        let feed = domain::media::feed_images(&chat.history).into_iter().filter(|(id, _)| near.contains(id));
+        for (id, f) in feed.chain(chat.shared_images()) {
             let (tw, th) = (f.w as u32, f.h as u32);
             let path = match &f.file {
                 Some(file) => chat.media_paths.get(&file.key()),
@@ -584,7 +586,7 @@ impl Domain {
             }
         }
         // Полный размер — только у фото (видео в окне просмотра играет плеер).
-        let viewer_photo = chat.viewer.and_then(|id| chat.history.iter().find(|m| m.id == id))
+        let viewer_photo = chat.viewer.and_then(|id| chat.find_msg(id))
             .and_then(|m| m.media_info.as_deref())
             .is_some_and(|mi| matches!(mi.kind, domain::model::MediaKind::Photo | domain::model::MediaKind::WebPage));
         // Своё фото в настройках (раздел «Профиль»).

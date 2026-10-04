@@ -563,6 +563,15 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
                 s(Action::Chat(ChatIntent::MediaClick(id)));
             }
         });
+        // Общие медиа в «Сведениях»: то же действие, что нажатие во вкладке ленты.
+        let s = send.clone();
+        let a = app.as_weak();
+        chat.on_shared_open(move |id| {
+            if a.upgrade().is_some_and(|app| chatview::media_toggle(&app, id)) {
+                return;
+            }
+            s(Action::Chat(ChatIntent::MediaClick(id)));
+        });
         let s = send.clone();
         chat.on_attach(move || s(Action::Chat(ChatIntent::Attach)));
         let s = send.clone();
@@ -726,6 +735,14 @@ fn bind_lists(app: &App, send: impl Fn(Action) + Clone + 'static) {
         _ => None,
     })));
     on!(on_members_edited, |q| Some(L::MembersQuery(q.to_string())));
+    on!(on_shared_select, |t| Some(L::SharedTab(match t {
+        1 => SearchFilter::Media,
+        2 => SearchFilter::Files,
+        3 => SearchFilter::Links,
+        4 => SearchFilter::Voice,
+        _ => SearchFilter::All,
+    })));
+    on!(on_shared_more, | | Some(L::SharedMore));
     on!(on_cs_edited, |q| Some(L::ChatSearchQuery(q.to_string())));
     on!(on_cs_set_filter, |f| Some(L::ChatSearchFilter(match f {
         1 => SearchFilter::Media,

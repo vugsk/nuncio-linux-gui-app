@@ -54,6 +54,27 @@ export struct SearchRow {
     has-avatar: bool,
 }
 
+// Общие медиа в «Сведениях» (Св-1): ячейка сетки и строка списка.
+export struct SharedCell {
+    id: int,
+    img: image,
+    has-img: bool,
+    play: bool,
+    dur: string,
+}
+
+export struct SharedRow {
+    id: int,
+    title: string,
+    subtitle: string,
+    // 0 файл, 1 ссылка, 2 голосовое или аудио.
+    icon: int,
+    // 0 не скачан, 1 скачивается, 2 скачан.
+    state: int,
+    progress: float,
+    url: string,
+}
+
 export struct MemberItem {
     id: string,
     name: string,
@@ -267,6 +288,15 @@ export global Chat {
     in property <bool> info-blocked;
     in property <bool> info-self;
     in property <[MemberItem]> info-members;
+    // Вкладка сведений: 0 участники (или ничего), 1 медиа, 2 файлы, 3 ссылки, 4 голосовые.
+    in property <int> shared-tab;
+    in property <[SharedCell]> shared-cells;
+    in property <[SharedRow]> shared-rows;
+    in property <bool> shared-loading;
+    in property <bool> shared-complete: true;
+    callback shared-select(int);
+    callback shared-open(int);
+    callback shared-more();
     callback members-edited(string);
     in-out property <string> cs-query;
     in property <[SearchRow]> cs-rows;
@@ -2211,8 +2241,6 @@ component PanelAction inherits Rectangle {
 
 // Правая панель (Дз-3): сведения о чате (Св-1) или поиск по чату (Дз-10, Дз-18).
 component RightPanel inherits Rectangle {
-    // Вкладка сведений: 0 участники (у групп), 1 медиа, 2 файлы, 3 ссылки, 4 голосовые.
-    in-out property <int> tab: Chat.info-kind == 1 ? 0 : 1;
     background: Theme.card-bg;
     VerticalLayout {
         Rectangle {
@@ -2294,13 +2322,13 @@ component RightPanel inherits Rectangle {
                 HorizontalLayout {
                     padding-left: 8px;
                     spacing: 2px;
-                    if Chat.info-kind == 1: FmtButton { label: @tr("Members"); on: root.tab == 0; clicked => { root.tab = 0; } }
-                    FmtButton { label: @tr("Media"); on: root.tab == 1; clicked => { root.tab = 1; } }
-                    FmtButton { label: @tr("Files"); on: root.tab == 2; clicked => { root.tab = 2; } }
-                    FmtButton { label: @tr("Links"); on: root.tab == 3; clicked => { root.tab = 3; } }
-                    FmtButton { label: @tr("Voice"); on: root.tab == 4; clicked => { root.tab = 4; } }
+                    if Chat.info-kind == 1: FmtButton { label: @tr("Members"); on: Chat.shared-tab == 0; clicked => { Chat.shared-select(0); } }
+                    FmtButton { label: @tr("Media"); on: Chat.shared-tab == 1; clicked => { Chat.shared-select(1); } }
+                    FmtButton { label: @tr("Files"); on: Chat.shared-tab == 2; clicked => { Chat.shared-select(2); } }
+                    FmtButton { label: @tr("Links"); on: Chat.shared-tab == 3; clicked => { Chat.shared-select(3); } }
+                    FmtButton { label: @tr("Voice"); on: Chat.shared-tab == 4; clicked => { Chat.shared-select(4); } }
                 }
-                if root.tab == 0 && Chat.info-kind == 1: VerticalLayout {
+                if Chat.shared-tab == 0 && Chat.info-kind == 1: VerticalLayout {
                     padding-left: 12px;
                     padding-right: 12px;
                     spacing: 4px;
@@ -2317,12 +2345,85 @@ component RightPanel inherits Rectangle {
                         if m.role != "": Text { text: m.role; color: Theme.text-muted; font-size: 11px; vertical-alignment: center; }
                     }
                 }
-                if root.tab != 0 || Chat.info-kind != 1: Text {
-                    text: @tr("Shared media will appear in the next version");
+                // Медиа: сетка 3 × 116 px.
+                if Chat.shared-tab == 1: Rectangle {
+                    height: Math.ceil(Chat.shared-cells.length / 3) * 120px;
+                    for c[i] in Chat.shared-cells: Rectangle {
+                        x: 12px + Math.mod(i, 3) * 120px;
+                        y: Math.floor(i / 3) * 120px;
+                        width: 116px;
+                        height: 116px;
+                        background: Theme.strip-bg;
+                        clip: true;
+                        if c.has-img: Image { width: parent.width; height: parent.height; source: c.img; image-fit: cover; }
+                        if c.play: Rectangle {
+                            x: 4px;
+                            y: parent.height - 20px;
+                            width: dt.preferred-width + 10px;
+                            height: 16px;
+                            border-radius: 8px;
+                            background: #00000099;
+                            dt := Text { text: c.dur == "" ? "▶" : "▶ " + c.dur; color: white; font-size: 10px; }
+                        }
+                        TouchArea { mouse-cursor: pointer; clicked => { Chat.shared-open(c.id); } }
+                    }
+                }
+                // Файлы, ссылки, голосовые: список.
+                if Chat.shared-tab >= 2: VerticalLayout {
+                    for r in Chat.shared-rows: Rectangle {
+                        height: 48px;
+                        ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { if r.icon == 1 { Chat.open-link(r.url); } else { Chat.shared-open(r.id); } }
+                        }
+                        background: ta.has-hover ? Theme.soft : transparent;
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 10px;
+                            Rectangle {
+                                y: 6px;
+                                width: 36px;
+                                height: 36px;
+                                border-radius: 18px;
+                                background: Theme.accent;
+                                Text {
+                                    text: r.icon == 1 ? "↗" : r.state == 1 ? "✕" : r.state == 0 ? "↓" : r.icon == 2 ? "▶" : "≡";
+                                    color: Theme.on-accent;
+                                    font-size: 15px;
+                                }
+                                if r.state == 1: Rectangle {
+                                    x: 4px;
+                                    y: parent.height - 6px;
+                                    width: (parent.width - 8px) * r.progress;
+                                    height: 2px;
+                                    background: Theme.on-accent;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                Text { text: r.title; color: r.icon == 1 ? Theme.link : Theme.text; font-size: 13px; overflow: elide; }
+                                Text { text: r.subtitle; color: Theme.text-muted; font-size: 11px; overflow: elide; }
+                            }
+                        }
+                    }
+                }
+                if Chat.shared-tab >= 1 && Chat.shared-loading: Text {
+                    text: @tr("Loading…");
                     color: Theme.text-muted;
                     font-size: 12px;
                     horizontal-alignment: center;
-                    wrap: word-wrap;
+                }
+                if Chat.shared-tab >= 1 && !Chat.shared-loading && Chat.shared-cells.length == 0 && Chat.shared-rows.length == 0: Text {
+                    text: @tr("Nothing here yet");
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                }
+                if Chat.shared-tab >= 1 && !Chat.shared-loading && !Chat.shared-complete: HorizontalLayout {
+                    alignment: center;
+                    Link { text: @tr("Show more"); font-size: 12px; clicked => { Chat.shared-more(); } }
                 }
                 Rectangle { height: 1px; background: Theme.card-border; }
                 if !Chat.info-self: PanelAction {

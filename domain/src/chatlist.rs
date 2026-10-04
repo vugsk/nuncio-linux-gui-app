@@ -369,8 +369,12 @@ impl ChatModel {
             ListIntent::ShowPanel(p) => {
                 self.panel = p;
                 match p {
-                    Some(Panel::Info) => self.load_info("", out),
+                    Some(Panel::Info) => {
+                        self.load_info("", out);
+                        self.default_shared_tab(out);
+                    }
                     Some(Panel::Search) => {
+                        self.shared = None;
                         self.chat_search.get_or_insert_with(ChatSearch::default);
                         if self.info.as_ref().map(|i| i.peer_id) != self.open {
                             self.load_info("", out); // участники — для фильтра «Отправитель»

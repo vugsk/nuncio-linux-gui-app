@@ -28,6 +28,17 @@ pub struct SharedMedia {
 }
 
 impl ChatModel {
+    /// Вкладка по умолчанию при открытии «Сведений»: у групп — участники
+    /// (`All`), у личных чатов и каналов (участников там нет, Св-6) — медиа.
+    pub(crate) fn default_shared_tab(&mut self, out: &mut Vec<ChatEffect>) {
+        let group = self.open_peer().is_some_and(|p| {
+            p.kind == crate::model::PeerKind::Chat || (p.kind == crate::model::PeerKind::Channel && !p.broadcast)
+        });
+        if self.shared.is_none() && !group {
+            self.shared_tab(SearchFilter::Media, out);
+        }
+    }
+
     /// Выбрана вкладка. `SearchFilter::All` — вкладка «Участники» (или ничего).
     pub(crate) fn shared_tab(&mut self, filter: SearchFilter, out: &mut Vec<ChatEffect>) {
         if filter == SearchFilter::All {
@@ -52,9 +63,14 @@ impl ChatModel {
 
     /// Открыт другой чат: та же вкладка — для него.
     pub(crate) fn shared_chat_changed(&mut self, out: &mut Vec<ChatEffect>) {
-        let Some(filter) = self.shared.as_ref().map(|s| s.filter) else { return };
-        self.shared = None;
-        self.shared_tab(filter, out);
+        let filter = self.shared.take().map(|s| s.filter);
+        if self.panel != Some(crate::chatlist::Panel::Info) {
+            return;
+        }
+        match filter {
+            Some(f) => self.shared_tab(f, out),
+            None => self.default_shared_tab(out),
+        }
     }
 
     fn shared_request(&mut self, out: &mut Vec<ChatEffect>) {
@@ -81,6 +97,7 @@ impl ChatModel {
                 // Сервер может вернуть уже показанное на стыке страниц.
                 let known: std::collections::HashSet<i32> = s.items.iter().map(|m| m.id).collect();
                 s.items.extend(messages.iter().filter(|m| !known.contains(&m.id)).cloned());
+                log::info!("общие медиа: {:?} {} из {}", s.filter, s.items.len(), s.total);
                 out.push(ChatEffect::Db(DbOp::SaveHistory { messages: messages.clone(), peers: peers.clone(), span: None }));
                 self.media_window_changed(out);
             }
@@ -134,7 +151,7 @@ impl ChatModel {
     }
 
     /// Фото и видео для стрелок окна просмотра: из истории или из вкладки.
-    pub(crate) fn viewer_ids(&self) -> Vec<i32> {
+    pub fn viewer_ids(&self) -> Vec<i32> {
         let in_history = self.viewer.is_some_and(|v| self.history.iter().any(|m| m.id == v));
         let src: &[Message] = if in_history { &self.history } else { self.shared_items() };
         let mut ids: Vec<i32> = src
@@ -148,6 +165,32 @@ impl ChatModel {
         }
         ids
     }
+}
+
+/// Ссылка сообщения для вкладки «Ссылки»: адрес, заголовок, сайт.
+pub fn link_of(m: &Message) -> Option<(String, String, String)> {
+    if let Some(wp) = m.media_info.as_ref().and_then(|mi| mi.webpage.as_ref()).filter(|w| !w.url.is_empty()) {
+        let title = if wp.title.is_empty() { wp.url.clone() } else { wp.title.clone() };
+        return Some((wp.url.clone(), title, wp.site.clone()));
+    }
+    // Иначе — первая ссылка в тексте (смещения сущностей — в UTF-16).
+    let utf16: Vec<u16> = m.text.encode_utf16().collect();
+    m.entities.iter().find_map(|e| {
+        let text = || {
+            let a = usize::try_from(e.offset).ok()?;
+            let b = a.checked_add(usize::try_from(e.length).ok()?)?;
+            Some(String::from_utf16_lossy(utf16.get(a..b)?))
+        };
+        match e.kind {
+            crate::model::EntityKind::TextUrl if !e.url.is_empty() => Some((e.url.clone(), text()?, String::new())),
+            crate::model::EntityKind::Url => {
+                let t = text()?;
+                let url = if t.contains("://") { t.clone() } else { format!("https://{t}") };
+                Some((url, t, String::new()))
+            }
+            _ => None,
+        }
+    })
 }
 
 #[cfg(test)]

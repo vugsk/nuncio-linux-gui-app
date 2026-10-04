@@ -655,7 +655,7 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 		}
 		return a.search(func(m fakeMsg) bool {
 			return m.peer == peer && (!pinnedOnly || m.pinned) &&
-				(from == 0 || (from == a.UserID) == m.out)
+				(from == 0 || (from == a.UserID) == m.out) && filterMatch(r.Filter, m)
 		}, r.Q, r.MinDate, r.OffsetId, r.Limit), nil
 	case *tl.MessagesSearchGlobalRequest:
 		if !a.authorized[key] {
@@ -980,6 +980,55 @@ func randomToken() []byte {
 }
 
 // search — сообщения по подстроке (без учёта регистра), новые первыми.
+// filterMatch — фильтр messages.search по типу (общие медиа, поиск по чату).
+func filterMatch(f tl.MessagesFilterClass, m fakeMsg) bool {
+	var doc *tl.Document
+	var md *tl.MessageMediaDocument
+	if x, ok := m.media.(*tl.MessageMediaDocument); ok {
+		md = x
+		doc, _ = x.Document.(*tl.Document)
+	}
+	attr := func(video bool) bool {
+		if doc == nil {
+			return false
+		}
+		for _, a := range doc.Attributes {
+			switch at := a.(type) {
+			case *tl.DocumentAttributeVideo:
+				if video {
+					return true
+				}
+			case *tl.DocumentAttributeAudio:
+				if !video && at.Voice {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	switch f.(type) {
+	case *tl.InputMessagesFilterPhotoVideo:
+		_, photo := m.media.(*tl.MessageMediaPhoto)
+		return photo || (md != nil && (md.Video || attr(true)) && !md.Round)
+	case *tl.InputMessagesFilterDocument:
+		return md != nil && !md.Voice && !md.Video && !md.Round && !attr(true) && !attr(false)
+	case *tl.InputMessagesFilterUrl:
+		if _, ok := m.media.(*tl.MessageMediaWebPage); ok {
+			return true
+		}
+		for _, e := range m.entities {
+			switch e.(type) {
+			case *tl.MessageEntityUrl, *tl.MessageEntityTextUrl:
+				return true
+			}
+		}
+		return false
+	case *tl.InputMessagesFilterVoice:
+		return md != nil && (md.Voice || attr(false))
+	}
+	return true
+}
+
 func (a *Account) search(match func(fakeMsg) bool, q string, minDate, offsetID, limit int32) *tl.MessagesMessagesSlice {
 	q = strings.ToLower(q)
 	out := &tl.MessagesMessagesSlice{Topics: []tl.ForumTopicClass{}, Chats: []tl.ChatClass{}, Users: a.contactUsers()}

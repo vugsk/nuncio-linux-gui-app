@@ -15,7 +15,7 @@ use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPix
 
 use crate::richtext::{self, Fonts, Span, Style};
 use crate::scroller::Scroller;
-use crate::{avatar, AlbumCell, App, Chat, DialogItem, FolderItem, LiveFrame, MemberItem, MessageItem, PickerItem, PollRow,
+use crate::{avatar, AlbumCell, App, Chat, DialogItem, FolderItem, LiveFrame, MemberItem, MessageItem, PickerItem, PollRow, SharedCell, SharedRow,
     PrepItem, RichLine, RichSeg, SearchRow, ViewerWindow};
 
 /// Подписи на языке интерфейса (в Rust: собираются из данных, не из разметки).
@@ -777,7 +777,7 @@ impl ChatRenderer {
             self.audio_want = m.audio_play;
         }
         if let Some(id) = self.audio_want {
-            let path = m.history.iter().find(|x| x.id == id).and_then(|x| x.media_info.as_deref())
+            let path = m.find_msg(id).and_then(|x| x.media_info.as_deref())
                 .and_then(|mi| mi.file.as_ref()).and_then(|f| m.media_paths.get(&f.key())).cloned();
             if let Some(path) = path {
                 self.audio_want = None;
@@ -884,6 +884,78 @@ impl ChatRenderer {
     fn media_image(&mut self, key: &str, images: &HashMap<String, SharedPixelBuffer<Rgba8Pixel>>) -> Option<Image> {
         let px = images.get(key)?;
         self.image(key, Some(px))
+    }
+
+    /// Вкладки общих медиа в «Сведениях» (Св-1): сетка медиа или список.
+    fn fill_shared(&mut self, chat: &Chat, m: &ChatModel, images: &HashMap<String, SharedPixelBuffer<Rgba8Pixel>>,
+        ru: bool) {
+        use domain::media::{duration_label, size_label};
+        use domain::model::{MediaKind as K, SearchFilter as F};
+        let s = m.shared.as_ref().filter(|s| Some(s.peer_id) == m.open);
+        chat.set_shared_tab(match s.map(|s| s.filter) {
+            Some(F::Media) => 1,
+            Some(F::Files) => 2,
+            Some(F::Links) => 3,
+            Some(F::Voice) => 4,
+            _ => 0,
+        });
+        chat.set_shared_loading(s.is_some_and(|s| s.loading));
+        chat.set_shared_complete(s.is_none_or(|s| s.complete));
+        let peer = m.open.unwrap_or(0);
+        let mut cells = Vec::new();
+        for (id, f) in m.shared_images() {
+            let img = match f.photo_key().and_then(|k| self.media_image(&k, images)) {
+                Some(i) => Some(i),
+                None => self.media_image(&f.strip_key(peer, id), images),
+            };
+            let mi = m.find_msg(id).and_then(|x| x.media_info.as_deref());
+            let video = mi.is_some_and(|mi| mi.kind != K::Photo);
+            let dur = mi.filter(|mi| video && mi.duration > 0).map(|mi| duration_label(mi.duration)).unwrap_or_default();
+            cells.push(SharedCell { id, has_img: img.is_some(), img: img.unwrap_or_else(no_image), play: video, dur: dur.into() });
+        }
+        chat.set_shared_cells(model(cells));
+        let mut rows = Vec::new();
+        if s.is_some_and(|s| s.filter != F::Media) {
+            for x in m.shared_items() {
+                let date = domain::timefmt::dialog_time(x.date, m.now, &m.lang);
+                if let Some((url, title, site)) = domain::shared::link_of(x).filter(|_| s.is_some_and(|s| s.filter == F::Links)) {
+                    let sub = if site.is_empty() { date } else { format!("{site} · {date}") };
+                    rows.push(SharedRow { id: x.id, title: title.into(), subtitle: sub.into(), icon: 1, state: 0, progress: 0.0,
+                        url: url.into() });
+                    continue;
+                }
+                let Some(mi) = x.media_info.as_deref() else { continue };
+                let Some(file) = mi.file.as_ref() else { continue };
+                let key = file.key();
+                let size = if file.size > 0 { file.size } else { mi.size };
+                let (state, progress) = match m.transfers.get(&key) {
+                    Some(t) => (1, if t.total > 0 { (t.done as f32 / t.total as f32).clamp(0.0, 1.0) } else { 0.0 }),
+                    None if m.media_paths.contains_key(&key) => (2, 1.0),
+                    None => (0, 0.0),
+                };
+                let voice = matches!(mi.kind, K::Voice | K::Audio | K::VideoNote);
+                let title = match mi.kind {
+                    K::Voice => media_label("voice", ru).to_string(),
+                    K::VideoNote => media_label("video", ru).to_string(),
+                    K::Audio if !mi.title.is_empty() => {
+                        if mi.performer.is_empty() { mi.title.clone() } else { format!("{} — {}", mi.performer, mi.title) }
+                    }
+                    _ if !mi.name.is_empty() => mi.name.clone(),
+                    _ => media_label("document", ru).to_string(),
+                };
+                let mut sub = Vec::new();
+                if mi.duration > 0 {
+                    sub.push(duration_label(mi.duration));
+                }
+                if size > 0 {
+                    sub.push(size_label(size, ru));
+                }
+                sub.push(date);
+                rows.push(SharedRow { id: x.id, title: title.into(), subtitle: sub.join(" · ").into(),
+                    icon: if voice { 2 } else { 0 }, state, progress, url: "".into() });
+            }
+        }
+        chat.set_shared_rows(model(rows));
     }
 
     /// Вложения строк истории (В7) и склейка альбомов в одну строку.
@@ -1087,7 +1159,7 @@ impl ChatRenderer {
 
     /// Окно просмотра фото (Св-3): создать по запросу, наполнить, закрыть.
     fn sync_viewer(&mut self, m: &ChatModel, images: &HashMap<String, SharedPixelBuffer<Rgba8Pixel>>, ru: bool) {
-        let msg = m.viewer.and_then(|id| m.history.iter().find(|x| x.id == id));
+        let msg = m.viewer.and_then(|id| m.find_msg(id));
         // Видео играет, только пока открыто в окне просмотра.
         if self.playback.as_ref().is_some_and(|p| p.video && Some(p.msg) != msg.map(|x| x.id)) {
             self.stop_playback();
@@ -1172,7 +1244,7 @@ impl ChatRenderer {
                 self.media_image(&k, images)
             }),
         };
-        let ids = m.photo_ids();
+        let ids = m.viewer_ids();
         let pos = ids.iter().position(|x| *x == msg.id);
         let is_video = msg.media_info.as_deref().is_some_and(|mi| {
             matches!(mi.kind, domain::model::MediaKind::Video | domain::model::MediaKind::VideoNote | domain::model::MediaKind::Gif)
@@ -1725,6 +1797,7 @@ impl ChatRenderer {
             chat.set_cs_from_options(model(options.into_iter().map(Into::into).collect()));
             chat.set_info_members(model(items));
         }
+        self.fill_shared(&chat, m, avatars, ru);
         // Поиск по чату.
         if let Some(cs) = &m.chat_search {
             let me = if ru { "Вы" } else { "You" };
