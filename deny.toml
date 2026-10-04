@@ -25,9 +25,9 @@ allow = [
     # Slint: GPL-3.0-only или собственные лицензии Royalty-free/коммерческая.
     # Проект сам GPL-3.0-or-later (Св-7а), несовместимости нет.
     "GPL-3.0-only",
+    # ffmpeg-next / ffmpeg-sys-next (В8): привязки к FFmpeg, permissive.
+    "WTFPL",
 ]
-# WTFPL добавить сюда на вехе В8 вместе с ffmpeg-next/ffmpeg-sys-next
-# (см. Архитектура/nuncio - План реализации.md).
 private = { ignore = true }
 
 [[licenses.clarify]]

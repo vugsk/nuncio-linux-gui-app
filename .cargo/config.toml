@@ -1,0 +1,4 @@
+# Свой минимальный статический FFmpeg (В8, П-6): `just deps ffmpeg` ставит его в
+# target/native/ffmpeg/{lib,include}; ffmpeg-sys-next берёт его отсюда, не системный.
+[env]
+FFMPEG_DIR = { value = "target/native/ffmpeg", relative = true }
