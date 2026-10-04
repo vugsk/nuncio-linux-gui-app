@@ -17,3 +17,25 @@ tmp_done() {
 # Уведомления рабочего стола в проверках — только на своей шине (notifytest),
 # иначе выключены: на рабочий стол человека ничего не попадает.
 export NUNCIO_DESKTOP_BUS=${NUNCIO_DESKTOP_BUS:-off}
+
+# private_bus КАТАЛОГ — своя шина D-Bus без автозапуска служб (иначе
+# dbus-daemon --session поднимает порталы и прочее из сессии человека).
+# Адрес — в КАТАЛОГ/bus.addr, pid — в BUS.
+private_bus() {
+  cat > "$1/bus.conf" <<CONF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:path=$1/bus</listen>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+CONF
+  dbus-daemon --config-file="$1/bus.conf" --nofork --nopidfile --print-address=3 3> "$1/bus.addr" &
+  BUS=$!
+  until [ -s "$1/bus.addr" ]; do sleep 0.1; done
+}

@@ -218,6 +218,7 @@ func (s *Service) initNetwork() {
 		}})
 	s.auth = a
 	s.upd = updates.New(updates.Config{Inv: s.m, SelfID: a.UserID, Log: s.log.Printf,
+		Failed: func(err error) { a.CheckAuthError(err) },
 		Emit: func(b *pb.UpdatesBatch) {
 			s.emit(&pb.Event{Body: &pb.Event_Updates{Updates: b}})
 		}})

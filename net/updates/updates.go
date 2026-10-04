@@ -34,6 +34,9 @@ type Config struct {
 	Log  func(format string, args ...any)
 	// SelfID — id вошедшего пользователя (для updateShortMessage с out).
 	SelfID func() int64
+	// Failed — ошибка getDifference/getState (например, сессию завершили на
+	// другом устройстве: 401 при переподключении). Может быть nil.
+	Failed func(error)
 }
 
 // state — pts/qts/seq/date (не protobuf: его нельзя копировать по значению).
@@ -574,6 +577,9 @@ func (m *Manager) difference(ctx context.Context) {
 		cancel()
 		if err != nil {
 			m.cfg.Log("updates: getDifference: %T", err)
+			if m.cfg.Failed != nil {
+				m.cfg.Failed(err)
+			}
 			return // повторит переподключение или следующий разрыв
 		}
 		b := &batch{changed: true}

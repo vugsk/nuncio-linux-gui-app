@@ -20,12 +20,10 @@ chmod 600 "$T/home/config/api.env"
 "$T/fakeserver" -listen "127.0.0.1:$PORT" -key "$T/key" -history 5 -unread -1 -start 4s -push 3 -every 6s \
   > "$T/server.log" 2>&1 &
 SRV=$!
-dbus-daemon --session --nofork --nopidfile --print-address=3 --address="unix:path=$T/bus" 3> "$T/bus.addr" &
-BUS=$!
-NTF=
+BUS= NTF=
 source "$ROOT/tests/common.sh"
 trap 'rc=$?; kill $SRV $BUS $NTF 2>/dev/null || true; pkill -KILL -f "$T/app" 2>/dev/null || true; rm -f "$T/fakedesk"; tmp_done $rc' EXIT
-until [ -s "$T/bus.addr" ]; do sleep 0.1; done
+private_bus "$T"
 ADDR=$(head -1 "$T/bus.addr")
 DBUS_SESSION_BUS_ADDRESS=$ADDR "$T/fakedesk" > "$T/notify.log" 2>&1 &
 NTF=$!

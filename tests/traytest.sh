@@ -30,9 +30,7 @@ run() {
   "$T/fakeserver" -listen "127.0.0.1:$PORT" -key "$dir/key" -history 5 -unread -1 -start 4s -push 2 -every 1s \
     > "$dir/server.log" 2>&1 &
   SRV=$!
-  dbus-daemon --session --nofork --nopidfile --print-address=3 --address="unix:path=$dir/bus" 3> "$dir/bus.addr" &
-  BUS=$!
-  until [ -s "$dir/bus.addr" ]; do sleep 0.1; done
+  private_bus "$dir"
   local addr
   addr=$(head -1 "$dir/bus.addr")
   DBUS_SESSION_BUS_ADDRESS=$addr "$T/fakedesk" -tray -host="$host" > "$dir/desk.log" 2>&1 &

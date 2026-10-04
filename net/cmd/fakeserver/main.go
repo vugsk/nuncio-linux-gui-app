@@ -37,6 +37,7 @@ func main() {
 	photos := flag.Int("photos", 0, "чат «Фото» из стольких фото, самый новый (замер памяти при прокрутке)")
 	video := flag.String("video", "", "чат «Видео»: этот ролик и голосовое из -voice (проверка плеера)")
 	voice := flag.String("voice", "", "голосовое (ogg/opus) для чата «Видео»")
+	revoke := flag.Duration("revoke", 0, "через столько после входа завершить все сеансы (как с другого устройства)")
 	flag.Parse()
 
 	msgs := []string{"начало"}
@@ -114,6 +115,20 @@ func main() {
 		for acc.SignedIn() == 0 {
 			srv.ConfirmQR() // «телефон отсканировал» — updateLoginToken будит QR-цикл клиента
 			time.Sleep(300 * time.Millisecond)
+		}
+		if *revoke > 0 {
+			go func() {
+				time.Sleep(*revoke)
+				acc.Revoke()
+				// Клиент узнаёт об этом на следующем запросе: разорвать
+				// соединения, чтобы он переподключился и спросил обновления.
+				srv.Stop()
+				time.Sleep(500 * time.Millisecond)
+				if err := srv.Restart(); err != nil {
+					fmt.Println("перезапуск:", err)
+				}
+				fmt.Println("сеансы завершены")
+			}()
 		}
 		time.Sleep(*start)
 		for i := 1; i <= *push; i++ {

@@ -783,6 +783,7 @@ impl Domain {
                 let after = screen_name(&self.model);
                 if before != after {
                     log::info!("экран: {after}");
+                    log_critical(&self.model);
                 }
                 self.run_chat(chat_fx);
                 self.apply(fx);
@@ -843,6 +844,13 @@ impl Domain {
             }
             Msg::Stop => self.quit = true,
         }
+    }
+}
+
+/// Вид критического состояния — в журнал (без подробностей: в них может быть путь).
+fn log_critical(m: &LoginModel) {
+    if let Screen::Critical(c) = m.screen() {
+        log::info!("критическое состояние: {:?}", c.kind);
     }
 }
 
@@ -940,6 +948,7 @@ fn pump(b: Arc<dyn Backend>) {
 }
 
 fn domain_loop(mut d: Domain, rx: mpsc::Receiver<Msg>) {
+    log_critical(&d.model);
     d.publish(Some(d.model.lang.clone()));
     while !d.quit {
         // Всплывающее сообщение живёт 3 с: пока оно видно — тик раз в секунду.
