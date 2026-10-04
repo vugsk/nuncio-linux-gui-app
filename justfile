@@ -87,6 +87,7 @@ e2e:
     tests/settingstest.sh
     tests/notifytest.sh
     tests/traytest.sh
+    tests/logouttest.sh
 
 # Проверки качества (раздел 4 заметки о сборке).
 lint:

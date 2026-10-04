@@ -642,6 +642,14 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
         shell.on_log_out(move || i(Intent::LogOut));
     }
     {
+        // Подтверждение в окне настроек (Нс-6): окно закрыть, затем выйти.
+        let s = send.clone();
+        app.global::<Settings>().on_log_out(move || {
+            s(Action::Chat(ChatIntent::Settings(domain::settings::SettingsIntent::Close)));
+            s(Action::Login(Intent::LogOut));
+        });
+    }
+    {
         let s = send.clone();
         shell.on_quit(move || s(Action::Quit));
     }
