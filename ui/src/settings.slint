@@ -1,0 +1,541 @@
+// Настройки (В9, Дизайн - Настройки: Нс-1…Нс-8): модальное окно поверх
+// главного, разделы слева, содержимое справа; Esc закрывает; в узком окне —
+// во всю ширину. Значения и действия — через глобальный `Settings`.
+import { Theme } from "theme.slint";
+import { Button, Link, Field, CheckBox, Segmented, Modal, Confirm } from "widgets.slint";
+
+export struct SessionItem {
+    hash: string,
+    title: string,     // устройство, приложение
+    subtitle: string,  // платформа, место, когда
+    current: bool,
+}
+
+export global Settings {
+    in property <bool> open;
+    in property <int> section;   // 0 профиль, 1 внешний вид, 2 уведомления, 3 данные, 4 соединение, 5 аккаунт
+    callback close();
+    callback select(int);
+    // Профиль.
+    in property <bool> profile-loading;
+    in property <bool> profile-saving;
+    in property <string> profile-error;
+    in property <image> photo;
+    in property <bool> has-photo;
+    in property <string> initials;
+    in property <color> tint;
+    in-out property <string> first-name;
+    in-out property <string> last-name;
+    in-out property <string> about;
+    in-out property <string> username;
+    in property <string> phone;
+    callback profile-edited();
+    callback save-profile();
+    callback pick-photo();
+    // Внешний вид.
+    in property <int> theme;       // 0 как в системе, 1 тёмная, 2 светлая, 3 из файла
+    in property <string> theme-file;
+    in property <int> text-size;
+    in property <int> lang;        // 0 русский, 1 English
+    in property <bool> gpu;
+    callback set-theme(int);
+    callback pick-theme();
+    callback set-text-size(int);
+    callback set-lang(int);
+    callback set-gpu(bool);
+    // Уведомления.
+    in property <bool> notify;
+    in property <bool> hide-text;
+    in property <bool> sound;
+    in property <bool> tray;
+    in property <bool> close-tray;
+    in property <bool> tray-available: true;
+    callback set-notify(bool);
+    callback set-hide-text(bool);
+    callback set-sound(bool);
+    callback set-tray(bool);
+    callback set-close-tray(bool);
+    // Данные и кэш.
+    in property <string> cache-size;
+    in property <string> db-size;
+    in property <int> cache-limit;   // номер в списке
+    in property <[string]> cache-limits;
+    in property <string> downloads;
+    callback set-cache-limit(int);
+    callback clear-cache();
+    callback pick-downloads();
+    // Соединение (прокси).
+    in-out property <int> proxy-kind;  // 0 нет, 1 SOCKS5, 2 MTProto
+    in-out property <string> proxy-addr;
+    in-out property <string> proxy-user;
+    in-out property <string> proxy-password;
+    in-out property <string> proxy-secret;
+    in property <string> proxy-check;
+    in property <bool> proxy-checking;
+    callback proxy-edited();
+    callback test-proxy();
+    callback save-proxy();
+    // Аккаунт.
+    in property <[SessionItem]> sessions;
+    in property <bool> sessions-loading;
+    in property <bool> confirm-logout;
+    callback terminate(string);
+    callback terminate-others();
+    callback ask-logout();
+    callback cancel-logout();
+    callback log-out();
+}
+
+component SectionTitle inherits Text {
+    color: Theme.text-muted;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+component Toggle inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> hint;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled();
+    spacing: 12px;
+    CheckBox { y: 2px; checked: root.checked; enabled: root.enabled; toggled => { root.toggled(); } }
+    VerticalLayout {
+        spacing: 2px;
+        Text { text: root.text; color: root.enabled ? Theme.text : Theme.text-muted; font-size: 13px; wrap: word-wrap; }
+        if root.hint != "": Text { text: root.hint; color: Theme.text-muted; font-size: 11px; wrap: word-wrap; }
+    }
+}
+
+component SectionItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    in property <bool> danger;
+    callback clicked();
+    height: 38px;
+    border-radius: 6px;
+    background: root.selected ? Theme.row-selected : ta.has-hover ? Theme.row-bg : transparent;
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    Text {
+        x: 12px;
+        text: root.text;
+        color: root.danger ? Theme.error : Theme.text;
+        font-size: 13px;
+        vertical-alignment: center;
+        height: parent.height;
+    }
+}
+
+component ProfilePage inherits VerticalLayout {
+    spacing: 14px;
+    if Settings.profile-loading: Text { text: @tr("Loading…"); color: Theme.text-muted; font-size: 13px; }
+    if !Settings.profile-loading: HorizontalLayout {
+        spacing: 16px;
+        alignment: start;
+        Rectangle {
+            width: 64px;
+            height: 64px;
+            border-radius: 32px;
+            background: Settings.has-photo ? transparent : Settings.tint;
+            if Settings.has-photo: Image { source: Settings.photo; width: 64px; height: 64px; }
+            if !Settings.has-photo: Text { text: Settings.initials; color: white; font-size: 22px; font-weight: 600; }
+        }
+        VerticalLayout {
+            alignment: center;
+            Link {
+                text: @tr("Change photo");
+                font-size: 13px;
+                horizontal-alignment: left;
+                clicked => { Settings.pick-photo(); }
+            }
+        }
+    }
+    if !Settings.profile-loading: VerticalLayout {
+        spacing: 10px;
+        SectionTitle { text: @tr("First name"); }
+        Field {
+            escape => { Settings.close(); } text <=> Settings.first-name; field-width: 360px; edited => { Settings.profile-edited(); } }
+        SectionTitle { text: @tr("Last name"); }
+        Field {
+            escape => { Settings.close(); } text <=> Settings.last-name; field-width: 360px; edited => { Settings.profile-edited(); } }
+        SectionTitle { text: @tr("About"); }
+        Field {
+            escape => { Settings.close(); }
+            text <=> Settings.about;
+            field-width: 360px;
+            placeholder: @tr("Up to 70 characters");
+            edited => { Settings.profile-edited(); }
+        }
+        SectionTitle { text: @tr("Public username"); }
+        Field {
+            escape => { Settings.close(); } text <=> Settings.username; field-width: 360px; prefix: "@"; edited => { Settings.profile-edited(); } }
+        Text { text: @tr("Phone: {}", Settings.phone); color: Theme.text-muted; font-size: 12px; }
+        if Settings.profile-error != "": Text { text: Settings.profile-error; color: Theme.error; font-size: 12px; }
+        HorizontalLayout {
+            alignment: start;
+            Button {
+                button-width: 160px;
+                text: Settings.profile-saving ? @tr("Saving…") : @tr("Save");
+                enabled: !Settings.profile-saving;
+                clicked => { Settings.save-profile(); }
+            }
+        }
+    }
+}
+
+component AppearancePage inherits VerticalLayout {
+    spacing: 12px;
+    SectionTitle { text: @tr("Theme"); }
+    Segmented {
+        width: 420px;
+        items: [@tr("System"), @tr("Dark"), @tr("Light"), @tr("From file")];
+        current: Settings.theme;
+        selected(i) => { Settings.set-theme(i); }
+    }
+    if Settings.theme == 3: HorizontalLayout {
+        spacing: 10px;
+        alignment: start;
+        Text { text: Settings.theme-file; color: Theme.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
+        Link { text: @tr("Choose file"); font-size: 12px; clicked => { Settings.pick-theme(); } }
+    }
+    SectionTitle { text: @tr("Text size"); }
+    HorizontalLayout {
+        spacing: 12px;
+        alignment: start;
+        Text { text: "A"; color: Theme.text; font-size: 12px; vertical-alignment: center; }
+        Rectangle {
+            width: 240px;
+            height: 24px;
+            property <float> f: (Settings.text-size - 12) / 8;
+            Rectangle { y: 10px; height: 4px; border-radius: 2px; background: Theme.card-border; }
+            Rectangle { x: 0; y: 10px; height: 4px; width: parent.width * parent.f; border-radius: 2px; background: Theme.link; }
+            Rectangle {
+                x: parent.width * parent.f - 8px;
+                y: 4px;
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                background: Theme.link;
+            }
+            size-ta := TouchArea {
+                mouse-cursor: pointer;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down || e.kind == PointerEventKind.up) {
+                        Settings.set-text-size(round(12 + 8 * max(0, min(1, self.mouse-x / self.width))));
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        Settings.set-text-size(round(12 + 8 * max(0, min(1, self.mouse-x / self.width))));
+                    }
+                }
+            }
+        }
+        Text { text: "A"; color: Theme.text; font-size: 20px; vertical-alignment: center; }
+        Text { text: Settings.text-size + " px"; color: Theme.text-muted; font-size: 12px; vertical-alignment: center; }
+    }
+    Rectangle {
+        width: 360px;
+        height: sample.preferred-height + 16px;
+        background: Theme.row-bg;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Theme.card-border;
+        sample := Text {
+            x: 10px;
+            width: parent.width - 20px;
+            text: @tr("This is how messages will look.");
+            color: Theme.text;
+            font-size: Settings.text-size * 1px;
+            wrap: word-wrap;
+        }
+    }
+    SectionTitle { text: @tr("Language"); }
+    Segmented {
+        width: 260px;
+        items: ["Русский", "English"];
+        current: Settings.lang;
+        selected(i) => { Settings.set-lang(i); }
+    }
+    SectionTitle { text: @tr("Graphics"); }
+    Toggle {
+        text: @tr("GPU rendering");
+        hint: @tr("Smoother on large windows, uses more memory. Takes effect after restart.");
+        checked: Settings.gpu;
+        toggled => { Settings.set-gpu(!Settings.gpu); }
+    }
+}
+
+component NotificationsPage inherits VerticalLayout {
+    spacing: 14px;
+    Toggle {
+        text: @tr("Show notifications");
+        hint: @tr("System notifications (D-Bus)");
+        checked: Settings.notify;
+        toggled => { Settings.set-notify(!Settings.notify); }
+    }
+    Toggle {
+        text: @tr("Hide message text");
+        enabled: Settings.notify;
+        checked: Settings.hide-text;
+        toggled => { Settings.set-hide-text(!Settings.hide-text); }
+    }
+    Toggle {
+        text: @tr("Notification sound");
+        enabled: Settings.notify;
+        checked: Settings.sound;
+        toggled => { Settings.set-sound(!Settings.sound); }
+    }
+    Toggle {
+        text: @tr("Tray icon with unread counter");
+        hint: Settings.tray-available ? "" : @tr("The desktop has no tray host");
+        checked: Settings.tray;
+        toggled => { Settings.set-tray(!Settings.tray); }
+    }
+    Toggle {
+        text: @tr("Closing the window hides it to the tray");
+        hint: @tr("If there is no tray, closing quits the app");
+        enabled: Settings.tray;
+        checked: Settings.close-tray;
+        toggled => { Settings.set-close-tray(!Settings.close-tray); }
+    }
+}
+
+component DataPage inherits VerticalLayout {
+    spacing: 12px;
+    SectionTitle { text: @tr("Cache"); }
+    Text {
+        text: @tr("Media: {}    Database: {}", Settings.cache-size, Settings.db-size);
+        color: Theme.text;
+        font-size: 13px;
+    }
+    SectionTitle { text: @tr("Media cache limit"); }
+    Segmented {
+        width: 420px;
+        items: Settings.cache-limits;
+        current: Settings.cache-limit;
+        selected(i) => { Settings.set-cache-limit(i); }
+    }
+    HorizontalLayout {
+        alignment: start;
+        Button { button-width: 200px; primary: false; text: @tr("Clear media cache"); clicked => { Settings.clear-cache(); } }
+    }
+    Text { text: @tr("Clearing does not delete messages or the session."); color: Theme.text-muted; font-size: 11px; }
+    SectionTitle { text: @tr("Downloads"); }
+    HorizontalLayout {
+        spacing: 12px;
+        alignment: start;
+        Text { text: Settings.downloads; color: Theme.text; font-size: 13px; vertical-alignment: center; overflow: elide; }
+        Link { text: @tr("Change"); font-size: 12px; clicked => { Settings.pick-downloads(); } }
+    }
+}
+
+component ConnectionPage inherits VerticalLayout {
+    spacing: 12px;
+    SectionTitle { text: @tr("Proxy"); }
+    Segmented {
+        width: 360px;
+        items: [@tr("None"), "SOCKS5", "MTProto"];
+        current: Settings.proxy-kind;
+        selected(i) => { Settings.proxy-kind = i; Settings.proxy-edited(); }
+    }
+    if Settings.proxy-kind != 0: VerticalLayout {
+        spacing: 10px;
+        Field {
+            escape => { Settings.close(); }
+            field-width: 360px;
+            placeholder: @tr("Address:port");
+            text <=> Settings.proxy-addr;
+            edited => { Settings.proxy-edited(); }
+        }
+        if Settings.proxy-kind == 1: Field {
+            escape => { Settings.close(); }
+            field-width: 360px;
+            placeholder: @tr("Username (optional)");
+            text <=> Settings.proxy-user;
+            edited => { Settings.proxy-edited(); }
+        }
+        if Settings.proxy-kind == 1: Field {
+            escape => { Settings.close(); }
+            field-width: 360px;
+            placeholder: @tr("Password (optional)");
+            password: true;
+            text <=> Settings.proxy-password;
+            edited => { Settings.proxy-edited(); }
+        }
+        if Settings.proxy-kind == 2: Field {
+            escape => { Settings.close(); }
+            field-width: 360px;
+            placeholder: @tr("Secret");
+            text <=> Settings.proxy-secret;
+            edited => { Settings.proxy-edited(); }
+        }
+    }
+    if Settings.proxy-check != "": Text { text: Settings.proxy-check; color: Theme.text-muted; font-size: 12px; }
+    HorizontalLayout {
+        spacing: 12px;
+        alignment: start;
+        if Settings.proxy-kind != 0: Button {
+            button-width: 150px;
+            primary: false;
+            text: Settings.proxy-checking ? @tr("Checking…") : @tr("Check");
+            enabled: !Settings.proxy-checking;
+            clicked => { Settings.test-proxy(); }
+        }
+        Button { button-width: 150px; text: @tr("Save"); clicked => { Settings.save-proxy(); } }
+    }
+}
+
+component AccountPage inherits VerticalLayout {
+    spacing: 12px;
+    SectionTitle { text: @tr("Active sessions"); }
+    if Settings.sessions-loading && Settings.sessions.length == 0: Text {
+        text: @tr("Loading…");
+        color: Theme.text-muted;
+        font-size: 13px;
+    }
+    for s in Settings.sessions: Rectangle {
+        height: row.preferred-height + 16px;
+        border-radius: 8px;
+        background: Theme.row-bg;
+        row := HorizontalLayout {
+            x: 12px;
+            width: parent.width - 24px;
+            y: 8px;
+            spacing: 10px;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 2px;
+                Text { text: s.title; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
+                Text { text: s.subtitle; color: Theme.text-muted; font-size: 11px; overflow: elide; }
+            }
+            if s.current: Text { text: @tr("This device"); color: Theme.link; font-size: 11px; vertical-alignment: center; }
+            if !s.current: Link {
+                text: @tr("End");
+                font-size: 12px;
+                color: Theme.error;
+                vertical-alignment: center;
+                clicked => { Settings.terminate(s.hash); }
+            }
+        }
+    }
+    if Settings.sessions.length > 1: HorizontalLayout {
+        alignment: start;
+        Button {
+            button-width: 260px;
+            primary: false;
+            text: @tr("End all other sessions");
+            clicked => { Settings.terminate-others(); }
+        }
+    }
+    Rectangle { height: 8px; }
+    HorizontalLayout {
+        alignment: start;
+        Button { button-width: 200px; primary: false; text: @tr("Log out"); clicked => { Settings.ask-logout(); } }
+    }
+}
+
+export component SettingsWindow inherits Modal {
+    property <bool> narrow: root.width < 760px;
+    // В узком окне: сначала список разделов, затем раздел с «назад».
+    property <bool> show-list: !root.narrow || root.list-mode;
+    in-out property <bool> list-mode: true;
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) { Settings.close(); return accept; }
+            reject
+        }
+    }
+    card := Rectangle {
+        width: root.narrow ? root.width : min(root.width - 40px, 820px);
+        height: root.narrow ? root.height : min(root.height - 40px, 600px);
+        background: Theme.card-bg;
+        border-radius: root.narrow ? 0px : Theme.radius;
+        border-width: root.narrow ? 0px : 1px;
+        border-color: Theme.card-border;
+        // Щелчок по пустому месту возвращает фокус окну (Esc закрывает).
+        TouchArea { clicked => { keys.focus(); } }
+        VerticalLayout {
+            // Шапка: «назад» в узком окне, заголовок, закрыть.
+            HorizontalLayout {
+                height: 52px;
+                padding-left: 18px;
+                padding-right: 10px;
+                spacing: 10px;
+                if root.narrow && !root.list-mode: Link {
+                    text: "‹ " + @tr("Back");
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    clicked => { root.list-mode = true; }
+                }
+                Text {
+                    text: @tr("Settings");
+                    color: Theme.text;
+                    font-size: 16px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Rectangle {
+                    width: 36px;
+                    border-radius: 18px;
+                    background: close-ta.has-hover ? Theme.row-bg : transparent;
+                    accessible-role: button;
+                    accessible-label: @tr("Close");
+                    close-ta := TouchArea { mouse-cursor: pointer; clicked => { Settings.close(); } }
+                    Path {
+                        width: 12px;
+                        height: 12px;
+                        stroke: Theme.text-muted;
+                        stroke-width: 1.5px;
+                        viewbox-width: 12;
+                        viewbox-height: 12;
+                        commands: "M 1 1 L 11 11 M 11 1 L 1 11";
+                    }
+                }
+            }
+            Rectangle { height: 1px; background: Theme.card-border; }
+            HorizontalLayout {
+                vertical-stretch: 1;
+                if root.show-list: VerticalLayout {
+                    width: root.narrow ? card.width : 200px;
+                    padding: 10px;
+                    spacing: 2px;
+                    alignment: start;
+                    for name[i] in [@tr("Profile"), @tr("Appearance"), @tr("Notifications"), @tr("Data and cache"),
+                        @tr("Connection"), @tr("Account")]: SectionItem {
+                        text: name;
+                        selected: !root.narrow && Settings.section == i;
+                        clicked => { root.list-mode = false; Settings.select(i); keys.focus(); }
+                    }
+                }
+                if !root.narrow: Rectangle { width: 1px; background: Theme.card-border; }
+                if !root.narrow || !root.list-mode: Flickable {
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        padding: 22px;
+                        spacing: 14px;
+                        alignment: start;
+                        if Settings.section == 0: ProfilePage { }
+                        if Settings.section == 1: AppearancePage { }
+                        if Settings.section == 2: NotificationsPage { }
+                        if Settings.section == 3: DataPage { }
+                        if Settings.section == 4: ConnectionPage { }
+                        if Settings.section == 5: AccountPage { }
+                    }
+                }
+            }
+        }
+    }
+    if Settings.confirm-logout: Rectangle {
+        background: Theme.window-bg;
+        TouchArea { }
+        Confirm {
+            text: @tr("Log out? The session will be ended and all local data (messages, cache, keys) deleted.");
+            ok-text: @tr("Log out");
+            ok => { Settings.log-out(); }
+            cancel => { Settings.cancel-logout(); }
+        }
+    }
+}

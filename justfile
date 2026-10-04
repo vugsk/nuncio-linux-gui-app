@@ -84,6 +84,7 @@ e2e:
     tests/listtest.sh
     tests/mediatest.sh
     tests/playtest.sh
+    tests/settingstest.sh
 
 # Проверки качества (раздел 4 заметки о сборке).
 lint:

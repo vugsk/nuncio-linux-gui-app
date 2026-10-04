@@ -25,9 +25,10 @@ const (
 // ErrCancelled — пользователь закрыл диалог.
 var ErrCancelled = errors.New("portal: отменено")
 
-// OpenFiles — выбрать файлы (multiple — несколько). Пути локальные.
-func OpenFiles(ctx context.Context, title string, multiple bool) ([]string, error) {
-	return call(ctx, "OpenFile", title, map[string]dbus.Variant{"multiple": dbus.MakeVariant(multiple)})
+// OpenFiles — выбрать файлы (multiple — несколько) или папку (directory). Пути локальные.
+func OpenFiles(ctx context.Context, title string, multiple, directory bool) ([]string, error) {
+	return call(ctx, "OpenFile", title, map[string]dbus.Variant{"multiple": dbus.MakeVariant(multiple),
+		"directory": dbus.MakeVariant(directory)})
 }
 
 // SaveFile — выбрать, куда сохранить файл с предложенным именем.

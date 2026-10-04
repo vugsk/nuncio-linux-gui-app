@@ -25,7 +25,7 @@ export component Button inherits Rectangle {
     }
     Text {
         text: root.text;
-        color: root.enabled ? Theme.text : Theme.text-muted;
+        color: !root.enabled ? Theme.text-muted : root.primary ? Theme.on-accent : Theme.text;
         font-size: Theme.body-size;
         horizontal-alignment: center;
         vertical-alignment: center;

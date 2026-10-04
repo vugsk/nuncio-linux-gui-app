@@ -41,7 +41,7 @@ func (s *Service) pickFiles(ctx context.Context, id uint64, c *pb.PickFiles) *pb
 	if paths, ok := testPick(); ok {
 		return payload(id, &pb.FilePaths{Paths: paths})
 	}
-	paths, err := portal.OpenFiles(ctx, c.GetTitle(), c.GetMultiple())
+	paths, err := portal.OpenFiles(ctx, c.GetTitle(), c.GetMultiple(), c.GetDirectory())
 	if errors.Is(err, portal.ErrCancelled) {
 		return payload(id, &pb.FilePaths{})
 	}

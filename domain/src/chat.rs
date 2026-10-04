@@ -82,6 +82,14 @@ pub enum ChatEffect {
     ClearCache,
     /// Взять картинку из буфера обмена (если там нет текста) в панель подготовки.
     PasteImage,
+    /// Настройки (В9): сохранить и применить значения приложения.
+    SettingsChanged(crate::settings::AppSettings),
+    /// Сменить язык интерфейса (сохранить и применить).
+    SetLanguage(String),
+    /// Прокси сохранён в окне настроек — в config.toml.
+    SaveProxy(crate::model::ProxySettings),
+    /// Измерить кэш и базу для раздела «Данные и кэш».
+    MeasureStorage,
 }
 
 /// Режим поля ввода: ответ или правка (одна панель над полем, Дз-2).
@@ -195,6 +203,8 @@ pub enum ChatIntent {
     ClearCache,
     /// Ctrl+V в поле ввода: картинка из буфера — в панель подготовки (Св-4).
     PasteImage,
+    /// Окно настроек (В9).
+    Settings(crate::settings::SettingsIntent),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,6 +228,14 @@ pub(crate) enum Pending {
     Download { key: String, size: i64 },
     /// Системный диалог выбора файлов; `append` — «+ ещё» к панели подготовки.
     Pick { append: bool },
+    /// Окно настроек (В9).
+    Profile,
+    Sessions,
+    ProxyCheck,
+    PickTheme,
+    PickDownloads,
+    PickPhoto,
+    ProfilePhoto,
     /// Вложения из очереди (одно или альбом).
     OutboxMedia { local_ids: Vec<i64> },
     /// Сохранение файла из окна просмотра.
@@ -257,6 +275,10 @@ pub struct ChatModel {
     pub audio_seq: u64,
     /// Панель подготовки вложений (Св-4).
     pub prepare: Option<crate::attach::Prepare>,
+    /// Окно настроек и значения приложения (В9; значения — из config.toml).
+    pub settings: Option<crate::settings::SettingsView>,
+    pub app_settings: crate::settings::AppSettings,
+    pub proxy_settings: crate::model::ProxySettings,
     pub open: Option<i64>,
     /// Окно истории открытого чата, по возрастанию id (очередь отправки в конце).
     pub history: Vec<Message>,
@@ -769,6 +791,7 @@ impl ChatModel {
             ChatIntent::PrepareAsPhoto(on) => self.prepare_as_photo(on),
             ChatIntent::PrepareRemove(i) => self.prepare_remove(i),
             ChatIntent::PrepareCancel => self.prepare = None,
+            ChatIntent::Settings(si) => self.settings_intent(si, &mut out),
             ChatIntent::PasteImage => {
                 if self.open.is_some() {
                     out.push(ChatEffect::PasteImage);
@@ -1103,6 +1126,13 @@ impl ChatModel {
             Pending::Pick { append } => self.picked(append, r, out),
             Pending::OutboxMedia { local_ids } => self.media_sent(local_ids, r, out),
             Pending::Save => self.saved(r),
+            p @ (Pending::Profile
+            | Pending::Sessions
+            | Pending::ProxyCheck
+            | Pending::PickTheme
+            | Pending::PickDownloads
+            | Pending::PickPhoto
+            | Pending::ProfilePhoto) => self.settings_result(p, r, out),
             Pending::Other => {}
             Pending::PickerSearch | Pending::Contacts => {
                 if let Payload::Peers(peers) = &r.payload {

@@ -4757,6 +4757,7 @@ dependencies = [
  "skrifa 0.47.0",
  "slint",
  "slint-build",
+ "toml",
  "unicode-linebreak",
  "unicode-segmentation",
  "zune-jpeg",

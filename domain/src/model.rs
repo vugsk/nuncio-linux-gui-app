@@ -470,10 +470,47 @@ pub enum Command {
     SendVote { peer: PeerRef, msg_id: i32, options: Vec<Vec<u8>> },
     /// Системный диалог выбора файлов (Св-4); результат — `Payload::FilePaths`.
     PickFiles { multiple: bool, title: String },
+    /// Системный диалог выбора папки (настройки, папка загрузок).
+    PickFolder { title: String },
     /// Сохранить файл из кэша через системный диалог; результат — `Payload::File`.
     SaveFileAs { src: String, name: String, title: String },
     /// Отправить вложения (одно или альбомом); результат — `Payload::SentList`.
     SendMedia { peer: PeerRef, items: Vec<MediaUpload>, reply_to: i32 },
+    /// Профиль (Нс-3); результат — `Payload::Profile`.
+    GetProfile,
+    /// `username: Some` — сменить имя пользователя (пустое — убрать).
+    UpdateProfile { first_name: String, last_name: String, about: String, username: Option<String> },
+    SetProfilePhoto { path: String },
+    /// Активные сеансы; результат — `Payload::Sessions`.
+    GetSessions,
+    /// Следить за темой рабочего стола (события `SystemTheme`).
+    WatchSystem,
+    /// Завершить сеанс; `hash` 0 — все, кроме текущего.
+    TerminateSession { hash: i64 },
+}
+
+/// Свой профиль.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Profile {
+    pub me: Peer,
+    pub first_name: String,
+    pub last_name: String,
+    pub about: String,
+    pub username: String,
+    pub phone: String,
+}
+
+/// Активный сеанс аккаунта.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Session {
+    pub hash: i64,
+    pub current: bool,
+    pub device: String,
+    pub platform: String,
+    pub app: String,
+    pub ip: String,
+    pub country: String,
+    pub date_active: i64,
 }
 
 /// Шаг входа.
@@ -592,6 +629,8 @@ pub enum Payload {
     ChatInfo(ChatInfo),
     FilePaths(Vec<String>),
     SentList(Vec<Message>),
+    Profile(Profile),
+    Sessions(Vec<Session>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -612,4 +651,6 @@ pub enum Event {
     Fatal(String),
     /// Ход передачи файла: id команды, начавшей её.
     Transfer { cmd_id: u64, done: i64, total: i64 },
+    /// Тема рабочего стола (портал): 0 — не задано, 1 — тёмная, 2 — светлая.
+    SystemTheme(i32),
 }

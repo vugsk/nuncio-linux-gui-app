@@ -109,12 +109,14 @@ pub struct Config {
     pub proxy: ProxySettings,
     /// Тестовые серверы Telegram (запасной путь, Э-2 п. 7).
     pub test_servers: bool,
+    /// Настройки приложения (В9): внешний вид, уведомления, данные.
+    pub app: crate::settings::AppSettings,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self { version: 1, lang: String::new(), last_country: String::new(), proxy: ProxySettings::default(),
-            test_servers: false }
+            test_servers: false, app: crate::settings::AppSettings::default() }
     }
 }
 

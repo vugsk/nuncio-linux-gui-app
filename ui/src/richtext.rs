@@ -199,9 +199,17 @@ thread_local! {
 }
 
 /// Ширины и позиции графем по шрифтам интерфейса (поток интерфейса).
-#[derive(Default)]
+/// Кегль — у экземпляра: у ленты он из настройки «Размер текста» (В9), у
+/// поля ввода — `SIZE`.
 pub struct Fonts {
     cache: RefCell<HashMap<(Face, String), Stops>>,
+    size: f32,
+}
+
+impl Default for Fonts {
+    fn default() -> Self {
+        Self { cache: RefCell::new(HashMap::new()), size: SIZE }
+    }
 }
 
 /// Позиции границ графем внутри фрагмента: `(смещение в байтах, x)`,
@@ -211,6 +219,23 @@ pub type Stops = Vec<(usize, f32)>;
 impl Fonts {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Сменить кегль (ширины считаются заново).
+    pub fn set_size(&mut self, px: f32) {
+        if (px - self.size).abs() > f32::EPSILON {
+            self.size = px;
+            self.cache.borrow_mut().clear();
+        }
+    }
+
+    pub fn size(&self) -> f32 {
+        self.size
+    }
+
+    /// Ячейка эмодзи в строке при этом кегле (18 px в 20 при 13 px).
+    pub fn emoji_cell(&self) -> f32 {
+        (EMOJI * self.size / SIZE).round() + 2.0
     }
 
     /// Есть ли основной шрифт (без него — только оценка).
@@ -244,7 +269,7 @@ impl Fonts {
                     .glyph_infos()
                     .iter()
                     .zip(out.glyph_positions())
-                    .map(|(i, p)| (i.cluster as usize, p.x_advance as f32 * sh.scale, i.glyph_id == 0))
+                    .map(|(i, p)| (i.cluster as usize, p.x_advance as f32 * sh.scale * self.size / SIZE, i.glyph_id == 0))
                     .collect();
                 adv.sort_by_key(|a| a.0);
                 adv
@@ -261,7 +286,7 @@ impl Fonts {
                 // узнать (псевдографику «─│» он берёт из CJK — шириной в кегль).
                 // Оценка с запасом: строка перенесётся чуть раньше, но за пузырь
                 // не вылезет.
-                w = SIZE;
+                w = self.size;
             }
             x += w;
             stops.push((end, x));
@@ -360,7 +385,7 @@ fn atoms(text: &str, para: std::ops::Range<usize>, spans: &[Span], fonts: &Fonts
                     end: para.start + at + g.len(),
                     style: st,
                     emoji: true,
-                    w: EMOJI_CELL,
+                    w: fonts.emoji_cell(),
                     break_before: std::mem::take(&mut first) && at > 0,
                     space: false,
                 });
@@ -389,7 +414,7 @@ fn atoms(text: &str, para: std::ops::Range<usize>, spans: &[Span], fonts: &Fonts
 
 /// Раскладка текста со стилями в строки шириной до `max` (без полей).
 pub fn layout(text: &str, spans: &[Span], max: f32, fonts: &Fonts) -> Vec<Line> {
-    let max = (max - SLACK).max(EMOJI_CELL * 2.0);
+    let max = (max - SLACK).max(fonts.emoji_cell() * 2.0);
     let mut lines = Vec::new();
     let mut para_start = 0;
     for para in text.split('\n') {
@@ -466,7 +491,7 @@ fn assemble(text: &str, atoms: Vec<Atom>, fonts: &Fonts, para: std::ops::Range<u
     for s in &mut segs {
         s.text = text[s.start..s.end].to_string();
         s.x = x;
-        s.w = if s.emoji { EMOJI_CELL } else { fonts.width(s.style, &s.text) };
+        s.w = if s.emoji { fonts.emoji_cell() } else { fonts.width(s.style, &s.text) };
         x += s.w;
     }
     let start = segs.first().map(|s| s.start).unwrap_or(para.start);

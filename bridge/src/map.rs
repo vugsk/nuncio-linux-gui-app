@@ -381,7 +381,20 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
         Command::SendVote { peer, msg_id, options } => {
             C::SendVote(proto::SendVote { peer: Some(peer_ref_to(peer)), msg_id, options })
         }
-        Command::PickFiles { multiple, title } => C::PickFiles(proto::PickFiles { multiple, title }),
+        Command::PickFiles { multiple, title } => C::PickFiles(proto::PickFiles { multiple, title, directory: false }),
+        Command::PickFolder { title } => C::PickFiles(proto::PickFiles { multiple: false, title, directory: true }),
+        Command::GetProfile => C::GetProfile(proto::GetProfile {}),
+        Command::UpdateProfile { first_name, last_name, about, username } => C::UpdateProfile(proto::UpdateProfile {
+            first_name,
+            last_name,
+            about,
+            set_username: username.is_some(),
+            username: username.unwrap_or_default(),
+        }),
+        Command::SetProfilePhoto { path } => C::SetProfilePhoto(proto::SetProfilePhoto { path }),
+        Command::GetSessions => C::GetSessions(proto::GetSessions {}),
+        Command::WatchSystem => C::WatchSystem(proto::WatchSystem {}),
+        Command::TerminateSession { hash } => C::TerminateSession(proto::TerminateSession { hash }),
         Command::SaveFileAs { src, name, title } => C::SaveFileAs(proto::SaveFileAs { src, name, title }),
         Command::SendMedia { peer, items, reply_to } => C::SendMedia(proto::SendMedia {
             peer: Some(peer_ref_to(peer)),
@@ -488,6 +501,29 @@ pub fn event_from(ev: proto::Event) -> Option<Event> {
                 Some(P::Peers(p)) => Payload::Peers(p.peers.into_iter().map(peer_from).collect()),
                 Some(P::Folders(f)) => Payload::Folders(f.folders.into_iter().map(folder_from).collect()),
                 Some(P::FilePaths(f)) => Payload::FilePaths(f.paths),
+                Some(P::Profile(p)) => Payload::Profile(domain::model::Profile {
+                    me: p.self_.map(peer_from).unwrap_or_default(),
+                    first_name: p.first_name,
+                    last_name: p.last_name,
+                    about: p.about,
+                    username: p.username,
+                    phone: p.phone,
+                }),
+                Some(P::Sessions(l)) => Payload::Sessions(
+                    l.sessions
+                        .into_iter()
+                        .map(|x| domain::model::Session {
+                            hash: x.hash,
+                            current: x.current,
+                            device: x.device,
+                            platform: x.platform,
+                            app: x.app,
+                            ip: x.ip,
+                            country: x.country,
+                            date_active: x.date_active,
+                        })
+                        .collect(),
+                ),
                 Some(P::SentList(s)) => Payload::SentList(s.messages.into_iter().map(message_from).collect()),
                 Some(P::ChatInfo(c)) => Payload::ChatInfo(ChatInfo {
                     peer_id: c.peer_id,
@@ -522,6 +558,7 @@ pub fn event_from(ev: proto::Event) -> Option<Event> {
         }
         E::Fatal(f) => Event::Fatal(f.text),
         E::Transfer(t) => Event::Transfer { cmd_id: t.cmd_id, done: t.done, total: t.total },
+        E::System(s) => Event::SystemTheme(s.color_scheme),
     })
 }
 

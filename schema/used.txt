@@ -100,3 +100,12 @@ inputMediaDocument
 inputSingleMedia
 inputFile
 inputFileBig
+
+# В9: профиль и активные сеансы (Нс-2, Нс-3)
+account.updateProfile
+account.updateUsername
+account.checkUsername
+photos.uploadProfilePhoto
+account.getAuthorizations
+account.resetAuthorization
+auth.resetAuthorizations

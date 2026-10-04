@@ -117,6 +117,8 @@ pub struct LoginModel {
     pub user: Option<User>,
     pub proxy: ProxyDialog,
     pub saved_proxy: ProxySettings,
+    /// Тема рабочего стола из портала (0 — не задано, 1 — тёмная, 2 — светлая).
+    pub system_theme: i32,
 
     pub now: i64,
     next_id: u64,
@@ -481,6 +483,7 @@ impl LoginModel {
                 self.screen = Some(Screen::Critical(Critical { kind, detail: text }));
             }
             Event::Transfer { .. } => {}
+            Event::SystemTheme(v) => self.system_theme = v,
             Event::Fatal(text) => {
                 self.screen = Some(Screen::Critical(Critical { kind: CriticalKind::NetworkFailed, detail: text }));
             }

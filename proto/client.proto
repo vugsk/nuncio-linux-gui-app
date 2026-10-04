@@ -363,6 +363,12 @@ message Command {
     PickFiles pick_files = 57;
     SaveFileAs save_file_as = 58;
     SendMedia send_media = 35;
+    GetProfile get_profile = 48;
+    UpdateProfile update_profile = 49;
+    SetProfilePhoto set_profile_photo = 50;
+    GetSessions get_sessions = 51;
+    TerminateSession terminate_session = 52;
+    WatchSystem watch_system = 59;
     Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
   }
 }
@@ -475,7 +481,17 @@ message Event {
     FatalError fatal = 6;
     StartupError startup = 7;
     TransferProgress transfer = 8;
+    SystemPrefs system = 9;
   }
+}
+
+// Предпочтения рабочего стола (портал org.freedesktop.portal.Settings, В9):
+// при старте и при каждой смене.
+// Следить за темой рабочего стола: SystemPrefs сразу и при каждой смене.
+message WatchSystem {}
+
+message SystemPrefs {
+  int32 color_scheme = 1;   // 0 — не задано, 1 — тёмная, 2 — светлая
 }
 
 // Ход передачи файла (скачивание или выгрузка): id — команды, которая её начала.
@@ -560,6 +576,8 @@ message CommandResult {
     ChatInfo chat_info = 109;
     FilePaths file_paths = 110;
     SentList sent_list = 111;
+    Profile profile = 112;
+    SessionList sessions = 113;
   }
 }
 
@@ -607,7 +625,7 @@ message SendVote { PeerRef peer = 1; int32 msg_id = 2; repeated bytes options = 
 
 // Системный диалог выбора файлов (xdg-desktop-portal, Св-4). Результат —
 // FilePaths; закрытый диалог — пустой список.
-message PickFiles { bool multiple = 1; string title = 2; }
+message PickFiles { bool multiple = 1; string title = 2; bool directory = 3; }
 message FilePaths { repeated string paths = 1; }
 
 // Сохранить файл из кэша через системный диалог (окно просмотра). Результат — FilePath.
@@ -626,6 +644,42 @@ message MediaUpload {
   repeated MessageEntity entities = 7;
 }
 message SendMedia { PeerRef peer = 1; repeated MediaUpload items = 2; int32 reply_to = 3; }
+
+// Профиль (Нс-3): свои имя, фамилия, «о себе», имя пользователя, телефон.
+message GetProfile {}
+message Profile {
+  Peer self = 1;          // фото — photo_id/photo_dc (скачивается как аватар)
+  string first_name = 2;
+  string last_name = 3;
+  string about = 4;
+  string username = 5;
+  string phone = 6;
+}
+// Пустое поле — не менять; username — отдельным запросом, если изменился.
+message UpdateProfile {
+  string first_name = 1;
+  string last_name = 2;
+  string about = 3;
+  string username = 4;
+  bool set_username = 5;
+}
+message SetProfilePhoto { string path = 1; }
+
+// Активные сеансы (раздел «Аккаунт», Нс-2).
+message GetSessions {}
+message Session {
+  int64 hash = 1;          // 0 у текущего
+  bool current = 2;
+  string device = 3;
+  string platform = 4;
+  string app = 5;
+  string ip = 6;
+  string country = 7;
+  int64 date_active = 8;
+}
+message SessionList { repeated Session sessions = 1; }
+// hash 0 — завершить все, кроме текущего.
+message TerminateSession { int64 hash = 1; }
 message SentList { repeated Message messages = 1; }
 
 // Изменить папку (пункт «В папку…», Сп-4): папка целиком и ссылки на все её чаты.

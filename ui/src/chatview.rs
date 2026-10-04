@@ -291,6 +291,11 @@ pub fn media_toggle(app: &App, msg: i32) -> bool {
     done
 }
 
+/// Размер текста сообщений (В9): раскладка заново.
+pub fn set_text_size(app: &App, px: u32) {
+    with(app, |r| r.rich.set_text_size(px as f32));
+}
+
 fn with(app: &App, f: impl FnOnce(&mut ChatRenderer)) {
     RENDERER.with(|r| {
         if let Ok(mut r) = r.try_borrow_mut() {
@@ -620,6 +625,14 @@ impl RichCache {
         rich_rows(lines, links)
     }
 
+    fn set_text_size(&mut self, px: f32) {
+        if (self.fonts.size() - px).abs() > f32::EPSILON {
+            self.fonts.set_size(px);
+            self.lines.clear();
+            self.width = 0;
+        }
+    }
+
     /// Простой текст с эмодзи (опросы) — строками с картинками эмодзи; без эмодзи — None.
     fn plain_lines(&mut self, text: &str, width: f32) -> Option<ModelRc<RichLine>> {
         if !richtext::has_emoji(text) {
@@ -863,6 +876,7 @@ impl ChatRenderer {
         crate::composer::sync_model(app, m);
         chat.set_error(m.error.clone().unwrap_or_default().into());
         self.sync_prepare(app, m, avatars, ru);
+        crate::settingsview::render(app, m, avatars);
         self.sync_viewer(m, avatars, ru);
     }
 

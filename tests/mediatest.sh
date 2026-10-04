@@ -319,9 +319,16 @@ media_dir = f"{t}/home/cache/media"
 wait(lambda: not any(n.endswith(".part") for n in os.listdir(media_dir)), 20)
 time.sleep(2)
 before = sum(os.path.getsize(os.path.join(f"{t}/home/cache/media", n)) for n in os.listdir(f"{t}/home/cache/media"))
+# Настройки → «Данные и кэш» → «Очистить кэш медиа» (окно 820×600 по центру).
+CX, CY = (W - 820) // 2, (H - 600) // 2
 click(30, 26)
 click(100, 56 + 6 + 18)
+time.sleep(1)
+click(CX + 100, CY + 53 + 10 + 3 * 40 + 19)
+time.sleep(0.8)
+click(CX + 201 + 22 + 100, CY + 75 + 16 + 12 + 17 + 12 + 16 + 12 + 36 + 12 + 22)
 time.sleep(1.5)
+key("Escape")
 left = os.listdir(f"{t}/home/cache/media")
 check(db("SELECT count(*) FROM media") == [(0,)] and not left, f"кэш очищен: было {before // 1024} КБ, осталось {left}")
 shot("12-cache-cleared")

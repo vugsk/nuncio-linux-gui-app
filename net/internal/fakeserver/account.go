@@ -34,7 +34,13 @@ type Account struct {
 	Folders    []FakeFolder
 	Files      map[int64][]byte // содержимое файлов вложений по id (upload.getFile)
 	Thumbs     map[int64][]byte // превью документов по id документа (thumb_size)
-	PartDelay  time.Duration    // задержка на часть файла (виден ход скачивания)
+	// Свой профиль (настройки, В9).
+	LastName  string
+	SelfAbout string
+	Username  string
+	photoID   int64
+	sessions  []*tl.Authorization
+	PartDelay time.Duration // задержка на часть файла (виден ход скачивания)
 
 	mu            sync.Mutex
 	authorized    map[uint64]bool // auth_key_id -> вошли
@@ -285,8 +291,16 @@ func (a *Account) init() {
 }
 
 func (a *Account) user() *tl.User {
-	name := a.FirstName
-	return &tl.User{Self: true, Id: a.UserID, FirstName: &name}
+	name, last, phone := a.FirstName, a.LastName, a.Phone
+	u := &tl.User{Self: true, Id: a.UserID, FirstName: &name, LastName: &last, Phone: &phone, AccessHash: &a.UserID}
+	if a.Username != "" {
+		un := a.Username
+		u.Username = &un
+	}
+	if a.photoID != 0 {
+		u.Photo = &tl.UserProfilePhoto{PhotoId: a.photoID, DcId: 2}
+	}
+	return u
 }
 
 func (a *Account) authorization() *tl.AuthAuthorization {
@@ -670,6 +684,12 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 		}
 		u, _ := r.Id.(*tl.InputUser)
 		full := &tl.UserFull{Settings: &tl.PeerSettings{}, NotifySettings: &tl.PeerNotifySettings{}}
+		if _, self := r.Id.(*tl.InputUserSelf); self {
+			full.Id = a.UserID
+			about := a.SelfAbout
+			full.About = &about
+			return &tl.UsersUserFull{FullUser: full, Chats: []tl.ChatClass{}, Users: []tl.UserClass{a.user()}}, nil
+		}
 		if u != nil {
 			full.Id = u.UserId
 			for _, c := range a.Contacts {
@@ -861,6 +881,69 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 			}
 		}
 		return u, nil
+	case *tl.AccountUpdateProfileRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		if r.FirstName != nil {
+			a.FirstName = *r.FirstName
+		}
+		if r.LastName != nil {
+			a.LastName = *r.LastName
+		}
+		if r.About != nil {
+			a.SelfAbout = *r.About
+		}
+		fmt.Printf("профиль: %s|%s|%s\n", a.FirstName, a.LastName, a.SelfAbout)
+		return a.user(), nil
+	case *tl.AccountUpdateUsernameRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		if r.Username == "taken" {
+			return nil, &rpcErr{400, "USERNAME_OCCUPIED"}
+		}
+		a.Username = r.Username
+		fmt.Printf("имя пользователя: %s\n", a.Username)
+		return a.user(), nil
+	case *tl.PhotosUploadProfilePhotoRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		data, _, err := a.assemble(r.File)
+		if err != nil {
+			return nil, err
+		}
+		a.photoID = a.newFileID()
+		a.Files[a.photoID] = data
+		return &tl.PhotosPhoto{Photo: &tl.Photo{Id: a.photoID, AccessHash: 1, FileReference: []byte{1}, DcId: 2,
+			Sizes: []tl.PhotoSizeClass{}}, Users: []tl.UserClass{a.user()}}, nil
+	case *tl.AccountGetAuthorizationsRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		return &tl.AccountAuthorizations{AuthorizationTtlDays: 180, Authorizations: a.authorizations()}, nil
+	case *tl.AccountResetAuthorizationRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		a.authorizations()
+		for i, s := range a.sessions {
+			if s.Hash == r.Hash && !s.Current {
+				a.sessions = append(a.sessions[:i], a.sessions[i+1:]...)
+				fmt.Printf("сеансов: %d\n", len(a.sessions))
+				break
+			}
+		}
+		return boolTrue{}, nil
+	case *tl.AuthResetAuthorizationsRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		a.authorizations()
+		a.sessions = a.sessions[:1]
+		fmt.Printf("сеансов: %d\n", len(a.sessions))
+		return boolTrue{}, nil
 	case *tl.MessagesSendVoteRequest:
 		if !a.authorized[key] {
 			return nil, unauthorized

@@ -522,3 +522,153 @@ msgstr "В чате"
 
 msgid "Forwarded from"
 msgstr "Переслано из"
+
+msgid "Settings"
+msgstr "Настройки"
+
+msgid "Change photo"
+msgstr "Сменить фото"
+
+msgid "Last name"
+msgstr "Фамилия"
+
+msgid "About"
+msgstr "О себе"
+
+msgid "Up to 70 characters"
+msgstr "До 70 знаков"
+
+msgid "Phone: {}"
+msgstr "Телефон: {}"
+
+msgid "Saving…"
+msgstr "Сохранение…"
+
+msgid "Theme"
+msgstr "Тема"
+
+msgid "System"
+msgstr "Как в системе"
+
+msgid "Dark"
+msgstr "Тёмная"
+
+msgid "Light"
+msgstr "Светлая"
+
+msgid "From file"
+msgstr "Из файла"
+
+msgid "Choose file"
+msgstr "Выбрать файл"
+
+msgid "Text size"
+msgstr "Размер текста"
+
+msgid "This is how messages will look."
+msgstr "Так будут выглядеть сообщения."
+
+msgid "Language"
+msgstr "Язык"
+
+msgid "Graphics"
+msgstr "Графика"
+
+msgid "GPU rendering"
+msgstr "Графика: GPU"
+
+msgid "Smoother on large windows, uses more memory. Takes effect after restart."
+msgstr "Плавнее на большом окне, но больше памяти. Применится после перезапуска."
+
+msgid "Show notifications"
+msgstr "Показывать уведомления"
+
+msgid "System notifications (D-Bus)"
+msgstr "Системные, через D-Bus"
+
+msgid "Hide message text"
+msgstr "Скрывать текст сообщения"
+
+msgid "Notification sound"
+msgstr "Звук уведомления"
+
+msgid "Tray icon with unread counter"
+msgstr "Значок в трее со счётчиком"
+
+msgid "The desktop has no tray host"
+msgstr "В этом окружении нет трея"
+
+msgid "Closing the window hides it to the tray"
+msgstr "Закрытие окна сворачивает в трей"
+
+msgid "If there is no tray, closing quits the app"
+msgstr "Если трея нет, закрытие завершает приложение"
+
+msgid "Cache"
+msgstr "Кэш"
+
+msgid "Media: {}    Database: {}"
+msgstr "Медиа: {}    База: {}"
+
+msgid "Media cache limit"
+msgstr "Лимит кэша медиа"
+
+msgid "Clear media cache"
+msgstr "Очистить кэш медиа"
+
+msgid "Clearing does not delete messages or the session."
+msgstr "Очистка не удаляет сообщения и сессию."
+
+msgid "Downloads"
+msgstr "Загрузки"
+
+msgid "Change"
+msgstr "Изменить"
+
+msgid "Proxy"
+msgstr "Прокси"
+
+msgid "None"
+msgstr "Нет"
+
+msgid "Address:port"
+msgstr "Адрес:порт"
+
+msgid "Username (optional)"
+msgstr "Логин (необязательно)"
+
+msgid "Password (optional)"
+msgstr "Пароль (необязательно)"
+
+msgid "Check"
+msgstr "Проверить"
+
+msgid "Active sessions"
+msgstr "Активные сеансы"
+
+msgid "This device"
+msgstr "Это устройство"
+
+msgid "End"
+msgstr "Завершить"
+
+msgid "End all other sessions"
+msgstr "Завершить все остальные"
+
+msgid "Profile"
+msgstr "Профиль"
+
+msgid "Appearance"
+msgstr "Внешний вид"
+
+msgid "Data and cache"
+msgstr "Данные и кэш"
+
+msgid "Connection"
+msgstr "Соединение"
+
+msgid "Account"
+msgstr "Аккаунт"
+
+msgid "Public username"
+msgstr "Имя пользователя"

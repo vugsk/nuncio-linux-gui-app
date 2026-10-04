@@ -95,6 +95,8 @@ func (a *Account) fileBytes(loc tl.InputFileLocationClass, off int64, limit int3
 	switch l := loc.(type) {
 	case *tl.InputPhotoFileLocation:
 		id = l.Id
+	case *tl.InputPeerPhotoFileLocation:
+		id = l.PhotoId
 	case *tl.InputDocumentFileLocation:
 		id = l.Id
 		if l.ThumbSize != "" {
@@ -323,4 +325,23 @@ func VideoChat(gif, gifThumb, round, roundThumb, video, voice []byte, files, thu
 			FileReference: []byte{2}, Date: 1, MimeType: "audio/ogg", Size: int64(len(voice)), DcId: 2,
 			Attributes: []tl.DocumentAttributeClass{&tl.DocumentAttributeAudio{Voice: true, Duration: 3}}}}},
 	}
+}
+
+// authorizations — сеансы аккаунта: этот и два других (для раздела «Аккаунт»).
+func (a *Account) authorizations() []tl.AuthorizationClass {
+	if a.sessions == nil {
+		a.sessions = []*tl.Authorization{
+			{Current: true, Hash: 0, DeviceModel: "nuncio", Platform: "Linux", AppName: "nuncio", AppVersion: "0.1.0",
+				Ip: "127.0.0.1", Country: "RU", DateActive: int32(time.Now().Unix())},
+			{Hash: 101, DeviceModel: "Pixel 8", Platform: "Android", AppName: "Telegram Android", AppVersion: "12.0",
+				Ip: "10.0.0.2", Country: "RU", DateActive: int32(time.Now().Unix()) - 3600},
+			{Hash: 102, DeviceModel: "MacBook", Platform: "macOS", AppName: "Telegram Desktop", AppVersion: "6.1",
+				Ip: "10.0.0.3", Country: "DE", DateActive: int32(time.Now().Unix()) - 86400},
+		}
+	}
+	out := make([]tl.AuthorizationClass, len(a.sessions))
+	for i, s := range a.sessions {
+		out[i] = s
+	}
+	return out
 }

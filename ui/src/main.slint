@@ -2,6 +2,7 @@
 // (Дизайн - Каркас и навигация, раздел 2; Дизайн - Список диалогов; Дизайн - Чат).
 // Упрощённо по плану В4: пузыри без вложений и форматирования, обычный
 // TextInput, стандартная прокрутка. Узкое окно (меньше 780 px, Дз-6′) — одна колонка.
+import { Settings, SettingsWindow } from "settings.slint";
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Button, Link, Modal, Confirm, Field, CheckBox } from "widgets.slint";
@@ -382,6 +383,7 @@ export global Chat {
     callback prepare-cancel();
     // Временный пункт меню до настроек (В9).
     callback clear-cache();
+    callback open-settings();
 }
 
 component Avatar inherits Rectangle {
@@ -603,7 +605,7 @@ component DialogRow inherits Rectangle {
                         padding-right: 6px;
                         Text {
                             text: root.item.unread > 999 ? "999+" : root.item.unread;
-                            color: root.item.selected ? Theme.row-selected : #0e1621;
+                            color: root.item.selected ? Theme.row-selected : Theme.window-bg;
                             font-size: 11px;
                             font-weight: 600;
                             horizontal-alignment: center;
@@ -708,7 +710,7 @@ component ThinScrollbar inherits Rectangle {
         y: (-root.pos) / root.range * (root.height - root.th);
         height: root.th;
         border-radius: 3px;
-        background: ta.pressed ? Theme.link : ta.has-hover ? #8a9bb0c0 : #8a9bb080;
+        background: ta.pressed ? Theme.link : ta.has-hover ? Theme.thumb-hover : Theme.thumb;
     }
 }
 
@@ -933,11 +935,11 @@ component DialogList inherits Rectangle {
             Rectangle {
                 height: 36px;
                 border-radius: 4px;
-                background: cache-touch.has-hover ? Theme.row-bg : transparent;
-                cache-touch := TouchArea { clicked => { Chat.clear-cache(); } }
+                background: set-touch.has-hover ? Theme.row-bg : transparent;
+                set-touch := TouchArea { clicked => { Chat.open-settings(); } }
                 Text {
                     x: 10px;
-                    text: @tr("Clear cache");
+                    text: @tr("Settings");
                     color: Theme.text;
                     font-size: 13px;
                     vertical-alignment: center;
@@ -987,7 +989,7 @@ component Meta inherits HorizontalLayout {
         y: 1px;
         border-radius: 7px;
         background: Theme.error;
-        Text { text: "!"; color: #1e1e1e; font-size: 10px; font-weight: 700; }
+        Text { text: "!"; color: Theme.on-link; font-size: 10px; font-weight: 700; }
     }
     if root.hover && root.item.send-state == 0: Text {
         text: root.item.time;
@@ -1008,14 +1010,14 @@ component Meta inherits HorizontalLayout {
 component RichText inherits Rectangle {
     in property <RichSeg> seg;
     width: t.preferred-width;
-    background: seg.mono ? #ffffff12 : transparent;
+    background: seg.mono ? Theme.mono-bg : transparent;
     border-radius: 3px;
     t := Text {
         x: 0;
         height: parent.height;
         text: root.seg.text;
         color: root.seg.link != "" ? Theme.link : Theme.text;
-        font-size: 13px;
+        font-size: Theme.msg-size;
         font-weight: root.seg.bold ? 700 : 400;
         font-italic: root.seg.italic;
         font-family: root.seg.mono ? Chat.mono-family : "";
@@ -1041,12 +1043,12 @@ component RichText inherits Rectangle {
 component RichLines inherits VerticalLayout {
     in property <[RichLine]> lines;
     for line in root.lines: HorizontalLayout {
-        height: 20px;
+        height: Theme.msg-line;
         alignment: start;
         for seg in line.segs: HorizontalLayout {
-            // Эмодзи 18 px в ячейке 20 px (спайк О-14).
+            // Эмодзи в ячейке на 2 px шире (спайк О-14); размер — от настройки.
             padding: seg.emoji ? 1px : 0px;
-            if seg.emoji: Image { source: seg.image; width: 18px; height: 18px; }
+            if seg.emoji: Image { source: seg.image; width: Theme.msg-emoji; height: Theme.msg-emoji; }
             if !seg.emoji: RichText { seg: seg; }
         }
     }
@@ -1065,7 +1067,7 @@ component MediaImage inherits Rectangle {
     in property <bool> round;
     in property <bool> gif;
     border-radius: root.round ? self.width / 2 : 10px;
-    background: root.has-img ? transparent : #ffffff10;
+    background: root.has-img ? transparent : Theme.soft;
     clip: true;
     if root.has-img: Image { source: root.img; width: parent.width; height: parent.height; image-fit: fill; }
     // Кадр, играющий в ленте, — поверх превью (маска уже наложена в Rust).
@@ -1195,7 +1197,7 @@ component MediaBlock inherits VerticalLayout {
             Text {
                 text: root.item.file-state == 0 ? "↓" : root.item.file-state == 1 ? "✕" : root.item.file-state == 3 ? "❚❚"
                     : root.item.file-voice ? "▶" : "≡";
-                color: #1e1e1e;
+                color: Theme.on-link;
                 font-size: 18px;
                 font-weight: 700;
             }
@@ -1210,7 +1212,7 @@ component MediaBlock inherits VerticalLayout {
             Text { text: root.item.file-name; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
             if root.item.file-state == 1 || root.item.file-state >= 3: Rectangle {
                 height: 3px;
-                background: #ffffff20;
+                background: Theme.soft-strong;
                 border-radius: 1px;
                 Rectangle { x: 0; width: parent.width * root.item.file-progress; background: Theme.link; border-radius: 1px; }
             }
@@ -1247,12 +1249,12 @@ component MediaBlock inherits VerticalLayout {
             border-radius: 6px;
             border-width: root.item.poll-voted ? 0px : 1px;
             border-color: Theme.card-border;
-            background: !root.item.poll-voted && ta.has-hover ? #ffffff10 : transparent;
+            background: !root.item.poll-voted && ta.has-hover ? Theme.soft : transparent;
             if root.item.poll-voted: Rectangle {
                 x: 0;
                 width: parent.width * o.share;
                 border-radius: 6px;
-                background: o.correct ? #3a6b4a : o.chosen ? #2f5a86 : #ffffff18;
+                background: o.correct ? Theme.poll-correct : o.chosen ? Theme.poll-chosen : Theme.soft-strong;
             }
             HorizontalLayout {
                 padding-left: 8px;
@@ -1316,10 +1318,10 @@ component Bubble inherits VerticalLayout {
             property <length> inset: self.visual ? 6px : 0px;
             max-width: self.fit > 0 ? self.fit : self.full;
             min-width: self.fit;
-            background: self.big || self.bare ? transparent : root.item.send-state == 3 ? #3a2530 : root.item.out ? Theme.accent : Theme.row-bg;
+            background: self.big || self.bare ? transparent : root.item.send-state == 3 ? Theme.bubble-error : root.item.out ? Theme.bubble-out : Theme.bubble-in;
             border-radius: 10px;
             border-width: self.big || self.bare ? 0px : 1px;
-            border-color: root.item.send-state == 3 ? Theme.error : root.item.out ? Theme.accent-border : Theme.card-border;
+            border-color: root.item.send-state == 3 ? Theme.error : root.item.out ? Theme.bubble-out-border : Theme.bubble-in-border;
             VerticalLayout {
                 padding: bub.visual ? 4px : 8px;
                 padding-left: bub.visual ? 4px : 10px;
@@ -1367,7 +1369,7 @@ component Bubble inherits VerticalLayout {
                             Rectangle { width: 3px; background: root.item.reply-color; border-radius: 1px; }
                             VerticalLayout {
                                 Text { text: root.item.reply-author; color: root.item.reply-color; font-size: 11px; font-weight: 600; overflow: elide; }
-                                Text { text: root.item.reply-text; color: #c9d6e2; font-size: 11px; overflow: elide; }
+                                Text { text: root.item.reply-text; color: Theme.reply-text; font-size: 11px; overflow: elide; }
                             }
                         }
                     }
@@ -1390,7 +1392,7 @@ component Bubble inherits VerticalLayout {
                     if !root.item.rich: Text {
                         text: root.item.text;
                         color: Theme.text;
-                        font-size: 13px;
+                        font-size: Theme.msg-size;
                         wrap: word-wrap;
                     }
                     if root.item.rich: RichLines { lines: root.item.lines; }
@@ -1891,13 +1893,13 @@ component ChatPane inherits Rectangle {
                 }
                 Rectangle {
                     border-radius: 3px;
-                    background: bar.has-hover || bar.pressed ? #ffffff10 : transparent;
+                    background: bar.has-hover || bar.pressed ? Theme.soft : transparent;
                 }
                 Rectangle {
                     y: (bar.pressed ? parent.drag : Chat.thumb) * (parent.height - parent.th);
                     height: parent.th;
                     border-radius: 3px;
-                    background: bar.pressed ? Theme.link : bar.has-hover ? #8a9bb0c0 : #8a9bb080;
+                    background: bar.pressed ? Theme.link : bar.has-hover ? Theme.thumb-hover : Theme.thumb;
                 }
             }
             // «Вниз» со счётчиком (Чт-10): вне конца истории.
@@ -1978,7 +1980,7 @@ component ChatPane inherits Rectangle {
                             height: 56px;
                             y: 2px;
                             border-radius: 6px;
-                            background: f.has-img ? transparent : #ffffff10;
+                            background: f.has-img ? transparent : Theme.soft;
                             clip: true;
                             if f.has-img: Image { source: f.img; width: 56px; height: 56px; }
                             if !f.has-img: VerticalLayout {
@@ -2645,5 +2647,11 @@ export component MainScreen inherits Rectangle {
             ok => { Chat.confirm-logout = false; Chat.log-out(); }
             cancel => { Chat.confirm-logout = false; }
         }
+    }
+    // Настройки (В9): модальное окно поверх главного.
+    if Settings.open: SettingsWindow {
+        width: 100%;
+        height: 100%;
+        init => { self.focus(); }
     }
 }

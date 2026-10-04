@@ -19,6 +19,28 @@ pub mod composer;
 pub mod photo;
 pub mod richtext;
 pub mod scroller;
+pub mod settingsview;
+pub mod theme;
+
+thread_local! {
+    static APPEARANCE: std::cell::RefCell<Option<(domain::settings::AppSettings, i32)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Тема и размер текста (В9): применяются, только когда изменились.
+pub fn apply_appearance(app: &App, s: &domain::settings::AppSettings, system: i32) {
+    let key = (s.clone(), system);
+    let changed = APPEARANCE.with(|a| {
+        let mut a = a.borrow_mut();
+        let c = a.as_ref() != Some(&key);
+        *a = Some(key);
+        c
+    });
+    if changed {
+        theme::apply(app, &theme::palette(s, system), s.text_size);
+        chatview::set_text_size(app, s.text_size);
+    }
+}
 
 mod flags {
     include!(concat!(env!("OUT_DIR"), "/flags.rs"));
@@ -483,6 +505,10 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
         chat.on_prepare_cancel(move || s(Action::Chat(ChatIntent::PrepareCancel)));
         let s = send.clone();
         chat.on_clear_cache(move || s(Action::Chat(ChatIntent::ClearCache)));
+        let s = send.clone();
+        chat.on_open_settings(move || s(Action::Chat(ChatIntent::Settings(domain::settings::SettingsIntent::Open))));
+        let s = send.clone();
+        settingsview::bind(app, move |i| s(Action::Chat(i)));
         let s = send.clone();
         chat.on_vote(move |id, option| {
             if let (Ok(id), Ok(option)) = (id.parse(), usize::try_from(option)) {

@@ -27,6 +27,7 @@ import (
 	"nuncio/net/dc"
 	pb "nuncio/net/gen"
 	"nuncio/net/keyring"
+	"nuncio/net/portal"
 	"nuncio/net/rpc"
 	"nuncio/net/session"
 	"nuncio/net/tl"
@@ -37,7 +38,7 @@ import (
 
 // ProtoVersion — версия client.proto, которую понимает эта сборка.
 // Rust передаёт свою в StartRequest; несовпадение — ошибка старта.
-const ProtoVersion = 9
+const ProtoVersion = 10
 
 // QueueSize — предел очереди событий (обратное давление, правило 5).
 const QueueSize = 1024
@@ -70,15 +71,16 @@ type Service struct {
 	Keyring auth.Keyring
 	Addrs   map[int]string
 
-	mu       sync.Mutex
-	started  bool
-	stopped  bool
-	commands chan command
-	events   chan []byte
-	done     chan struct{}
-	wg       sync.WaitGroup
-	ctx      context.Context
-	cancel   context.CancelFunc
+	mu        sync.Mutex
+	started   bool
+	stopped   bool
+	commands  chan command
+	events    chan []byte
+	done      chan struct{}
+	wg        sync.WaitGroup
+	ctx       context.Context
+	watchOnce sync.Once
+	cancel    context.CancelFunc
 
 	req      *pb.StartRequest
 	m        *dc.Manager
@@ -523,6 +525,24 @@ func (s *Service) handle(c command) (ev *pb.Event) {
 		return s.saveFileAs(ctx, c.id, b.SaveFileAs)
 	case *pb.Command_SendMedia:
 		return s.sendMedia(ctx, c.id, b.SendMedia)
+	case *pb.Command_WatchSystem:
+		// Тема рабочего стола — для темы «Как в системе» (В9); до остановки сервиса.
+		s.watchOnce.Do(func() {
+			go portal.WatchColorScheme(s.ctx, func(v int32) {
+				s.emit(&pb.Event{Body: &pb.Event_System{System: &pb.SystemPrefs{ColorScheme: v}}})
+			})
+		})
+		return payload(c.id, nil)
+	case *pb.Command_GetProfile:
+		return s.getProfile(ctx, c.id)
+	case *pb.Command_UpdateProfile:
+		return s.updateProfile(ctx, c.id, b.UpdateProfile)
+	case *pb.Command_SetProfilePhoto:
+		return s.setProfilePhoto(ctx, c.id, b.SetProfilePhoto)
+	case *pb.Command_GetSessions:
+		return s.getSessions(ctx, c.id)
+	case *pb.Command_TerminateSession:
+		return s.terminateSession(ctx, c.id, b.TerminateSession)
 	default:
 		return resultErrorKind(c.id, pb.Error_INTERNAL, "команда не поддерживается этой сборкой")
 	}

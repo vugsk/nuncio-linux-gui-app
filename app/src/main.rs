@@ -41,6 +41,8 @@ struct Outbox {
     avatars: HashMap<String, SharedPixelBuffer<Rgba8Pixel>>,
     images_ver: u64,
     lang: Option<String>,
+    /// Внешний вид (настройки и тема рабочего стола) — применяется на всех экранах.
+    appearance: Option<(domain::settings::AppSettings, i32)>,
     scheduled: bool,
 }
 
@@ -61,8 +63,22 @@ struct Domain {
     /// (`photo:ключ`, `strip:id`, `full:ключ`); версия растёт при изменении.
     avatars: HashMap<String, SharedPixelBuffer<Rgba8Pixel>>,
     images_ver: u64,
+    /// Язык, сменённый в настройках: применить при следующей публикации.
+    pending_lang: Option<String>,
     bad_avatars: HashSet<String>,
     bench_sent: bool,
+}
+
+/// Размер каталога со всем содержимым, байт.
+fn dir_size(dir: &std::path::Path) -> i64 {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    rd.flatten()
+        .map(|e| match e.metadata() {
+            Ok(m) if m.is_dir() => dir_size(&e.path()),
+            Ok(m) => m.len() as i64,
+            Err(_) => 0,
+        })
+        .sum()
 }
 
 /// Миниатюра файла в панели подготовки, px (2× для 48 px в интерфейсе).
@@ -104,6 +120,7 @@ impl Domain {
         if lang.is_some() {
             o.lang = lang;
         }
+        o.appearance = Some((self.cfg.app.clone(), self.model.system_theme));
         if o.scheduled {
             return;
         }
@@ -111,11 +128,14 @@ impl Domain {
         let out = self.out.clone();
         let ui = self.ui.clone();
         let _ = slint::invoke_from_event_loop(move || {
-            let (model, chat, avatars, lang) = {
+            let (model, chat, avatars, lang, appearance) = {
                 let mut o = out.lock().unwrap();
                 o.scheduled = false;
-                (o.model.take(), o.chat.take(), o.avatars.clone(), o.lang.take())
+                (o.model.take(), o.chat.take(), o.avatars.clone(), o.lang.take(), o.appearance.take())
             };
+            if let (Some(app), Some(a)) = (ui.upgrade(), appearance) {
+                ui::apply_appearance(&app, &a.0, a.1);
+            }
             if let Some(lang) = lang {
                 ui::apply_language(&lang);
             }
@@ -209,6 +229,35 @@ impl Domain {
                         }
                     }
                     ChatEffect::ClearCache => self.clear_cache(),
+                    ChatEffect::SettingsChanged(s) => {
+                        self.cfg.app = s;
+                        self.save_config();
+                    }
+                    ChatEffect::SetLanguage(lang) => {
+                        self.model.lang = lang.clone();
+                        if let Some(chat) = self.chat.as_mut() {
+                            chat.lang = lang.clone();
+                        }
+                        self.cfg.lang = lang.clone();
+                        self.save_config();
+                        self.pending_lang = Some(lang);
+                    }
+                    ChatEffect::SaveProxy(p) => {
+                        self.model.saved_proxy = p.clone();
+                        self.cfg.proxy = p;
+                        self.save_config();
+                    }
+                    ChatEffect::MeasureStorage => {
+                        let cache = dir_size(&self.paths.cache);
+                        let db = ["", "-wal", "-shm"]
+                            .iter()
+                            .filter_map(|s| std::fs::metadata(format!("{}{s}", self.paths.database().display())).ok())
+                            .map(|m| m.len() as i64)
+                            .sum();
+                        if let Some(chat) = self.chat.as_mut() {
+                            chat.set_storage_sizes(cache, db);
+                        }
+                    }
                     ChatEffect::PasteImage => {
                         if let Some(path) = self.paste_image() {
                             let files = inspect_file(&path).into_iter().collect();
@@ -241,12 +290,13 @@ impl Domain {
                         let now = now();
                         // Размер неизвестен заранее — по файлу.
                         let size = if size > 0 { size } else { std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0) };
+                        let limit = self.cfg.app.cache_limit_bytes();
                         let keep: HashSet<String> =
                             self.chat.as_ref().map(|c| c.window_media_keys().into_iter().collect()).unwrap_or_default();
                         let gone = self.db.as_ref().and_then(|db| {
                             db.call(move |s| {
                                 s.media_saved(&key, &path, size, now)?;
-                                s.media_evict(domain::media::CACHE_LIMIT, &keep)
+                                s.media_evict(limit, &keep)
                             })
                         });
                         match gone {
@@ -502,6 +552,8 @@ impl Domain {
         let viewer_photo = chat.viewer.and_then(|id| chat.history.iter().find(|m| m.id == id))
             .and_then(|m| m.media_info.as_deref())
             .is_some_and(|mi| matches!(mi.kind, domain::model::MediaKind::Photo | domain::model::MediaKind::WebPage));
+        // Своё фото в настройках (раздел «Профиль»).
+        let me = chat.settings.as_ref().map(|v| v.photo_path.clone()).filter(|p| !p.is_empty());
         if let Some(key) = chat.viewer_key().filter(|_| viewer_photo) {
             if let Some(path) = chat.media_paths.get(&key) {
                 let k = format!("full:{key}");
@@ -531,6 +583,9 @@ impl Domain {
         }
         if changed {
             self.images_ver += 1;
+        }
+        if let Some(p) = me {
+            self.decode_avatar(&p);
         }
     }
 
@@ -576,6 +631,12 @@ impl Domain {
         }
     }
 
+    fn save_config(&mut self) {
+        if let Err(err) = self.cfg.save(&self.paths.config) {
+            log::warn!("config.toml не сохранён: {err}");
+        }
+    }
+
     fn decode_avatar(&mut self, path: &str) {
         if path.is_empty() || self.avatars.contains_key(path) || self.bad_avatars.contains(path) {
             return;
@@ -597,6 +658,8 @@ impl Domain {
             (Screen::Main, false) => {
                 let self_id = self.model.user.as_ref().map(|u| u.id).unwrap_or(0);
                 let mut chat = ChatModel::new(self_id, &self.model.lang, now());
+                chat.app_settings = self.cfg.app.clone();
+                chat.proxy_settings = self.cfg.proxy.clone();
                 let fx = chat.enter();
                 self.chat = Some(chat);
                 self.run_chat(fx);
@@ -634,7 +697,8 @@ impl Domain {
                     let fx = c.intent(i);
                     self.run_chat(fx);
                 }
-                self.publish(None);
+                let lang = self.pending_lang.take();
+                self.publish(lang);
             }
             // «Повторить» на экране повреждённой базы: открыть базу ещё раз.
             Msg::Action(Action::Login(domain::login::Intent::Retry))
@@ -746,6 +810,10 @@ fn start_network(d: &mut Domain) {
     match GoBackend::start(&params) {
         Ok(b) => {
             let b: Arc<dyn Backend> = Arc::new(b);
+            // Тема рабочего стола (В9); ответ без полезной нагрузки никому не нужен.
+            if let Err(e) = b.submit(u64::MAX, domain::model::Command::WatchSystem) {
+                log::warn!("тема рабочего стола: {e}");
+            }
             d.backend = Some(b.clone());
             std::thread::Builder::new()
                 .name("nuncio-pump".into())
@@ -854,6 +922,7 @@ fn main() {
         chat: None,
         avatars: HashMap::new(),
         images_ver: 0,
+        pending_lang: None,
         bad_avatars: HashSet::new(),
         bench_sent: false,
     };
