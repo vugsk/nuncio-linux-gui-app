@@ -16,6 +16,7 @@ pub mod notify;
 pub mod outbox;
 pub mod phone;
 pub mod settings;
+pub mod shared;
 pub mod store;
 pub mod timefmt;
 

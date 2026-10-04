@@ -122,6 +122,9 @@ pub enum ListIntent {
     ToggleConfirmRevoke,
     ConfirmAction,
     CancelAction,
+    /// Вкладка общих медиа в «Сведениях» (`All` — участники).
+    SharedTab(SearchFilter),
+    SharedMore,
 }
 
 const SEARCH_PAGE: i32 = 50;
@@ -373,10 +376,15 @@ impl ChatModel {
                             self.load_info("", out); // участники — для фильтра «Отправитель»
                         }
                     }
-                    None => self.chat_search = None,
+                    None => {
+                        self.chat_search = None;
+                        self.shared = None;
+                    }
                 }
             }
             ListIntent::MembersQuery(q) => self.load_info(&q, out),
+            ListIntent::SharedTab(f) => self.shared_tab(f, out),
+            ListIntent::SharedMore => self.shared_more(out),
             ListIntent::ChatSearchQuery(q) => {
                 let cs = self.chat_search.get_or_insert_with(ChatSearch::default);
                 if cs.query != q {

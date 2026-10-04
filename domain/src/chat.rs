@@ -233,6 +233,7 @@ pub(crate) enum Pending {
     ServerPeers { query: String },
     ChatInfo { peer_id: i64 },
     ChatSearch { peer_id: i64, seq: u64 },
+    Shared { peer_id: i64, seq: u64 },
     ChatAction { peer_id: i64, kind: crate::model::ChatActionKind },
     Download { key: String, size: i64 },
     /// Системный диалог выбора файлов; `append` — «+ ещё» к панели подготовки.
@@ -267,6 +268,8 @@ pub struct ChatModel {
     pub panel: Option<crate::chatlist::Panel>,
     pub info: Option<crate::model::ChatInfo>,
     pub chat_search: Option<crate::chatlist::ChatSearch>,
+    /// Вкладка общих медиа панели «Сведения» (shared.rs).
+    pub shared: Option<crate::shared::SharedMedia>,
     pub confirm: Option<crate::chatlist::Confirm>,
     /// Вложения (В7, media.rs): скачивания в работе, скачанное окна, неудачи.
     pub transfers: HashMap<String, crate::media::Transfer>,
@@ -581,6 +584,7 @@ impl ChatModel {
                 self.error = None;
                 self.window = Window::default();
                 self.first_requested = false;
+                self.shared_chat_changed(&mut out);
                 self.seen = 0;
                 // Вход к первому непрочитанному с линией «Новые сообщения» (Чт-10).
                 let (unread, read_in) = self.open_row().map(|r| (r.dialog.unread_count, r.dialog.read_inbox_max_id))
@@ -832,7 +836,7 @@ impl ChatModel {
                 out.push(ChatEffect::ClearCache);
             }
             ChatIntent::ViewerStep(d) => {
-                let ids = self.photo_ids();
+                let ids = self.viewer_ids();
                 let pos = self.viewer.and_then(|v| ids.iter().position(|x| *x == v));
                 if let Some(next) = pos.and_then(|p| ids.get((p as i64 + i64::from(d)).max(0) as usize)) {
                     let next = *next;
@@ -1139,6 +1143,7 @@ impl ChatModel {
             | Pending::ChatInfo { .. }
             | Pending::ChatSearch { .. }
             | Pending::ChatAction { .. }) => self.list_result(p, r, out),
+            Pending::Shared { peer_id, seq } => self.shared_result(peer_id, seq, r, out),
             Pending::Download { key, size } => {
                 let path = match (&r.error, &r.payload) {
                     (None, Payload::File(p)) => Some(p.clone()),

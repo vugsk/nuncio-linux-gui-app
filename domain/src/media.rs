@@ -137,7 +137,7 @@ impl ChatModel {
     /// Ключи файлов, нужных окну истории (для поиска в кэше).
     pub fn window_media_keys(&self) -> Vec<String> {
         let mut keys = Vec::new();
-        for m in &self.history {
+        for m in self.history.iter().chain(self.shared_images_src()) {
             if let Some(mi) = &m.media_info {
                 keys.extend(auto_files(mi).into_iter().map(|f| f.key()));
                 if let Some(f) = &mi.file {
@@ -163,7 +163,7 @@ impl ChatModel {
         let Some(peer_id) = self.open else { return };
         let Some(peer) = self.peer_ref(peer_id) else { return };
         let mut want: Vec<(FileRef, i32, String)> = Vec::new();
-        for m in self.history.iter().rev() {
+        for m in self.history.iter().rev().chain(self.shared_images_src()) {
             let Some(mi) = &m.media_info else { continue };
             for f in auto_files(mi) {
                 let k = f.key();
@@ -195,7 +195,7 @@ impl ChatModel {
             self.cancel_upload(msg_id, out);
             return;
         }
-        let Some(m) = self.history.iter().find(|m| m.id == msg_id).cloned() else { return };
+        let Some(m) = self.find_msg(msg_id).cloned() else { return };
         let Some(mi) = m.media_info.clone() else { return };
         let Some(peer_id) = self.open else { return };
         let Some(peer) = self.peer_ref(peer_id) else { return };
@@ -314,7 +314,7 @@ impl ChatModel {
 
     /// Ключ файла, открытого в окне просмотра.
     pub fn viewer_key(&self) -> Option<String> {
-        let m = self.history.iter().find(|m| Some(m.id) == self.viewer)?;
+        let m = self.find_msg(self.viewer?)?;
         let mi = m.media_info.as_ref()?;
         mi.full.as_ref().or(mi.file.as_ref()).or(mi.webpage.as_ref().and_then(|w| w.photo.as_ref())).map(|f| f.key())
     }
@@ -331,6 +331,15 @@ impl ChatModel {
         };
         let (from, to) = (a.saturating_sub(NEAR), (b + NEAR + 1).min(n));
         self.history[from..to].iter().map(|m| m.id).collect()
+    }
+
+    /// Сообщения вкладки «Медиа», чьи картинки нужны сетке (остальные вкладки
+    /// сами ничего не скачивают).
+    fn shared_images_src(&self) -> &[Message] {
+        match &self.shared {
+            Some(s) if s.filter == crate::model::SearchFilter::Media => self.shared_items(),
+            _ => &[],
+        }
     }
 
     /// Фото чата в окне истории по порядку (стрелки окна просмотра).
