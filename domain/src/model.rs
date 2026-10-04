@@ -489,6 +489,12 @@ pub enum Command {
     ShowNotification { peer_id: i64, title: String, body: String, sound: bool },
     /// Значок в трее: состояние целиком (выключить — `enabled: false`).
     SetTray(TrayState),
+    /// Реклама чата (условия API Telegram); результат — `Payload::Sponsored`.
+    GetSponsored { peer: PeerRef },
+    ViewSponsored { random_id: Vec<u8> },
+    ClickSponsored { random_id: Vec<u8> },
+    /// `option` пусто — запросить причины; иначе — выбранная.
+    ReportSponsored { random_id: Vec<u8>, option: Vec<u8> },
     /// Завершить сеанс; `hash` 0 — все, кроме текущего.
     TerminateSession { hash: i64 },
 }
@@ -635,6 +641,10 @@ pub enum Payload {
     SentList(Vec<Message>),
     Profile(Profile),
     Sessions(Vec<Session>),
+    /// Рекламные сообщения чата (каналы и боты).
+    Sponsored(Vec<Sponsored>),
+    /// Ответ на жалобу на рекламу: выбрать причину, скрыто или принято.
+    SponsoredReport { kind: SponsoredReportKind, title: String, options: Vec<(String, Vec<u8>)> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -661,6 +671,27 @@ pub enum Event {
     NotificationClicked(i64),
     /// Значок в трее: доступность и щелчки.
     Tray(TrayEvent),
+}
+
+/// Рекламное сообщение (каналы и чаты с ботами).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Sponsored {
+    pub random_id: Vec<u8>,
+    pub title: String,
+    pub text: String,
+    pub url: String,
+    pub button: String,
+    pub sponsor_info: String,
+    pub additional_info: String,
+    pub can_report: bool,
+    pub recommended: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SponsoredReportKind {
+    Choose,
+    Hidden,
+    Reported,
 }
 
 /// Желаемое состояние значка в трее.

@@ -416,6 +416,8 @@ pub struct ChatRenderer {
     /// Последняя просьба домена играть голосовое и ещё не начатое (файл качается).
     audio_seq_seen: u64,
     audio_want: Option<i32>,
+    /// Просмотр рекламы уже отправлен (строка в окне).
+    sp_seen: bool,
 }
 
 /// Раскладка текстов с эмодзи и картинки эмодзи. Готовые модели строк
@@ -770,6 +772,10 @@ impl ChatRenderer {
             }
         }
         self.fill_media(&mut items, m, avatars, ru);
+        // Реклама — последней строкой ленты, когда видна последняя страница.
+        if m.sponsored_here().is_some() {
+            items.push(MessageItem { key: SPONSORED_KEY, sponsored: true, ..Default::default() });
+        }
         self.app = app.as_weak();
         // Голосовое: домен попросил играть — начать, когда файл скачан.
         if m.audio_seq != self.audio_seq_seen {
@@ -1574,7 +1580,21 @@ impl ChatRenderer {
         if let Some((t, b)) = v.top_row.zip(v.bottom_row) {
             self.sync_previews(t..=b);
         }
-        let vis = v.top_row.zip(v.bottom_row).and_then(|(t, b)| Some((self.items.get(t)?.key, self.items.get(b)?.key)));
+        // Строка рекламы — не сообщение: в диапазон видимых не входит, но её
+        // появление в окне — просмотр рекламы.
+        // Один раз на показ: строка ушла из ленты — следующее появление снова считается.
+        if !self.items.iter().any(|x| x.sponsored) {
+            self.sp_seen = false;
+        } else if !self.sp_seen && v.bottom_row.is_some_and(|b| self.items.get(b).is_some_and(|x| x.sponsored)) {
+            self.sp_seen = true;
+            send(ChatIntent::Sponsored(domain::sponsored::SponsoredIntent::Seen));
+        }
+        let msg_row = |i: usize| self.items[..=i.min(self.items.len().saturating_sub(1))].iter().rev().find(|x| !x.sponsored);
+        let vis = v
+            .top_row
+            .zip(v.bottom_row)
+            .filter(|_| !self.items.is_empty())
+            .and_then(|(t, b)| Some((msg_row(t)?.key, msg_row(b)?.key)));
         if vis.is_some() && vis != self.visible_sent {
             self.visible_sent = vis;
             if let Some((t, b)) = vis {
@@ -1588,6 +1608,27 @@ impl ChatRenderer {
             send(ChatIntent::Seen(id));
         }
     }
+}
+
+/// Ключ строки рекламы: отрицательный (не сообщение и не очередь отправки).
+const SPONSORED_KEY: i32 = i32::MIN + 1;
+
+/// Реклама в конце ленты (sponsored.rs).
+fn fill_sponsored(chat: &Chat, m: &ChatModel) {
+    let s = m.sponsored_here();
+    chat.set_sp_title(s.map(|s| s.ad.title.clone()).unwrap_or_default().into());
+    chat.set_sp_text(s.map(|s| s.ad.text.replace('\n', " ")).unwrap_or_default().into());
+    chat.set_sp_button(s.map(|s| s.ad.button.clone()).unwrap_or_default().into());
+    chat.set_sp_url(s.map(|s| s.ad.url.clone()).unwrap_or_default().into());
+    chat.set_sp_expanded(s.is_some_and(|s| s.expanded));
+    chat.set_sp_info_open(s.is_some_and(|s| s.info));
+    chat.set_sp_sponsor(s.map(|s| s.ad.sponsor_info.clone()).unwrap_or_default().into());
+    chat.set_sp_additional(s.map(|s| s.ad.additional_info.clone()).unwrap_or_default().into());
+    let report = s.and_then(|s| s.report.as_ref());
+    chat.set_sp_report_title(report.map(|(t, _)| if t.is_empty() { "…".to_string() } else { t.clone() }).unwrap_or_default().into());
+    chat.set_sp_report_options(model(
+        report.map(|(_, o)| o.iter().map(|(t, _)| t.clone().into()).collect()).unwrap_or_default(),
+    ));
 }
 
 /// Вид чата для разметки: 0 личный, 1 группа, 2 канал.
@@ -1798,6 +1839,7 @@ impl ChatRenderer {
             chat.set_info_members(model(items));
         }
         self.fill_shared(&chat, m, avatars, ru);
+        fill_sponsored(&chat, m);
         // Поиск по чату.
         if let Some(cs) = &m.chat_search {
             let me = if ru { "Вы" } else { "You" };

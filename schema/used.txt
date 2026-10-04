@@ -109,3 +109,9 @@ photos.uploadProfilePhoto
 account.getAuthorizations
 account.resetAuthorization
 auth.resetAuthorizations
+
+# В10: рекламные сообщения (условия API): каналы и боты
+messages.getSponsoredMessages
+messages.viewSponsoredMessage
+messages.clickSponsoredMessage
+messages.reportSponsoredMessage

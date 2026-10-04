@@ -21,6 +21,7 @@ import (
 // отдать нескольким серверам (DC): токены QR и авторизации общие.
 type Account struct {
 	Phone      string // только цифры
+	Ads        bool   // реклама в чатах с ботами (Contact.Bot)
 	Code       string
 	Password   string // пусто — без облачного пароля
 	Hint       string
@@ -172,7 +173,14 @@ func (a *Account) contactUsers() []tl.UserClass {
 	for _, c := range a.Contacts {
 		name := c.Name
 		h := c.AccessHash
-		out = append(out, &tl.User{Id: c.ID, FirstName: &name, AccessHash: &h})
+		u := &tl.User{Id: c.ID, FirstName: &name, AccessHash: &h, Bot: c.Bot}
+		if c.Bot {
+			// Бит bot общий с bot_info_version: без значения он не поднимается
+			// (как у настоящего сервера — у ботов версия есть всегда).
+			v := int32(1)
+			u.BotInfoVersion = &v
+		}
+		out = append(out, u)
 	}
 	return out
 }
@@ -224,6 +232,7 @@ type Contact struct {
 	Archived   bool
 	Muted      bool
 	Attach     []Attach // вложения к сообщениям из Messages
+	Bot        bool     // бот: в чате с ним есть реклама (Ads)
 }
 
 // FakeFolder — папка поддельного аккаунта: явно включённые собеседники и виды.
@@ -643,6 +652,34 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 		return &tl.Updates{Updates: []tl.UpdateClass{&tl.UpdatePinnedMessages{Pinned: m.pinned,
 			Peer: &tl.PeerUser{UserId: m.peer}, Messages: []int32{m.id}, Pts: a.pts, PtsCount: 1}},
 			Users: []tl.UserClass{}, Chats: []tl.ChatClass{}, Date: int32(time.Now().Unix())}, nil
+	case *tl.MessagesGetSponsoredMessagesRequest:
+		if !a.authorized[key] {
+			return nil, unauthorized
+		}
+		c := a.contact(r.Peer)
+		if !a.Ads || c == nil || !c.Bot {
+			return &tl.MessagesSponsoredMessagesEmpty{}, nil
+		}
+		info, extra := "ООО «Пример»", "ИНН 0000000000"
+		return &tl.MessagesSponsoredMessages{Messages: []tl.SponsoredMessageClass{&tl.SponsoredMessage{
+			RandomId: []byte{1, 2, 3, 4}, Url: "https://example.com/ad", Title: "Пример рекламы",
+			Message: "Текст рекламного объявления для проверки.", ButtonText: "Открыть", CanReport: true,
+			SponsorInfo: &info, AdditionalInfo: &extra}}, Chats: []tl.ChatClass{}, Users: []tl.UserClass{}}, nil
+	case *tl.MessagesViewSponsoredMessageRequest:
+		fmt.Println("реклама: просмотр")
+		return boolTrue{}, nil
+	case *tl.MessagesClickSponsoredMessageRequest:
+		fmt.Println("реклама: щелчок")
+		return boolTrue{}, nil
+	case *tl.MessagesReportSponsoredMessageRequest:
+		if len(r.Option) == 0 {
+			return &tl.ChannelsSponsoredMessageReportResultChooseOption{Title: "Почему скрыть?",
+				Options: []tl.SponsoredMessageReportOptionClass{
+					&tl.SponsoredMessageReportOption{Text: "Не интересно", Option: []byte{1}},
+					&tl.SponsoredMessageReportOption{Text: "Неприемлемо", Option: []byte{2}}}}, nil
+		}
+		fmt.Printf("реклама: жалоба %d\n", r.Option[0])
+		return &tl.ChannelsSponsoredMessageReportResultReported{}, nil
 	case *tl.MessagesSearchRequest:
 		if !a.authorized[key] {
 			return nil, unauthorized

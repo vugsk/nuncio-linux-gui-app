@@ -214,6 +214,8 @@ pub enum ChatIntent {
     /// Окно в фокусе или нет (свёрнуто, за другим, в трее): для открытого
     /// чата в неактивном окне уведомление тоже есть.
     WindowActive(bool),
+    /// Реклама в конце ленты (sponsored.rs).
+    Sponsored(crate::sponsored::SponsoredIntent),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,6 +236,8 @@ pub(crate) enum Pending {
     ChatInfo { peer_id: i64 },
     ChatSearch { peer_id: i64, seq: u64 },
     Shared { peer_id: i64, seq: u64 },
+    Sponsored { peer_id: i64 },
+    SponsoredReport,
     ChatAction { peer_id: i64, kind: crate::model::ChatActionKind },
     Download { key: String, size: i64 },
     /// Системный диалог выбора файлов; `append` — «+ ещё» к панели подготовки.
@@ -270,6 +274,8 @@ pub struct ChatModel {
     pub chat_search: Option<crate::chatlist::ChatSearch>,
     /// Вкладка общих медиа панели «Сведения» (shared.rs).
     pub shared: Option<crate::shared::SharedMedia>,
+    /// Реклама открытого чата (sponsored.rs).
+    pub sponsored: Option<crate::sponsored::SponsoredState>,
     pub confirm: Option<crate::chatlist::Confirm>,
     /// Вложения (В7, media.rs): скачивания в работе, скачанное окна, неудачи.
     pub transfers: HashMap<String, crate::media::Transfer>,
@@ -585,6 +591,7 @@ impl ChatModel {
                 self.window = Window::default();
                 self.first_requested = false;
                 self.shared_chat_changed(&mut out);
+                self.sponsored_chat_opened(&mut out);
                 self.seen = 0;
                 // Вход к первому непрочитанному с линией «Новые сообщения» (Чт-10).
                 let (unread, read_in) = self.open_row().map(|r| (r.dialog.unread_count, r.dialog.read_inbox_max_id))
@@ -822,6 +829,7 @@ impl ChatModel {
             ChatIntent::PrepareCancel => self.prepare = None,
             ChatIntent::Settings(si) => self.settings_intent(si, &mut out),
             ChatIntent::WindowActive(v) => self.window_active = v,
+            ChatIntent::Sponsored(i) => self.sponsored_intent(i, &mut out),
             ChatIntent::NotificationClicked(peer_id) => {
                 out = self.intent(ChatIntent::OpenChat(peer_id));
                 out.push(ChatEffect::RaiseWindow);
@@ -1144,6 +1152,8 @@ impl ChatModel {
             | Pending::ChatSearch { .. }
             | Pending::ChatAction { .. }) => self.list_result(p, r, out),
             Pending::Shared { peer_id, seq } => self.shared_result(peer_id, seq, r, out),
+            Pending::Sponsored { peer_id } => self.sponsored_result(peer_id, r),
+            Pending::SponsoredReport => self.sponsored_report_result(r),
             Pending::Download { key, size } => {
                 let path = match (&r.error, &r.payload) {
                     (None, Payload::File(p)) => Some(p.clone()),

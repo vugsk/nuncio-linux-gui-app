@@ -401,6 +401,12 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
             show_label: t.show_label,
             quit_label: t.quit_label,
         }),
+        Command::GetSponsored { peer } => C::GetSponsored(proto::GetSponsored { peer: Some(peer_ref_to(peer)) }),
+        Command::ViewSponsored { random_id } => C::ViewSponsored(proto::ViewSponsored { random_id }),
+        Command::ClickSponsored { random_id } => C::ClickSponsored(proto::ClickSponsored { random_id }),
+        Command::ReportSponsored { random_id, option } => {
+            C::ReportSponsored(proto::ReportSponsored { random_id, option })
+        }
         Command::ShowNotification { peer_id, title, body, sound } => {
             C::ShowNotification(proto::ShowNotification { peer_id, title, body, sound })
         }
@@ -534,6 +540,35 @@ pub fn event_from(ev: proto::Event) -> Option<Event> {
                         })
                         .collect(),
                 ),
+                Some(P::Sponsored(l)) => Payload::Sponsored(
+                    l.messages
+                        .into_iter()
+                        .map(|x| domain::model::Sponsored {
+                            random_id: x.random_id,
+                            title: x.title,
+                            text: x.text,
+                            url: x.url,
+                            button: x.button,
+                            sponsor_info: x.sponsor_info,
+                            additional_info: x.additional_info,
+                            can_report: x.can_report,
+                            recommended: x.recommended,
+                        })
+                        .collect(),
+                ),
+                Some(P::SponsoredReport(r)) => {
+                    use proto::sponsored_report::Kind as K;
+                    let kind = match K::try_from(r.kind).unwrap_or(K::Choose) {
+                        K::Choose => domain::model::SponsoredReportKind::Choose,
+                        K::Hidden => domain::model::SponsoredReportKind::Hidden,
+                        K::Reported => domain::model::SponsoredReportKind::Reported,
+                    };
+                    Payload::SponsoredReport {
+                        kind,
+                        title: r.title,
+                        options: r.options.into_iter().map(|o| (o.text, o.option)).collect(),
+                    }
+                }
                 Some(P::SentList(s)) => Payload::SentList(s.messages.into_iter().map(message_from).collect()),
                 Some(P::ChatInfo(c)) => Payload::ChatInfo(ChatInfo {
                     peer_id: c.peer_id,

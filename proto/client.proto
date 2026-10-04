@@ -371,6 +371,10 @@ message Command {
     WatchSystem watch_system = 59;
     ShowNotification show_notification = 64;
     SetTray set_tray = 65;
+    GetSponsored get_sponsored = 66;
+    ViewSponsored view_sponsored = 67;
+    ClickSponsored click_sponsored = 68;
+    ReportSponsored report_sponsored = 69;
     Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
   }
 }
@@ -530,6 +534,58 @@ message TrayEvent {
   Kind kind = 1;
 }
 
+// Рекламные сообщения (условия API Telegram): в каналах и чатах с ботами.
+// Результат GetSponsored — SponsoredList; Report — SponsoredReport.
+message GetSponsored {
+  PeerRef peer = 1;
+}
+
+message Sponsored {
+  bytes random_id = 1;
+  string title = 2;
+  string text = 3;
+  string url = 4;
+  string button = 5;
+  string sponsor_info = 6;
+  string additional_info = 7;
+  bool can_report = 8;
+  bool recommended = 9;
+}
+
+message SponsoredList {
+  repeated Sponsored messages = 1;
+}
+
+message ViewSponsored {
+  bytes random_id = 1;
+}
+
+message ClickSponsored {
+  bytes random_id = 1;
+}
+
+// option пусто — запросить варианты причины; иначе — выбранный вариант.
+message ReportSponsored {
+  bytes random_id = 1;
+  bytes option = 2;
+}
+
+message SponsoredReport {
+  enum Kind {
+    CHOOSE = 0;     // выбрать причину из options
+    HIDDEN = 1;     // реклама скрыта (Premium)
+    REPORTED = 2;   // жалоба принята
+  }
+  Kind kind = 1;
+  string title = 2;
+  repeated ReportOption options = 3;
+}
+
+message ReportOption {
+  string text = 1;
+  bytes option = 2;
+}
+
 message SystemPrefs {
   int32 color_scheme = 1;   // 0 — не задано, 1 — тёмная, 2 — светлая
 }
@@ -618,6 +674,8 @@ message CommandResult {
     SentList sent_list = 111;
     Profile profile = 112;
     SessionList sessions = 113;
+    SponsoredList sponsored = 114;
+    SponsoredReport sponsored_report = 115;
   }
 }
 

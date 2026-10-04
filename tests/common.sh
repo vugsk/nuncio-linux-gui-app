@@ -39,3 +39,6 @@ CONF
   BUS=$!
   until [ -s "$1/bus.addr" ]; do sleep 0.1; done
 }
+
+# Ссылки в проверках не открываются в браузере человека: адреса — в файл.
+export NUNCIO_TEST_OPEN=${NUNCIO_TEST_OPEN:-$T/opened.txt}

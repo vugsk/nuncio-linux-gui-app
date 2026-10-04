@@ -37,6 +37,7 @@ func main() {
 	photos := flag.Int("photos", 0, "чат «Фото» из стольких фото, самый новый (замер памяти при прокрутке)")
 	video := flag.String("video", "", "чат «Видео»: этот ролик и голосовое из -voice (проверка плеера)")
 	voice := flag.String("voice", "", "голосовое (ogg/opus) для чата «Видео»")
+	ads := flag.Bool("ads", false, "чат с ботом «Новости» и рекламой в нём (условия API)")
 	revoke := flag.Duration("revoke", 0, "через столько после входа завершить все сеансы (как с другого устройства)")
 	flag.Parse()
 
@@ -62,6 +63,11 @@ func main() {
 			{ID: 102, Name: "Архивный", AccessHash: 13, Archived: true, Unread: -1, Messages: []string{"старое"}},
 		}, acc.Contacts...)
 		acc.Folders = []fakeserver.FakeFolder{{ID: 2, Title: "Работа", Include: []int64{101}}}
+	}
+	if *ads {
+		acc.Ads = true
+		acc.Contacts = append(acc.Contacts, fakeserver.Contact{ID: 105, Name: "Новости", AccessHash: 16, Unread: -1,
+			Bot: true, Messages: []string{"новость 1", "новость 2", "новость 3"}})
 	}
 	if *media {
 		// Новее всех: чат «Вложения» — первый в списке.

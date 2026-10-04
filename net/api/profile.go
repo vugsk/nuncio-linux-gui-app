@@ -104,7 +104,7 @@ func (s *Service) terminateSession(ctx context.Context, id uint64, c *pb.Termina
 	return s.getSessions(ctx, id)
 }
 
-// payloadAny — ответы В9 (профиль, сеансы).
+// payloadAny — ответы В9 (профиль, сеансы) и рекламы.
 func payloadAny(id uint64, p any) *pb.Event {
 	r := &pb.CommandResult{CmdId: id}
 	switch v := p.(type) {
@@ -112,6 +112,10 @@ func payloadAny(id uint64, p any) *pb.Event {
 		r.Payload = &pb.CommandResult_Profile{Profile: v}
 	case *pb.SessionList:
 		r.Payload = &pb.CommandResult_Sessions{Sessions: v}
+	case *pb.SponsoredList:
+		r.Payload = &pb.CommandResult_Sponsored{Sponsored: v}
+	case *pb.SponsoredReport:
+		r.Payload = &pb.CommandResult_SponsoredReport{SponsoredReport: v}
 	}
 	return &pb.Event{Body: &pb.Event_Result{Result: r}}
 }

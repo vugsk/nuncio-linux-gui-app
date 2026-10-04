@@ -167,6 +167,7 @@ export struct MessageItem {
     pinned: bool,
     has-link: bool,
     key: int,             // id сообщения или −local_id (очередь): порядок и высоты строк
+    sponsored: bool,      // строка рекламы в конце ленты (условия API; данные — в Chat.sp-*)
     unread-divider: bool, // линия «Новые сообщения» перед сообщением (Чт-10)
     reply-id: string,     // клик по цитате — переход к исходному
     rich: bool,           // текст с эмодзи: рисовать `lines`, а не `text`
@@ -288,6 +289,23 @@ export global Chat {
     in property <bool> info-blocked;
     in property <bool> info-self;
     in property <[MemberItem]> info-members;
+    // Реклама в конце ленты (каналы и боты): одна строка, по щелчку — карточка.
+    in property <string> sp-title;
+    in property <string> sp-text;
+    in property <string> sp-button;
+    in property <string> sp-url;
+    in property <bool> sp-expanded;
+    in property <bool> sp-info-open;
+    in property <string> sp-sponsor;
+    in property <string> sp-additional;
+    in property <string> sp-report-title;
+    in property <[string]> sp-report-options;
+    callback sp-toggle();
+    callback sp-open();
+    callback sp-info(bool);
+    callback sp-hide();
+    callback sp-report-pick(int);
+    callback sp-report-cancel();
     // Вкладка сведений: 0 участники (или ничего), 1 медиа, 2 файлы, 3 ссылки, 4 голосовые.
     in property <int> shared-tab;
     in property <[SharedCell]> shared-cells;
@@ -1468,6 +1486,54 @@ component Bubble inherits VerticalLayout {
 }
 
 
+// Реклама одной строкой (решение пользователя: тише, чем в официальном
+// клиенте): «Реклама · заголовок · текст…», ⓘ и ✕; по щелчку — карточка.
+component SponsoredRow inherits HorizontalLayout {
+    padding-left: 12px;
+    padding-right: 12px;
+    Rectangle {
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.card-border;
+        background: ta.has-hover && !Chat.sp-expanded ? Theme.soft : transparent;
+        ta := TouchArea { mouse-cursor: pointer; clicked => { Chat.sp-toggle(); } }
+        VerticalLayout {
+            padding-left: 10px;
+            padding-right: 8px;
+            padding-top: 5px;
+            padding-bottom: 5px;
+            spacing: 4px;
+            HorizontalLayout {
+                spacing: 6px;
+                height: 18px;
+                Text { text: @tr("Ad"); color: Theme.text-muted; font-size: 11px; vertical-alignment: center; }
+                Text { text: "·"; color: Theme.text-muted; font-size: 11px; vertical-alignment: center; }
+                Text { text: Chat.sp-title; color: Theme.text-muted; font-size: 12px; font-weight: 600; vertical-alignment: center; overflow: elide; }
+                if !Chat.sp-expanded: Text {
+                    text: Chat.sp-text;
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                if Chat.sp-expanded: Rectangle { horizontal-stretch: 1; }
+                Link { text: "ⓘ"; font-size: 12px; color: Theme.text-muted; vertical-alignment: center; clicked => { Chat.sp-info(true); } }
+                Link { text: "✕"; font-size: 12px; color: Theme.text-muted; vertical-alignment: center; clicked => { Chat.sp-hide(); } }
+            }
+            if Chat.sp-expanded: Text { text: Chat.sp-text; color: Theme.text; font-size: 12px; wrap: word-wrap; }
+            if Chat.sp-expanded && Chat.sp-url != "": HorizontalLayout {
+                alignment: start;
+                Link {
+                    text: (Chat.sp-button != "" ? Chat.sp-button : @tr("Open")) + " →";
+                    font-size: 12px;
+                    clicked => { Chat.sp-open(); }
+                }
+            }
+        }
+    }
+}
+
 component MessageRow inherits VerticalLayout {
     in property <MessageItem> item;
     property <length> menu-x;
@@ -1528,7 +1594,8 @@ component MessageRow inherits VerticalLayout {
             }
         }
     }
-    if !root.item.service: Rectangle {
+    if root.item.sponsored: SponsoredRow { }
+    if !root.item.service && !root.item.sponsored: Rectangle {
         height: bubble.preferred-height;
         hover-area := TouchArea {
             pointer-event(e) => {
@@ -2736,6 +2803,64 @@ export component MainScreen inherits Rectangle {
             ok-text: @tr("Open");
             ok => { Chat.open-link-now(Chat.confirm-link); Chat.confirm-link = ""; }
             cancel => { Chat.confirm-link = ""; }
+        }
+    }
+    // Реклама: «О рекламодателе» и выбор причины жалобы.
+    if Chat.sp-info-open: Modal {
+        width: 100%;
+        height: 100%;
+        Rectangle {
+            width: 380px;
+            height: il.preferred-height;
+            background: Theme.card-bg;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            il := VerticalLayout {
+                padding: 22px;
+                spacing: 10px;
+                Text { text: @tr("About the advertiser"); color: Theme.text; font-size: 14px; font-weight: 600; }
+                if Chat.sp-sponsor != "": Text { text: Chat.sp-sponsor; color: Theme.text; font-size: 13px; wrap: word-wrap; }
+                if Chat.sp-additional != "": Text { text: Chat.sp-additional; color: Theme.text-muted; font-size: 12px; wrap: word-wrap; }
+                Text {
+                    text: @tr("Ads are shown by Telegram; this app is required to show them by the Telegram API terms.");
+                    color: Theme.text-muted;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    Button { button-width: 120px; primary: false; text: @tr("Close"); clicked => { Chat.sp-info(false); } }
+                }
+            }
+        }
+    }
+    if Chat.sp-report-title != "": Modal {
+        width: 100%;
+        height: 100%;
+        Rectangle {
+            width: 380px;
+            height: rl.preferred-height;
+            background: Theme.card-bg;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            rl := VerticalLayout {
+                padding: 22px;
+                spacing: 6px;
+                Text { text: Chat.sp-report-title; color: Theme.text; font-size: 14px; font-weight: 600; }
+                for o[i] in Chat.sp-report-options: Rectangle {
+                    height: 36px;
+                    border-radius: Theme.radius;
+                    background: ot.has-hover ? Theme.soft : transparent;
+                    ot := TouchArea { mouse-cursor: pointer; clicked => { Chat.sp-report-pick(i); } }
+                    Text { x: 10px; text: o; color: Theme.text; font-size: 13px; vertical-alignment: center; }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    Button { button-width: 120px; primary: false; text: @tr("Cancel"); clicked => { Chat.sp-report-cancel(); } }
+                }
+            }
         }
     }
     // Нс-6: выход с подтверждением — удаляются сессия, ключ, база и кэш.

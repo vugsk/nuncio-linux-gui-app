@@ -608,6 +608,29 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
             None => open_link(&url),
         });
         chat.on_open_link_now(|url| open_link(&url));
+        // Реклама: ссылка открывается сразу (как в официальном клиенте), домену — отметка щелчка.
+        {
+            use domain::sponsored::SponsoredIntent as Sp;
+            let sp = |i: Sp| Action::Chat(ChatIntent::Sponsored(i));
+            let s = send.clone();
+            chat.on_sp_toggle(move || s(sp(Sp::Toggle)));
+            let s = send.clone();
+            let a = app.as_weak();
+            chat.on_sp_open(move || {
+                if let Some(app) = a.upgrade() {
+                    open_link(&app.global::<Chat>().get_sp_url());
+                }
+                s(sp(Sp::Open));
+            });
+            let s = send.clone();
+            chat.on_sp_info(move |on| s(sp(Sp::Info(on))));
+            let s = send.clone();
+            chat.on_sp_hide(move || s(sp(Sp::Hide)));
+            let s = send.clone();
+            chat.on_sp_report_pick(move |i| s(sp(Sp::ReportPick(usize::try_from(i).unwrap_or(0)))));
+            let s = send.clone();
+            chat.on_sp_report_cancel(move || s(sp(Sp::ReportCancel)));
+        }
         chat.set_mono_family(richtext::mono_family().into());
         let s = send.clone();
         chat.on_thumb_release(move |f| s(Action::Chat(ChatIntent::JumpPermille((f * 1000.0) as i32))));
@@ -770,6 +793,14 @@ fn open_link(url: &str) {
     let lower = url.to_ascii_lowercase();
     if !(lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:")) {
         log::info!("ссылка не открыта: неподдерживаемая схема");
+        return;
+    }
+    // Проверки: вместо браузера человека — запись адреса в файл.
+    if let Some(path) = std::env::var_os("NUNCIO_TEST_OPEN") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(path) {
+            let _ = writeln!(f, "{url}");
+        }
         return;
     }
     if let Err(e) = std::process::Command::new("xdg-open").arg(url).spawn() {

@@ -672,3 +672,12 @@ msgstr "Здесь пока ничего нет"
 
 msgid "Show more"
 msgstr "Показать ещё"
+
+msgid "Ad"
+msgstr "Реклама"
+
+msgid "About the advertiser"
+msgstr "О рекламодателе"
+
+msgid "Ads are shown by Telegram; this app is required to show them by the Telegram API terms."
+msgstr "Рекламу показывает Telegram: условия Telegram API обязывают приложение её показывать."
