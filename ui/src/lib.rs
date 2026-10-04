@@ -339,6 +339,12 @@ pub fn set_close_to_tray(on: bool) {
     CLOSE_TO_TRAY.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Окно создано оконной системой (на GPU без OpenGL — нет).
+pub fn has_native_window(app: &App) -> bool {
+    use slint::winit_030::WinitWindowAccessor;
+    app.window().has_winit_window()
+}
+
 /// Показать окно, если оно спрятано (без подъёма поверх).
 pub fn show_window(app: &App) {
     if !app.window().is_visible() {

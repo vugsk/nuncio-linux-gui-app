@@ -847,6 +847,47 @@ impl Domain {
     }
 }
 
+/// Рендерер (Нс-8): software по умолчанию, Skia (OpenGL) с «Графика: GPU».
+/// Применяется при запуске. SLINT_BACKEND в окружении важнее настройки
+/// (проверки под Xvfb). Без GPU Skia не запустится — тогда software.
+/// true — выбран GPU.
+fn select_renderer(gpu: bool) -> bool {
+    if let Ok(env) = std::env::var("SLINT_BACKEND") {
+        log::info!("рендерер: из SLINT_BACKEND ({env})");
+        return false;
+    }
+    let gpu = gpu && std::env::var_os(SOFTWARE_FALLBACK).is_none();
+    let pick = |r: &str| slint::BackendSelector::new().backend_name("winit".into()).renderer_name(r.into()).select();
+    if gpu {
+        match pick("skia-opengl") {
+            Ok(()) => {
+                log::info!("рендерер: skia-opengl");
+                return true;
+            }
+            Err(e) => log::warn!("рендерер Skia недоступен, остаётся software: {e}"),
+        }
+    }
+    match pick("software") {
+        Ok(()) => log::info!("рендерер: software"),
+        Err(e) => log::warn!("рендерер: {e}"),
+    }
+    false
+}
+
+/// Переменная окружения перезапуска: рендерер — software, несмотря на настройку.
+const SOFTWARE_FALLBACK: &str = "NUNCIO_SOFTWARE_FALLBACK";
+
+/// Заменить процесс собой же с software (сеть и база уже остановлены или не запускались).
+fn restart_software() -> ! {
+    use std::os::unix::process::CommandExt;
+    let err = match std::env::current_exe() {
+        Ok(exe) => std::process::Command::new(exe).args(std::env::args_os().skip(1)).env(SOFTWARE_FALLBACK, "1").exec(),
+        Err(e) => e,
+    };
+    log::error!("перезапуск не удался: {err}");
+    std::process::exit(1);
+}
+
 /// Вид критического состояния — в журнал (без подробностей: в них может быть путь).
 fn log_critical(m: &LoginModel) {
     if let Screen::Critical(c) = m.screen() {
@@ -1010,7 +1051,21 @@ fn main() {
     };
     let model = LoginModel::new(lang, &country, cfg.proxy.clone(), now());
 
-    let app = ui::App::new().expect("не удалось создать окно (нужен доступный бэкенд Slint)");
+    let gpu = select_renderer(cfg.app.gpu);
+    let app = match ui::App::new().and_then(|a| a.show().map(|()| a)) {
+        Ok(a) => a,
+        // GPU выбран, но окно на нём не создаётся (нет OpenGL): рендерер после
+        // выбора не сменить — перезапуск с software (настройка остаётся).
+        Err(e) if gpu => {
+            log::warn!("окно на GPU не создано, перезапуск с software: {e}");
+            restart_software();
+        }
+        Err(e) => {
+            log::error!("окно не создано: {e}");
+            eprintln!("nuncio: окно не создано: {e}");
+            std::process::exit(1);
+        }
+    };
     // Для замеров (В4): размер окна «ШxВ».
     if let Some((w, h)) = std::env::var("NUNCIO_WINDOW_SIZE").ok().and_then(|v| {
         let (w, h) = v.split_once('x')?;
@@ -1094,15 +1149,49 @@ fn main() {
             ms.sort_by(f64::total_cmp);
             let avg = ms.iter().sum::<f64>() / ms.len().max(1) as f64;
             let p95 = ms[(ms.len() * 95 / 100).min(ms.len() - 1)];
-            log::info!("кадр: среднее {avg:.1} мс, p95 {p95:.1} мс, максимум {:.1} мс ({n} кадров)", ms[ms.len() - 1]);
+            let size = app.window().size();
+            log::info!(
+                "кадр: среднее {avg:.1} мс, p95 {p95:.1} мс, максимум {:.1} мс ({n} кадров, окно {}×{})",
+                ms[ms.len() - 1],
+                size.width,
+                size.height
+            );
         });
         t
     });
     // Окно можно спрятать в трей: цикл событий живёт до явного выхода
     // (закрытие окна без трея, «Выйти» в меню, сигнал).
-    app.show().expect("окно не показано");
-    slint::run_event_loop_until_quit().expect("окно завершилось с ошибкой");
+    // Без OpenGL окно на GPU не создаётся, а цикл событий идёт дальше без
+    // окна: проверить вскоре после старта и уйти на software.
+    let no_window = std::rc::Rc::new(std::cell::Cell::new(false));
+    let _gpu_check = gpu.then(|| {
+        let (weak, flag) = (app.as_weak(), no_window.clone());
+        let t = slint::Timer::default();
+        t.start(slint::TimerMode::SingleShot, Duration::from_secs(1), move || {
+            if weak.upgrade().is_some_and(|a| !ui::has_native_window(&a)) {
+                flag.set(true);
+                let _ = slint::quit_event_loop();
+            }
+        });
+        t
+    });
+    let run = slint::run_event_loop_until_quit();
+    let run = match run {
+        Ok(()) if no_window.get() => Err(slint::PlatformError::Other("окно на GPU не создано".into())),
+        r => r,
+    };
     send(Msg::Stop);
     let _ = domain.join();
-    log::info!("выход");
+    match run {
+        Ok(()) => log::info!("выход"),
+        // Окно на GPU создаётся при запуске цикла событий: нет OpenGL — заново с software.
+        Err(e) if gpu => {
+            log::warn!("окно на GPU не создано, перезапуск с software: {e}");
+            restart_software();
+        }
+        Err(e) => {
+            log::error!("окно завершилось с ошибкой: {e}");
+            std::process::exit(1);
+        }
+    }
 }
