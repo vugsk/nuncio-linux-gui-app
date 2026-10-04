@@ -1,6 +1,9 @@
 # nuncio-linux-gui-app
 
-Клиент Telegram под Linux. Три слоя в одном процессе: интерфейс и домен (Rust + Slint),
+**Неофициальный клиент Telegram под Linux, использует Telegram API** (свой `api_id`,
+условия: https://core.telegram.org/api/terms). Не связан с Telegram и не одобрен им.
+
+Три слоя в одном процессе: интерфейс и домен (Rust + Slint),
 сеть (Go, c-archive), крипто-ядро (C++, статическая `libtgcrypto.a`).
 
 Архитектура, дизайн экранов и все решения — в Obsidian-хранилище проекта, этот репозиторий
