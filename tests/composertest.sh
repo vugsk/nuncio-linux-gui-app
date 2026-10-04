@@ -27,7 +27,7 @@ env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" SLINT_BACKEND=winit-software NUNCI
   NUNCIO_KEYRING_COLLECTION=session NUNCIO_WINDOW_SIZE=1100x800 NUNCIO_BENCH_OPEN=0 \
   "$T/app" > "$T/app.log" 2>&1 &
 APP=$!
-until grep -q "шаг READY" "$T/home/state/net.log" 2>/dev/null; do sleep 0.2; done
+until grep -q "шаг READY" "$T/home/state/net.log" 2>/dev/null; do kill -0 $APP 2>/dev/null || { echo "приложение завершилось:"; tail -5 "$T/app.log"; exit 1; }; sleep 0.2; done
 sleep 3
 
 cat > "$T/x.py" <<'PY'

@@ -288,3 +288,17 @@ func PhotoChat(n int, files map[int64][]byte) ([]string, []Attach) {
 	}
 	return texts, att
 }
+
+// VideoChat — чат с видео и голосовым из готовых файлов (проверка плеера, В8).
+func VideoChat(video, voice []byte, files map[int64][]byte) ([]string, []Attach) {
+	files[9101], files[9102] = video, voice
+	return []string{"ролик", "голосовое"}, []Attach{
+		{Index: 0, Media: &tl.MessageMediaDocument{Video: true, Document: &tl.Document{Id: 9101, AccessHash: 3,
+			FileReference: []byte{1}, Date: 1, MimeType: "video/mp4", Size: int64(len(video)), DcId: 2,
+			Attributes: []tl.DocumentAttributeClass{&tl.DocumentAttributeVideo{Duration: 6, W: 640, H: 360},
+				&tl.DocumentAttributeFilename{FileName: "ролик.mp4"}}}}},
+		{Index: 1, Media: &tl.MessageMediaDocument{Voice: true, Document: &tl.Document{Id: 9102, AccessHash: 4,
+			FileReference: []byte{2}, Date: 1, MimeType: "audio/ogg", Size: int64(len(voice)), DcId: 2,
+			Attributes: []tl.DocumentAttributeClass{&tl.DocumentAttributeAudio{Voice: true, Duration: 3}}}}},
+	}
+}

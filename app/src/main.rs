@@ -496,7 +496,11 @@ impl Domain {
                 want.push((k, Box::new(move || ui::photo::load_feed(&path, PREP_PX, PREP_PX))));
             }
         }
-        if let Some(key) = chat.viewer_key() {
+        // Полный размер — только у фото (видео в окне просмотра играет плеер).
+        let viewer_photo = chat.viewer.and_then(|id| chat.history.iter().find(|m| m.id == id))
+            .and_then(|m| m.media_info.as_deref())
+            .is_some_and(|mi| matches!(mi.kind, domain::model::MediaKind::Photo | domain::model::MediaKind::WebPage));
+        if let Some(key) = chat.viewer_key().filter(|_| viewer_photo) {
             if let Some(path) = chat.media_paths.get(&key) {
                 let k = format!("full:{key}");
                 keep.insert(k.clone());

@@ -4751,6 +4751,7 @@ dependencies = [
  "harfrust 0.13.3",
  "log",
  "memmap2",
+ "player",
  "png",
  "qrcode",
  "skrifa 0.47.0",

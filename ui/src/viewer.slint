@@ -32,6 +32,15 @@ export component ViewerWindow inherits Window {
     in property <string> progress;  // ход скачивания полного размера
     in property <bool> can-prev;
     in property <bool> can-next;
+    // Видео (В8): кадры приходят в `photo`, управление внизу.
+    in property <bool> is-video;
+    in property <bool> playing;
+    in property <float> play-pos;   // 0…1
+    in property <string> time;      // «0:12 / 1:30»
+    in property <float> volume: 1;
+    callback toggle-play();
+    callback seek(float);
+    callback set-volume(float);
     callback step(int);
     callback close-viewer();
     callback toggle-fullscreen();
@@ -55,6 +64,7 @@ export component ViewerWindow inherits Window {
             if (e.text == Key.Escape) { root.close-viewer(); return accept; }
             if (e.text == Key.F11) { root.toggle-fullscreen(); return accept; }
             if (e.modifiers.control && (e.text == "s" || e.text == "ы")) { root.save(); return accept; }
+            if (e.text == " " && root.is-video) { root.toggle-play(); return accept; }
             reject
         }
     }
@@ -128,7 +138,7 @@ export component ViewerWindow inherits Window {
         }
     }
     if root.caption != "": Rectangle {
-        y: parent.height - self.height - 16px;
+        y: parent.height - self.height - (root.is-video ? 72px : 16px);
         x: (parent.width - self.width) / 2;
         width: min(parent.width - 32px, cap-text.preferred-width + 24px);
         height: cap-text.preferred-height + 12px;
@@ -162,5 +172,97 @@ export component ViewerWindow inherits Window {
         background: next-ta.has-hover ? #ffffff30 : #00000080;
         Text { text: "›"; color: white; font-size: 28px; }
         next-ta := TouchArea { mouse-cursor: pointer; clicked => { root.step(1); } }
+    }
+    // Управление видео: играть/пауза, позиция (щелчок и перетаскивание —
+    // перемотка), время, громкость.
+    if root.is-video: Rectangle {
+        y: parent.height - 56px;
+        height: 56px;
+        background: #000000b0;
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 16px;
+            spacing: 12px;
+            Rectangle {
+                width: 40px;
+                height: 40px;
+                y: 8px;
+                border-radius: 20px;
+                background: play-ta.has-hover ? #ffffff30 : #ffffff18;
+                if root.playing: Path {
+                    width: 14px;
+                    height: 16px;
+                    fill: white;
+                    viewbox-width: 14;
+                    viewbox-height: 16;
+                    commands: "M 0 0 L 5 0 L 5 16 L 0 16 Z M 9 0 L 14 0 L 14 16 L 9 16 Z";
+                }
+                if !root.playing: Path {
+                    width: 14px;
+                    height: 16px;
+                    x: 15px;
+                    fill: white;
+                    viewbox-width: 14;
+                    viewbox-height: 16;
+                    commands: "M 0 0 L 14 8 L 0 16 Z";
+                }
+                play-ta := TouchArea { mouse-cursor: pointer; clicked => { root.toggle-play(); } }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                Rectangle { y: parent.height / 2 - 2px; height: 4px; border-radius: 2px; background: #ffffff40; }
+                Rectangle {
+                    x: 0;
+                    y: parent.height / 2 - 2px;
+                    height: 4px;
+                    width: parent.width * root.play-pos;
+                    border-radius: 2px;
+                    background: Theme.link;
+                }
+                Rectangle {
+                    x: parent.width * root.play-pos - 6px;
+                    y: parent.height / 2 - 6px;
+                    width: 12px;
+                    height: 12px;
+                    border-radius: 6px;
+                    background: white;
+                    visible: seek-ta.has-hover || seek-ta.pressed;
+                }
+                seek-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.up) {
+                            root.seek(max(0, min(1, self.mouse-x / self.width)));
+                        }
+                    }
+                }
+            }
+            Text { text: root.time; color: white; font-size: 12px; vertical-alignment: center; }
+            Rectangle {
+                width: 80px;
+                Rectangle { y: parent.height / 2 - 2px; height: 4px; border-radius: 2px; background: #ffffff40; }
+                Rectangle {
+                    x: 0;
+                    y: parent.height / 2 - 2px;
+                    height: 4px;
+                    width: parent.width * root.volume;
+                    border-radius: 2px;
+                    background: white;
+                }
+                vol-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down) {
+                            root.set-volume(max(0, min(1, self.mouse-x / self.width)));
+                        }
+                    }
+                    moved => {
+                        if (self.pressed) {
+                            root.set-volume(max(0, min(1, self.mouse-x / self.width)));
+                        }
+                    }
+                }
+            }
+        }
     }
 }

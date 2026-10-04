@@ -34,6 +34,8 @@ func main() {
 	media := flag.Bool("media", false, "чат «Вложения»: фото, альбом, файл, опрос, превью ссылки (В7)")
 	partDelay := flag.Duration("part-delay", 0, "задержка на часть файла при скачивании")
 	photos := flag.Int("photos", 0, "чат «Фото» из стольких фото, самый новый (замер памяти при прокрутке)")
+	video := flag.String("video", "", "чат «Видео»: этот ролик и голосовое из -voice (проверка плеера)")
+	voice := flag.String("voice", "", "голосовое (ogg/opus) для чата «Видео»")
 	flag.Parse()
 
 	msgs := []string{"начало"}
@@ -73,6 +75,20 @@ func main() {
 		}
 		texts, att := fakeserver.PhotoChat(*photos, acc.Files)
 		acc.Contacts = append(acc.Contacts, fakeserver.Contact{ID: 104, Name: "Фото", AccessHash: 15, Unread: -1,
+			Messages: texts, Attach: att})
+	}
+	if *video != "" {
+		v, err1 := os.ReadFile(*video)
+		a, err2 := os.ReadFile(*voice)
+		if err1 != nil || err2 != nil {
+			fmt.Fprintln(os.Stderr, "файлы для -video/-voice:", err1, err2)
+			os.Exit(1)
+		}
+		if acc.Files == nil {
+			acc.Files = map[int64][]byte{}
+		}
+		texts, att := fakeserver.VideoChat(v, a, acc.Files)
+		acc.Contacts = append(acc.Contacts, fakeserver.Contact{ID: 105, Name: "Видео", AccessHash: 16, Unread: -1,
 			Messages: texts, Attach: att})
 	}
 	srv, err := fakeserver.StartAt(*listen, fakeserver.Options{DC: 2, Account: acc})

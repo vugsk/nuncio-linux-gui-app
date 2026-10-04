@@ -34,7 +34,7 @@ run_app() {
 }
 
 run_app
-until grep -q "шаг READY" "$T/home/state/net.log" 2>/dev/null; do sleep 0.2; done
+until grep -q "шаг READY" "$T/home/state/net.log" 2>/dev/null; do kill -0 $APP 2>/dev/null || { echo "приложение завершилось:"; tail -5 "$T/app.log"; exit 1; }; sleep 0.2; done
 echo "вход выполнен; убийств: $KILLS"
 for i in $(seq "$KILLS"); do
   sleep "$(python3 -c 'import random; print(round(random.uniform(1.0, 3.0), 2))')"

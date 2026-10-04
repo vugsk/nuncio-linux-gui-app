@@ -251,6 +251,10 @@ pub struct ChatModel {
     /// Окно просмотра фото (Св-3): сообщение и номер открытия.
     pub viewer: Option<i32>,
     pub viewer_seq: u64,
+    /// Голосовое или аудио, которое попросили проиграть (В8), и номер просьбы:
+    /// интерфейс запускает плеер, когда файл скачан.
+    pub audio_play: Option<i32>,
+    pub audio_seq: u64,
     /// Панель подготовки вложений (Св-4).
     pub prepare: Option<crate::attach::Prepare>,
     pub open: Option<i64>,

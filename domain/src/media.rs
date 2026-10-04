@@ -187,8 +187,9 @@ impl ChatModel {
         let Some(mi) = m.media_info.clone() else { return };
         let Some(peer_id) = self.open else { return };
         let Some(peer) = self.peer_ref(peer_id) else { return };
-        // Фото — окно просмотра (файл полного размера скачивается там).
-        if mi.kind == MediaKind::Photo || (mi.kind == MediaKind::WebPage && mi.webpage.as_ref().is_some_and(|w| w.photo.is_some())) {
+        // Фото и видео — окно просмотра (файл полного размера или само видео
+        // скачивается там; видео играет, когда скачано — В8).
+        if viewable(&mi) {
             self.viewer = Some(msg_id);
             self.viewer_seq += 1;
             if let Some(full) = mi.full.clone().or(mi.file.clone()) {
@@ -201,6 +202,16 @@ impl ChatModel {
         }
         let Some(file) = mi.file.clone() else { return };
         let key = file.key();
+        if matches!(mi.kind, MediaKind::Voice | MediaKind::Audio) && !self.transfers.contains_key(&key) {
+            // Голосовое и аудио — играть в ленте; не скачано — сначала скачать.
+            self.audio_play = Some(msg_id);
+            self.audio_seq += 1;
+            if !self.media_paths.contains_key(&key) {
+                self.media_failed.remove(&key);
+                self.start_download(file, mi.name.clone(), peer, msg_id, out);
+            }
+            return;
+        }
         if let Some(t) = self.transfers.get(&key) {
             // Второе нажатие во время скачивания — отмена.
             let cmd_id = t.cmd_id;
@@ -314,7 +325,7 @@ impl ChatModel {
     pub fn photo_ids(&self) -> Vec<i32> {
         self.history
             .iter()
-            .filter(|m| m.media_info.as_ref().is_some_and(|mi| mi.kind == MediaKind::Photo))
+            .filter(|m| m.media_info.as_ref().is_some_and(|mi| viewable(mi) && mi.kind != MediaKind::WebPage))
             .map(|m| m.id)
             .collect()
     }
@@ -323,6 +334,15 @@ impl ChatModel {
 /// Наибольший размер картинки в ленте (крупнее прежних 320 px — как в Telegram).
 pub const FEED_MAX_W: i32 = 420;
 pub const FEED_MAX_H: i32 = 460;
+
+/// Открывается в окне просмотра: фото, видео (В8), превью ссылки с фото.
+pub fn viewable(mi: &Media) -> bool {
+    match mi.kind {
+        MediaKind::Photo | MediaKind::Video | MediaKind::VideoNote | MediaKind::Gif => true,
+        MediaKind::WebPage => mi.webpage.as_ref().is_some_and(|w| w.photo.is_some()),
+        _ => false,
+    }
+}
 
 /// Размер для ленты (Чт-11): вписать в 420×460; маленькое — не больше чем вдвое.
 pub fn feed_size(w: i32, h: i32) -> (i32, i32) {

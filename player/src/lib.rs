@@ -51,8 +51,12 @@ const MAX_PACKETS: usize = 600;
 const POOL: usize = 2;
 /// Звука вперёд, с.
 const AUDIO_AHEAD: f64 = 0.5;
-/// Декодер видео — в 2 потока (П-6: 1–2 потока, память против CPU).
-const VIDEO_THREADS: usize = 2;
+/// Декодер видео — в 1 поток. Потоки FFmpeg создаются на каждый плеер, и
+/// каждому glibc даёт свою арену malloc, которую `malloc_trim` не отдаёт:
+/// при 2 потоках каждый просмотр оставлял +8–10 МБ (playtest, malloc_stats:
+/// занято 7 МБ стабильно, «system» росло). 1080p H.264/HEVC/VP9 в один
+/// поток — 30 кадров/с без пропусков (examples/bench).
+const VIDEO_THREADS: usize = 1;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -117,21 +121,39 @@ pub struct Player {
     shared: Arc<Shared>,
     info: Info,
     thread: Option<JoinHandle<()>>,
-    _stream: Option<cpal::Stream>,
+}
+
+/// Вывод звука — один на приложение: открытие и закрытие устройства на
+/// каждый плеер (ALSA через PipeWire) оставляло ~8 МБ за раз (playtest).
+/// Без воспроизведения поток на паузе; плеер подключается к нему и отключается.
+struct AudioOut {
+    stream: cpal::Stream,
+    rate: u32,
+    channels: u16,
+    current: Arc<Mutex<Option<Arc<Shared>>>>,
+}
+
+thread_local! {
+    static OUT: std::cell::RefCell<Option<Option<AudioOut>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Открыть устройство вывода звука: стерео f32 на его частоте по умолчанию.
-fn open_audio(shared: &Arc<Shared>) -> Option<(cpal::Stream, u32, u16)> {
+fn open_audio() -> Option<AudioOut> {
     let device = cpal::default_host().default_output_device()?;
     let def = device.default_output_config().ok()?;
     let rate = def.sample_rate();
     let channels = 2u16;
     let config = cpal::StreamConfig { channels, sample_rate: rate, buffer_size: cpal::BufferSize::Default };
-    let sh = shared.clone();
+    let current: Arc<Mutex<Option<Arc<Shared>>>> = Arc::new(Mutex::new(None));
+    let cur = current.clone();
     let stream = device
         .build_output_stream(
             config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                let Some(sh) = lock(&cur).clone() else {
+                    data.fill(0.0);
+                    return;
+                };
                 if sh.paused.load(Ordering::Relaxed) {
                     data.fill(0.0);
                     return;
@@ -151,7 +173,32 @@ fn open_audio(shared: &Arc<Shared>) -> Option<(cpal::Stream, u32, u16)> {
         )
         .map_err(|e| log::warn!("звук: устройство не открыто: {e}"))
         .ok()?;
-    Some((stream, rate, channels))
+    Some(AudioOut { stream, rate, channels, current })
+}
+
+/// Подключить плеер к общему выводу звука: (частота, каналы) или None.
+fn attach_audio(shared: &Arc<Shared>) -> Option<(u32, u16)> {
+    OUT.with(|o| {
+        let mut o = o.borrow_mut();
+        let out = o.get_or_insert_with(open_audio).as_ref()?;
+        *lock(&out.current) = Some(shared.clone());
+        if let Err(e) = out.stream.play() {
+            log::warn!("звук: {e}");
+        }
+        Some((out.rate, out.channels))
+    })
+}
+
+fn detach_audio(shared: &Arc<Shared>) {
+    OUT.with(|o| {
+        if let Some(Some(out)) = o.borrow().as_ref() {
+            let mut cur = lock(&out.current);
+            if cur.as_ref().is_some_and(|c| Arc::ptr_eq(c, shared)) {
+                *cur = None;
+                let _ = out.stream.pause();
+            }
+        }
+    });
 }
 
 impl Player {
@@ -173,8 +220,8 @@ impl Player {
             seek: Mutex::new(None),
             volume: AtomicU32::new(1.0f32.to_bits()),
         });
-        let audio = open_audio(&shared);
-        let (out_rate, out_ch) = audio.as_ref().map(|a| (a.1, a.2)).unwrap_or((48_000, 2));
+        let audio = attach_audio(&shared);
+        let (out_rate, out_ch) = audio.unwrap_or((48_000, 2));
         lock(&shared.clock).rate = out_rate;
         shared.channels.store(u32::from(out_ch), Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
@@ -191,16 +238,20 @@ impl Player {
                 sh.eof.store(true, Ordering::Relaxed);
             })
             .map_err(|e| e.to_string())?;
-        let info = rx.recv_timeout(Duration::from_secs(10)).map_err(|_| "файл не открылся".to_string())??;
+        let info = match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(Ok(info)) => info,
+            Ok(Err(e)) => {
+                detach_audio(&shared);
+                return Err(e);
+            }
+            Err(_) => {
+                detach_audio(&shared);
+                return Err("файл не открылся".into());
+            }
+        };
         shared.audio_out.store(info.has_audio && audio_ok, Ordering::Relaxed);
         lock(&shared.clock).started = Some(Instant::now());
-        let stream = audio.map(|a| a.0);
-        if let Some(s) = &stream {
-            if let Err(e) = s.play() {
-                log::warn!("звук: {e}");
-            }
-        }
-        Ok(Self { shared, info, thread: Some(thread), _stream: stream })
+        Ok(Self { shared, info, thread: Some(thread) })
     }
 
     pub fn info(&self) -> Info {
@@ -286,6 +337,7 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
+        detach_audio(&self.shared);
         self.shared.stop.store(true, Ordering::Relaxed);
         self.shared.space.notify_all();
         if let Some(t) = self.thread.take() {
@@ -306,6 +358,7 @@ pub fn trim_memory() {
         unsafe {
             malloc_trim(0);
         }
+
     }
 }
 
@@ -333,7 +386,6 @@ fn decode(sh: &Shared, path: &Path, max_w: u32, max_h: u32, out_rate: u32, out_c
             ctx.set_threading(ff::codec::threading::Config {
                 kind: ff::codec::threading::Type::Frame,
                 count: VIDEO_THREADS,
-                ..Default::default()
             });
             let dec = ctx.decoder().video().map_err(err)?;
             Some((s.index(), f64::from(s.time_base()), dec))

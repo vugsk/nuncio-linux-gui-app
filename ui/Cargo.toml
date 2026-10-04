@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+player = { path = "../player", version = "0.1.0" }
 domain = { version = "0.1.0", path = "../domain" }
 harfrust = "0.13.3"
 log = "0.4.34"

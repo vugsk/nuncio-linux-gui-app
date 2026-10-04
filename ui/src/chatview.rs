@@ -228,6 +228,34 @@ fn schedule(app: &App) {
     }
 }
 
+/// Воспроизведение (В8): одно на приложение.
+struct Playback {
+    player: player::Player,
+    msg: i32,
+    video: bool,
+    ended: bool,
+    tick: u32,
+}
+
+fn mmss(secs: f64) -> String {
+    let s = secs.max(0.0) as i64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// Нажатие на голосовое, которое уже играет: пауза или продолжение (без
+/// домена). `false` — не играет, решает домен (скачать, начать).
+pub fn media_toggle(app: &App, msg: i32) -> bool {
+    let mut done = false;
+    with(app, |r| {
+        if let Some(pb) = r.playback.as_mut().filter(|p| p.msg == msg && !p.video) {
+            pb.player.set_paused(!pb.player.paused());
+            r.overlay_playback();
+            done = true;
+        }
+    });
+    done
+}
+
 fn with(app: &App, f: impl FnOnce(&mut ChatRenderer)) {
     RENDERER.with(|r| {
         if let Ok(mut r) = r.try_borrow_mut() {
@@ -338,6 +366,14 @@ pub struct ChatRenderer {
     sender: Option<Rc<dyn Fn(ChatIntent)>>,
     /// Окно просмотра фото (Св-3): есть, пока открыто.
     viewer: Option<ViewerWindow>,
+    viewer_shown: bool,
+    /// Воспроизведение (В8): видео в окне просмотра или голосовое в ленте.
+    playback: Option<Playback>,
+    play_timer: slint::Timer,
+    app: slint::Weak<App>,
+    /// Последняя просьба домена играть голосовое и ещё не начатое (файл качается).
+    audio_seq_seen: u64,
+    audio_want: Option<i32>,
 }
 
 /// Раскладка текстов с эмодзи и картинки эмодзи. Готовые модели строк
@@ -682,6 +718,23 @@ impl ChatRenderer {
             }
         }
         self.fill_media(&mut items, m, avatars, ru);
+        self.app = app.as_weak();
+        // Голосовое: домен попросил играть — начать, когда файл скачан.
+        if m.audio_seq != self.audio_seq_seen {
+            self.audio_seq_seen = m.audio_seq;
+            self.audio_want = m.audio_play;
+        }
+        if let Some(id) = self.audio_want {
+            let path = m.history.iter().find(|x| x.id == id).and_then(|x| x.media_info.as_deref())
+                .and_then(|mi| mi.file.as_ref()).and_then(|f| m.media_paths.get(&f.key())).cloned();
+            if let Some(path) = path {
+                self.audio_want = None;
+                self.start_playback(&path, id, false, (0, 0));
+            }
+        }
+        self.items = items;
+        self.overlay_playback();
+        let items = std::mem::take(&mut self.items);
         trace(format_args!("снимок модели, строк {}", items.len()));
         self.scroller.set_rows(items.iter().map(|i| i64::from(i.key)).collect(), m.window.start, m.window.end);
         self.items = items;
@@ -969,9 +1022,17 @@ impl ChatRenderer {
     /// Окно просмотра фото (Св-3): создать по запросу, наполнить, закрыть.
     fn sync_viewer(&mut self, m: &ChatModel, images: &HashMap<String, SharedPixelBuffer<Rgba8Pixel>>, ru: bool) {
         let msg = m.viewer.and_then(|id| m.history.iter().find(|x| x.id == id));
+        // Видео играет, только пока открыто в окне просмотра.
+        if self.playback.as_ref().is_some_and(|p| p.video && Some(p.msg) != msg.map(|x| x.id)) {
+            self.stop_playback();
+        }
         let Some(msg) = msg else {
-            if let Some(w) = self.viewer.take() {
-                let _ = w.hide();
+            if self.viewer_shown {
+                self.viewer_shown = false;
+                if let Some(w) = &self.viewer {
+                    let _ = w.hide();
+                    w.set_photo(no_image());
+                }
             }
             return;
         };
@@ -993,6 +1054,29 @@ impl ChatRenderer {
                     slint::CloseRequestResponse::HideWindow
                 });
             }
+            w.on_toggle_play(|| RENDERER.with(|r| {
+                if let Ok(mut r) = r.try_borrow_mut() {
+                    r.toggle_video();
+                }
+            }));
+            w.on_seek(|f| RENDERER.with(|r| {
+                if let Ok(mut r) = r.try_borrow_mut() {
+                    if let Some(pb) = r.playback.as_mut().filter(|p| p.video) {
+                        pb.player.seek(f64::from(f) * pb.player.info().duration);
+                        pb.ended = false;
+                    }
+                }
+            }));
+            w.on_set_volume(|v| RENDERER.with(|r| {
+                if let Ok(mut r) = r.try_borrow_mut() {
+                    if let Some(pb) = r.playback.as_mut() {
+                        pb.player.set_volume(v);
+                    }
+                    if let Some(w) = &r.viewer {
+                        w.set_volume(v);
+                    }
+                }
+            }));
             let weak = w.as_weak();
             w.on_toggle_fullscreen(move || {
                 if let Some(w) = weak.upgrade() {
@@ -1000,10 +1084,17 @@ impl ChatRenderer {
                     w.window().set_fullscreen(!full);
                 }
             });
-            if w.show().is_err() {
-                return;
-            }
             self.viewer = Some(w);
+        }
+        // Окно одно на сеанс: создание и удаление окна Slint при каждом
+        // просмотре оставляло ~9 МБ (playtest); скрытое — без кадров.
+        if !self.viewer_shown {
+            if let Some(w) = &self.viewer {
+                if w.show().is_err() {
+                    return;
+                }
+                self.viewer_shown = true;
+            }
         }
         let key = m.viewer_key().unwrap_or_default();
         let feed = domain::media::feed_images(std::slice::from_ref(msg));
@@ -1017,9 +1108,25 @@ impl ChatRenderer {
         };
         let ids = m.photo_ids();
         let pos = ids.iter().position(|x| *x == msg.id);
+        let is_video = msg.media_info.as_deref().is_some_and(|mi| {
+            matches!(mi.kind, domain::model::MediaKind::Video | domain::model::MediaKind::VideoNote | domain::model::MediaKind::Gif)
+        });
+        // Видео скачано — играть (кадр не больше окна, П-6).
+        if is_video && !self.playback.as_ref().is_some_and(|p| p.video && p.msg == msg.id) {
+            if let Some(path) = m.media_paths.get(&key).cloned() {
+                let size = self.viewer.as_ref().map(|w| w.window().size().to_logical(w.window().scale_factor()));
+                let (vw, vh) = size.map(|s| (s.width as u32, s.height as u32)).unwrap_or((0, 0));
+                self.start_playback(&path, msg.id, true, (vw.clamp(1280, 1920), vh.clamp(720, 1080)));
+            }
+        }
+        let playing = self.playback.as_ref().is_some_and(|p| p.video && p.msg == msg.id);
         let Some(w) = &self.viewer else { return };
-        w.set_has_photo(img.is_some());
-        w.set_photo(img.unwrap_or_default());
+        w.set_is_video(is_video);
+        if !playing {
+            // Кадры видео ставит таймер; до них — картинка из ленты.
+            w.set_has_photo(img.is_some());
+            w.set_photo(img.unwrap_or_default());
+        }
         w.set_counter(match pos {
             Some(p) if ids.len() > 1 => format!("{} {} {}", p + 1, if ru { "из" } else { "of" }, ids.len()).into(),
             _ => "".into(),
@@ -1039,6 +1146,123 @@ impl ChatRenderer {
             Some(_) => if ru { "Загрузка…" } else { "Loading…" }.into(),
             None => "".into(),
         });
+    }
+
+    fn stop_playback(&mut self) {
+        self.play_timer.stop();
+        if self.playback.take().is_some() {
+            player::trim_memory();
+            // Окно просмотра и его кадры Slint освобождает позже, на следующих
+            // проходах цикла: ещё раз через секунду (П-6: память после закрытия).
+            slint::Timer::single_shot(std::time::Duration::from_secs(1), player::trim_memory);
+        }
+    }
+
+    fn start_playback(&mut self, path: &str, msg: i32, video: bool, max: (u32, u32)) {
+        self.stop_playback();
+        let (mw, mh) = if video { max } else { (2, 2) };
+        match player::Player::open(std::path::Path::new(path), mw, mh) {
+            Ok(p) => {
+                let i = p.info();
+                log::info!("воспроизведение: {}, кадр {}×{}, {:.1} с", if video { "видео" } else { "звук" }, i.width, i.height,
+                    i.duration);
+                if let Some(w) = self.viewer.as_ref().filter(|_| video) {
+                    p.set_volume(w.get_volume());
+                }
+                self.playback = Some(Playback { player: p, msg, video, ended: false, tick: 0 });
+                let weak = self.app.clone();
+                self.play_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
+                    let Some(app) = weak.upgrade() else { return };
+                    RENDERER.with(|r| {
+                        if let Ok(mut r) = r.try_borrow_mut() {
+                            r.tick_playback(&app);
+                        }
+                    });
+                });
+            }
+            Err(e) => log::warn!("воспроизведение не началось: {e}"),
+        }
+    }
+
+    fn toggle_video(&mut self) {
+        let Some(pb) = self.playback.as_mut().filter(|p| p.video) else { return };
+        if pb.ended {
+            pb.player.seek(0.0);
+            pb.player.set_paused(false);
+            pb.ended = false;
+        } else {
+            pb.player.set_paused(!pb.player.paused());
+        }
+    }
+
+    /// Шаг таймера (60 Гц): кадр видео в окно просмотра, ход голосового в ленту.
+    fn tick_playback(&mut self, app: &App) {
+        let Some(pb) = self.playback.as_mut() else {
+            self.play_timer.stop();
+            return;
+        };
+        pb.tick += 1;
+        let (video, tick) = (pb.video, pb.tick);
+        if video {
+            let frame = pb.player.take_frame();
+            let info = pb.player.info();
+            let pos = pb.player.position();
+            let playing = !pb.player.paused() && !pb.ended;
+            if let Some(w) = &self.viewer {
+                if let Some(f) = frame {
+                    let buf = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&f.rgba, f.width, f.height);
+                    w.set_photo(Image::from_rgba8(buf));
+                    w.set_has_photo(true);
+                    pb.player.recycle(f);
+                }
+                if tick % 6 == 0 {
+                    w.set_play_pos(if info.duration > 0.0 { (pos / info.duration) as f32 } else { 0.0 });
+                    w.set_time(format!("{} / {}", mmss(pos), mmss(info.duration)).into());
+                    w.set_playing(playing);
+                }
+            }
+            if pb.player.ended() && !pb.ended {
+                pb.ended = true;
+                log::info!("воспроизведение закончено");
+            }
+        } else {
+            let ended = pb.player.ended();
+            if ended {
+                log::info!("воспроизведение закончено");
+                self.stop_playback();
+            }
+            if ended || tick % 6 == 0 {
+                self.overlay_playback_or_reset(ended);
+                self.apply_view(app);
+            }
+        }
+    }
+
+    /// Строка играющего голосового: кнопка «пауза» или «играть», ход, время.
+    fn overlay_playback(&mut self) {
+        self.overlay_playback_or_reset(false);
+    }
+
+    fn overlay_playback_or_reset(&mut self, reset: bool) {
+        let state = self.playback.as_ref().filter(|p| !p.video).map(|p| {
+            let info = p.player.info();
+            let pos = p.player.position();
+            (p.msg, p.player.paused(), pos, info.duration)
+        });
+        for it in self.items.iter_mut().filter(|i| i.mkind == 2 && i.file_voice) {
+            match state {
+                Some((msg, paused, pos, dur)) if it.mid == msg.to_string().as_str() => {
+                    it.file_state = if paused { 4 } else { 3 };
+                    it.file_progress = if dur > 0.0 { (pos / dur) as f32 } else { 0.0 };
+                    it.file_info = format!("{} / {}", mmss(pos), mmss(dur)).into();
+                }
+                _ if reset && it.file_state >= 3 => {
+                    it.file_state = 2;
+                    it.file_progress = 0.0;
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Видимые строки, линия опоры, ползунок; просьбы о подгрузке и «прочитано».

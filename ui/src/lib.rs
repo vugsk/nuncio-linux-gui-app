@@ -457,8 +457,13 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
         });
         // Вложения (В7).
         let s = send.clone();
+        let a = app.as_weak();
         chat.on_media_click(move |id| {
             if let Ok(id) = id.parse() {
+                // Играющее голосовое — пауза без домена (В8).
+                if a.upgrade().is_some_and(|app| chatview::media_toggle(&app, id)) {
+                    return;
+                }
                 s(Action::Chat(ChatIntent::MediaClick(id)));
             }
         });
