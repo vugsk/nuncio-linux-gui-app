@@ -91,7 +91,8 @@ pub enum ChatEffect {
     /// Измерить кэш и базу для раздела «Данные и кэш».
     MeasureStorage,
     /// Показать уведомление о сообщении (В9, D-Bus): одно на чат.
-    Notify { peer_id: i64, title: String, body: String, sound: bool },
+    /// `sound` — громкость звука, % (`None` — без звука).
+    Notify { peer_id: i64, title: String, body: String, sound: Option<u32> },
     /// Показать окно (щелчок по уведомлению или значку в трее).
     RaiseWindow,
 }

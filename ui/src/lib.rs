@@ -352,7 +352,8 @@ thread_local! {
 /// Звук уведомления (В9): играет само приложение — многие серверы
 /// уведомлений (SwayNC, mako, dunst) звук не воспроизводят. Файл —
 /// `message-new-instant` из темы звуков freedesktop; не чаще раза в секунду.
-pub fn play_notification_sound() {
+/// `volume` — 0…1 после нормализации (звук темы записан тихо).
+pub fn play_notification_sound(volume: f32) {
     let now = std::time::Instant::now();
     if LAST_SOUND.get().is_some_and(|t| now.duration_since(t) < std::time::Duration::from_secs(1)) {
         return;
@@ -367,7 +368,7 @@ pub fn play_notification_sound() {
         log::warn!("звук уведомления: файл темы звуков не найден");
         return;
     };
-    if let Err(e) = player::play_effect(&path) {
+    if let Err(e) = player::play_effect(&path, volume) {
         log::warn!("звук уведомления: {e}");
     }
 }

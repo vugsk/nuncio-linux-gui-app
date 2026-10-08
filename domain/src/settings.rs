@@ -34,6 +34,8 @@ pub struct AppSettings {
     pub notify: bool,
     pub notify_hide_text: bool,
     pub notify_sound: bool,
+    /// Громкость звука уведомления, % (0…100); звук перед этим нормализуется.
+    pub notify_volume: u32,
     pub tray: bool,
     /// Закрытие окна сворачивает в трей (Нс-5), если трей доступен.
     pub close_to_tray: bool,
@@ -53,6 +55,7 @@ impl Default for AppSettings {
             notify: true,
             notify_hide_text: false,
             notify_sound: true,
+            notify_volume: 100,
             tray: true,
             close_to_tray: true,
             cache_limit_mb: 1024,
@@ -101,6 +104,7 @@ pub enum Change {
     Notify(bool),
     HideText(bool),
     Sound(bool),
+    Volume(u32),
     Tray(bool),
     CloseToTray(bool),
     CacheLimit(u64),
@@ -288,6 +292,7 @@ impl ChatModel {
             Change::Notify(on) => s.notify = on,
             Change::HideText(on) => s.notify_hide_text = on,
             Change::Sound(on) => s.notify_sound = on,
+            Change::Volume(v) => s.notify_volume = v.min(100),
             Change::Tray(on) => s.tray = on,
             Change::CloseToTray(on) => s.close_to_tray = on,
             Change::CacheLimit(mb) => s.cache_limit_mb = mb,

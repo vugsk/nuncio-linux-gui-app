@@ -47,12 +47,15 @@ export global Settings {
     in property <bool> notify;
     in property <bool> hide-text;
     in property <bool> sound;
+    in property <int> volume: 100;
     in property <bool> tray;
     in property <bool> close-tray;
     in property <bool> tray-available: true;
     callback set-notify(bool);
     callback set-hide-text(bool);
     callback set-sound(bool);
+    callback set-volume(int);
+    callback preview-sound();
     callback set-tray(bool);
     callback set-close-tray(bool);
     // Данные и кэш.
@@ -285,6 +288,46 @@ component NotificationsPage inherits VerticalLayout {
         enabled: Settings.notify;
         checked: Settings.sound;
         toggled => { Settings.set-sound(!Settings.sound); }
+    }
+    // Громкость звука уведомления; при отпускании — проба.
+    if Settings.notify && Settings.sound: HorizontalLayout {
+        spacing: 12px;
+        alignment: start;
+        padding-left: 34px;
+        Text { text: @tr("Volume"); color: Theme.text; font-size: 13px; vertical-alignment: center; }
+        Rectangle {
+            width: 200px;
+            height: 24px;
+            property <float> f: Settings.volume / 100;
+            Rectangle { y: 10px; height: 4px; border-radius: 2px; background: Theme.card-border; }
+            Rectangle { x: 0; y: 10px; height: 4px; width: parent.width * parent.f; border-radius: 2px; background: Theme.link; }
+            Rectangle {
+                x: parent.width * parent.f - 8px;
+                y: 4px;
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                background: Theme.link;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        Settings.set-volume(round(100 * max(0, min(1, self.mouse-x / self.width))));
+                    }
+                    if (e.kind == PointerEventKind.up) {
+                        Settings.set-volume(round(100 * max(0, min(1, self.mouse-x / self.width))));
+                        Settings.preview-sound();
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        Settings.set-volume(round(100 * max(0, min(1, self.mouse-x / self.width))));
+                    }
+                }
+            }
+        }
+        Text { text: Settings.volume + " %"; color: Theme.text-muted; font-size: 12px; vertical-alignment: center; }
     }
     Toggle {
         text: @tr("Tray icon with unread counter");

@@ -213,14 +213,20 @@ fn detach_audio(shared: &Arc<Shared>) {
 }
 
 /// Сыграть короткий звук (уведомление) поверх текущего воспроизведения, не
-/// прерывая его. Файл декодируется целиком (не длиннее `EFFECT_MAX_SECS`).
-pub fn play_effect(path: &Path) -> Result<(), String> {
+/// прерывая его. Файл декодируется целиком (не длиннее `EFFECT_MAX_SECS`) и
+/// нормализуется по пику (усиление не больше `EFFECT_MAX_GAIN`), затем —
+/// громкость `volume` (0…1).
+pub fn play_effect(path: &Path, volume: f32) -> Result<(), String> {
     let (rate, channels, effect) = OUT.with(|o| {
         let mut o = o.borrow_mut();
         let out = o.get_or_insert_with(open_audio).as_ref()?;
         Some((out.rate, out.channels, out.effect.clone()))
     }).ok_or("звук: нет устройства вывода")?;
-    let samples = decode_all(path, rate, channels)?;
+    let mut samples = decode_all(path, rate, channels)?;
+    let gain = normalize_gain(&samples) * volume.clamp(0.0, 1.0);
+    for s in &mut samples {
+        *s *= gain;
+    }
     lock(&effect).extend(samples);
     OUT.with(|o| {
         if let Some(Some(out)) = o.borrow().as_ref() {
@@ -230,6 +236,15 @@ pub fn play_effect(path: &Path) -> Result<(), String> {
         }
     });
     Ok(())
+}
+
+/// Наибольшее усиление при нормализации (тишину не раздувать в шум).
+pub const EFFECT_MAX_GAIN: f32 = 8.0;
+
+/// Усиление до пика 0,95.
+fn normalize_gain(s: &[f32]) -> f32 {
+    let peak = s.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+    if peak <= f32::EPSILON { 1.0 } else { (0.95 / peak).min(EFFECT_MAX_GAIN) }
 }
 
 /// Наибольшая длина короткого звука, с.
@@ -690,6 +705,9 @@ mod tests {
         let secs = s.len() as f64 / 2.0 / 48000.0;
         assert!(secs > 0.1 && secs <= f64::from(EFFECT_MAX_SECS), "длина {secs:.2} с");
         assert!(s.iter().any(|x| x.abs() > 0.01), "не тишина");
+        let g = normalize_gain(&s);
+        let peak = s.iter().fold(0.0f32, |m, x| m.max(x.abs())) * g;
+        assert!(g >= 1.0 && (0.9..=0.96).contains(&peak), "после нормализации пик {peak:.2}, усиление {g:.1}");
     }
 
     #[test]

@@ -74,6 +74,13 @@ pub fn bind(app: &App, sender: impl Fn(ChatIntent) + 'static) {
     g.on_set_notify(|on| send(SettingsIntent::Change(Change::Notify(on))));
     g.on_set_hide_text(|on| send(SettingsIntent::Change(Change::HideText(on))));
     g.on_set_sound(|on| send(SettingsIntent::Change(Change::Sound(on))));
+    g.on_set_volume(|v| send(SettingsIntent::Change(Change::Volume(u32::try_from(v).unwrap_or(100)))));
+    let a = app.as_weak();
+    g.on_preview_sound(move || {
+        if let Some(app) = a.upgrade() {
+            crate::play_notification_sound(app.global::<Settings>().get_volume() as f32 / 100.0);
+        }
+    });
     g.on_set_tray(|on| send(SettingsIntent::Change(Change::Tray(on))));
     g.on_set_close_tray(|on| send(SettingsIntent::Change(Change::CloseToTray(on))));
     g.on_set_cache_limit(|i| {
@@ -171,6 +178,7 @@ pub fn render(app: &App, m: &ChatModel, images: &HashMap<String, SharedPixelBuff
     g.set_notify(s.notify);
     g.set_hide_text(s.notify_hide_text);
     g.set_sound(s.notify_sound);
+    g.set_volume(s.notify_volume as i32);
     g.set_tray(s.tray);
     // Пока трей выключен, о хосте ничего не известно — без подсказки.
     g.set_tray_available(!s.tray || m.tray_available);

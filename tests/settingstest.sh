@@ -140,6 +140,10 @@ check(wait(lambda: app().get("theme") == "dark"), "тема «Тёмная»")
 # Уведомления: третий переключатель — звук.
 section(2)
 shot("3-notifications")
+# Громкость: середина ползунка (под «Звуком уведомления»), проба звука — в журнал.
+click(CX + 436, CY + 208)
+check(wait(lambda: 45 <= app().get("notify_volume", -1) <= 55), f"громкость ~50 %: {app().get('notify_volume')}")
+check(wait(lambda: "звук уведомления" in open(f"{t}/home/state/nuncio.log", encoding="utf-8").read()), "проба звука при отпускании")
 click(X0 + 11, Y0 + 33 + 14 + 17 + 14 + 13)
 check(wait(lambda: app().get("notify_sound") is False), f"звук уведомлений выключен: {app().get('notify_sound')}")
 

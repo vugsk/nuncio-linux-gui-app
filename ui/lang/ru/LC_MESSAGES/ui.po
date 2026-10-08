@@ -681,3 +681,6 @@ msgstr "О рекламодателе"
 
 msgid "Ads are shown by Telegram; this app is required to show them by the Telegram API terms."
 msgstr "Рекламу показывает Telegram: условия Telegram API обязывают приложение её показывать."
+
+msgid "Volume"
+msgstr "Громкость"

@@ -74,7 +74,8 @@ impl ChatModel {
                 }
             };
             shown.retain(|e| !matches!(e, ChatEffect::Notify { peer_id, .. } if *peer_id == m.peer_id));
-            shown.push(ChatEffect::Notify { peer_id: m.peer_id, title, body, sound: s.notify_sound });
+            let sound = s.notify_sound.then(|| s.notify_volume.min(100));
+            shown.push(ChatEffect::Notify { peer_id: m.peer_id, title, body, sound });
         }
         out.extend(shown);
     }
@@ -113,7 +114,7 @@ mod tests {
         let mut out = Vec::new();
         m.notifications(&batch(vec![msg(10, 990, "привет"), msg(10, 995, "как дела"), msg(11, 999, "тихо"),
             msg(10, 100, "старое")]), &mut out);
-        assert_eq!(out, vec![ChatEffect::Notify { peer_id: 10, title: "Анна".into(), body: "как дела".into(), sound: true }],
+        assert_eq!(out, vec![ChatEffect::Notify { peer_id: 10, title: "Анна".into(), body: "как дела".into(), sound: Some(100) }],
             "одно на чат — последнее; без звука и старое — нет");
         m.open = Some(10);
         out.clear();
