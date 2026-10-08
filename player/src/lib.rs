@@ -131,6 +131,8 @@ struct AudioOut {
     rate: u32,
     channels: u16,
     current: Arc<Mutex<Option<Arc<Shared>>>>,
+    /// Короткие звуки (уведомления): подмешиваются поверх источника.
+    effect: Arc<Mutex<VecDeque<f32>>>,
 }
 
 thread_local! {
@@ -145,35 +147,39 @@ fn open_audio() -> Option<AudioOut> {
     let channels = 2u16;
     let config = cpal::StreamConfig { channels, sample_rate: rate, buffer_size: cpal::BufferSize::Default };
     let current: Arc<Mutex<Option<Arc<Shared>>>> = Arc::new(Mutex::new(None));
+    let effect: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::new()));
     let cur = current.clone();
+    let eff = effect.clone();
     let stream = device
         .build_output_stream(
             config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                let Some(sh) = lock(&cur).clone() else {
-                    data.fill(0.0);
-                    return;
-                };
-                if sh.paused.load(Ordering::Relaxed) {
-                    data.fill(0.0);
-                    return;
+                data.fill(0.0);
+                if let Some(sh) = lock(&cur).clone().filter(|sh| !sh.paused.load(Ordering::Relaxed)) {
+                    let vol = f32::from_bits(sh.volume.load(Ordering::Relaxed));
+                    let mut q = lock(&sh.audio);
+                    let n = (data.len().min(q.len()) / usize::from(channels)) * usize::from(channels);
+                    for s in data.iter_mut().take(n) {
+                        *s = q.pop_front().unwrap_or(0.0) * vol;
+                    }
+                    drop(q);
+                    lock(&sh.clock).played += (n / usize::from(channels)) as u64;
+                    sh.space.notify_all();
                 }
-                let vol = f32::from_bits(sh.volume.load(Ordering::Relaxed));
-                let mut q = lock(&sh.audio);
-                let n = (data.len().min(q.len()) / usize::from(channels)) * usize::from(channels);
-                for (i, s) in data.iter_mut().enumerate() {
-                    *s = if i < n { q.pop_front().unwrap_or(0.0) * vol } else { 0.0 };
+                let mut e = lock(&eff);
+                for s in data.iter_mut() {
+                    match e.pop_front() {
+                        Some(x) => *s = (*s + x).clamp(-1.0, 1.0),
+                        None => break,
+                    }
                 }
-                drop(q);
-                lock(&sh.clock).played += (n / usize::from(channels)) as u64;
-                sh.space.notify_all();
             },
             |e| log::warn!("звук: {e}"),
             None,
         )
         .map_err(|e| log::warn!("звук: устройство не открыто: {e}"))
         .ok()?;
-    Some(AudioOut { stream, rate, channels, current })
+    Some(AudioOut { stream, rate, channels, current, effect })
 }
 
 /// Подключить плеер к общему выводу звука: (частота, каналы) или None.
@@ -195,10 +201,84 @@ fn detach_audio(shared: &Arc<Shared>) {
             let mut cur = lock(&out.current);
             if cur.as_ref().is_some_and(|c| Arc::ptr_eq(c, shared)) {
                 *cur = None;
-                let _ = out.stream.pause();
+                // Звук уведомления ещё звучит — поток не останавливать.
+                if lock(&out.effect).is_empty() {
+                    let _ = out.stream.pause();
+                }
             }
         }
     });
+}
+
+/// Сыграть короткий звук (уведомление) поверх текущего воспроизведения, не
+/// прерывая его. Файл декодируется целиком (не длиннее `EFFECT_MAX_SECS`).
+pub fn play_effect(path: &Path) -> Result<(), String> {
+    let (rate, channels, effect) = OUT.with(|o| {
+        let mut o = o.borrow_mut();
+        let out = o.get_or_insert_with(open_audio).as_ref()?;
+        Some((out.rate, out.channels, out.effect.clone()))
+    }).ok_or("звук: нет устройства вывода")?;
+    let samples = decode_all(path, rate, channels)?;
+    lock(&effect).extend(samples);
+    OUT.with(|o| {
+        if let Some(Some(out)) = o.borrow().as_ref() {
+            if let Err(e) = out.stream.play() {
+                log::warn!("звук: {e}");
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Наибольшая длина короткого звука, с.
+pub const EFFECT_MAX_SECS: u32 = 5;
+
+fn decode_all(path: &Path, rate: u32, channels: u16) -> Result<Vec<f32>, String> {
+    let err = |e: ff::Error| e.to_string();
+    ff::init().map_err(err)?;
+    let mut ictx = ff::format::input(&path).map_err(err)?;
+    let stream = ictx.streams().best(ff::media::Type::Audio).ok_or("в файле нет звука")?;
+    let index = stream.index();
+    let mut dec = ff::codec::context::Context::from_parameters(stream.parameters()).map_err(err)?.decoder().audio()
+        .map_err(err)?;
+    let limit = (rate * EFFECT_MAX_SECS) as usize * usize::from(channels);
+    let mut out: Vec<f32> = Vec::new();
+    let mut resampler: Option<ff::software::resampling::Context> = None;
+    let mut frame = ff::frame::Audio::empty();
+    let mut drain = |dec: &mut ff::decoder::Audio, out: &mut Vec<f32>| -> Result<(), String> {
+        while dec.receive_frame(&mut frame).is_ok() {
+            if resampler.is_none() {
+                let layout = frame.channel_layout();
+                let layout = if layout.channels() > 0 { layout } else { ff::ChannelLayout::default(2) };
+                resampler = Some(ff::software::resampling::Context::get(frame.format(), layout, frame.rate(),
+                    ff::format::Sample::F32(ff::format::sample::Type::Packed),
+                    ff::ChannelLayout::default(i32::from(channels)), rate).map_err(err)?);
+            }
+            let Some(r) = resampler.as_mut() else { break };
+            let mut res = ff::frame::Audio::empty();
+            if r.run(&frame, &mut res).is_err() {
+                continue;
+            }
+            let n = res.samples() * usize::from(channels);
+            out.extend(res.data(0)[..n * 4].chunks_exact(4).map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]])));
+        }
+        Ok(())
+    };
+    for (s, packet) in ictx.packets() {
+        if s.index() != index {
+            continue;
+        }
+        if dec.send_packet(&packet).is_ok() {
+            drain(&mut dec, &mut out)?;
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+    let _ = dec.send_eof();
+    drain(&mut dec, &mut out)?;
+    out.truncate(limit);
+    Ok(out)
 }
 
 impl Player {
@@ -595,6 +675,20 @@ fn drain_audio(sh: &Shared, audio: &mut AudioDec, frame: &mut ff::frame::Audio,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Звук уведомления из системной темы декодируется нашей сборкой FFmpeg
+    /// (Ogg/Vorbis); без вывода на устройство. Нет файла — пропуск.
+    #[test]
+    fn decodes_theme_sound() {
+        let p = Path::new("/usr/share/sounds/freedesktop/stereo/message-new-instant.oga");
+        if !p.is_file() {
+            return;
+        }
+        let s = decode_all(p, 48000, 2).expect("декодируется");
+        let secs = s.len() as f64 / 2.0 / 48000.0;
+        assert!(secs > 0.1 && secs <= f64::from(EFFECT_MAX_SECS), "длина {secs:.2} с");
+        assert!(s.iter().any(|x| x.abs() > 0.01), "не тишина");
+    }
 
     #[test]
     fn fit_keeps_aspect_without_upscale() {

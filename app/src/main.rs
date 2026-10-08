@@ -249,6 +249,9 @@ impl Domain {
                     }
                     ChatEffect::ClearCache => self.clear_cache(),
                     ChatEffect::Notify { peer_id, title, body, sound } => {
+                        if sound {
+                            let _ = slint::invoke_from_event_loop(ui::play_notification_sound);
+                        }
                         if let Some(b) = &self.backend {
                             let cmd = domain::model::Command::ShowNotification { peer_id, title, body, sound };
                             if let Err(e) = b.submit(u64::MAX, cmd) {

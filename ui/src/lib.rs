@@ -345,6 +345,45 @@ pub fn has_native_window(app: &App) -> bool {
     app.window().has_winit_window()
 }
 
+thread_local! {
+    static LAST_SOUND: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Звук уведомления (В9): играет само приложение — многие серверы
+/// уведомлений (SwayNC, mako, dunst) звук не воспроизводят. Файл —
+/// `message-new-instant` из темы звуков freedesktop; не чаще раза в секунду.
+pub fn play_notification_sound() {
+    let now = std::time::Instant::now();
+    if LAST_SOUND.get().is_some_and(|t| now.duration_since(t) < std::time::Duration::from_secs(1)) {
+        return;
+    }
+    LAST_SOUND.set(Some(now));
+    log::info!("звук уведомления");
+    // Проверки под Xvfb не шумят на колонках человека.
+    if std::env::var_os("NUNCIO_TEST_SILENT").is_some() {
+        return;
+    }
+    let Some(path) = sound_file("message-new-instant").or_else(|| sound_file("message")) else {
+        log::warn!("звук уведомления: файл темы звуков не найден");
+        return;
+    };
+    if let Err(e) = player::play_effect(&path) {
+        log::warn!("звук уведомления: {e}");
+    }
+}
+
+/// Файл звука по спецификации тем звуков freedesktop (тема «freedesktop»).
+fn sound_file(name: &str) -> Option<std::path::PathBuf> {
+    let home = std::env::var("XDG_DATA_HOME").ok().filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.local/share")));
+    let dirs = std::env::var("XDG_DATA_DIRS").ok().filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    home.into_iter().chain(dirs.split(':').map(str::to_string)).find_map(|d| {
+        ["oga", "ogg", "wav"].iter().map(|ext| std::path::PathBuf::from(format!("{d}/sounds/freedesktop/stereo/{name}.{ext}")))
+            .find(|p| p.is_file())
+    })
+}
+
 /// Показать окно, если оно спрятано (без подъёма поверх).
 pub fn show_window(app: &App) {
     if !app.window().is_visible() {

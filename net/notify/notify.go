@@ -131,11 +131,9 @@ func (n *Notifier) Show(ctx context.Context, peer int64, title, body string, sou
 		"desktop-entry": dbus.MakeVariant(appName),
 		"urgency":       dbus.MakeVariant(byte(1)),
 	}
-	if sound {
-		hints["sound-name"] = dbus.MakeVariant("message-new-instant")
-	} else {
-		hints["suppress-sound"] = dbus.MakeVariant(true)
-	}
+	// Звук играет само приложение (многие серверы уведомлений его не умеют):
+	// сервер свой не играет, чтобы не было двух звуков.
+	hints["suppress-sound"] = dbus.MakeVariant(true)
 	var id uint32
 	err := conn.Object(dest, objPath).CallWithContext(ctx, iface+".Notify", 0, appName, replaces, "",
 		title, body, []string{"default", ""}, hints, timeout).Store(&id)

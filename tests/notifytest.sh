@@ -94,8 +94,9 @@ def check(cond, what):
 
 check(wait(lambda: len(notes()) >= 1), "первое входящее — уведомление")
 n = notes()
-check(n and "title=Отправитель" in n[0] and "body=входящее 1" in n[0] and "sound=true" in n[0]
-      and "replaces=0" in n[0] and "actions=[default ]" in n[0], f"заголовок, текст, звук, действие: {n[:1]}")
+check(n and "title=Отправитель" in n[0] and "body=входящее 1" in n[0] and "quiet=true" in n[0]
+      and "replaces=0" in n[0] and "actions=[default ]" in n[0], f"заголовок, текст, без звука сервера, действие: {n[:1]}")
+check("звук уведомления" in open(f"{t}/home/state/nuncio.log", encoding="utf-8").read(), "звук играет приложение")
 first = re.search(r"id=(\d+)", n[0]).group(1) if n else "?"
 check(wait(lambda: len(notes()) >= 2), "второе входящее — уведомление")
 n = notes()

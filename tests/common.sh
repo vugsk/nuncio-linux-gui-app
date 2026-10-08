@@ -42,3 +42,6 @@ CONF
 
 # Ссылки в проверках не открываются в браузере человека: адреса — в файл.
 export NUNCIO_TEST_OPEN=${NUNCIO_TEST_OPEN:-$T/opened.txt}
+
+# Звуки уведомлений в проверках не выводятся (только строка в журнале).
+export NUNCIO_TEST_SILENT=1

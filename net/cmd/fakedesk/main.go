@@ -58,9 +58,9 @@ func (s *server) Notify(app string, replaces uint32, icon, summary, body string,
 	}
 	s.last = id
 	s.mu.Unlock()
-	_, sound := hints["sound-name"]
-	fmt.Printf("уведомление id=%d replaces=%d app=%s title=%s body=%s sound=%v actions=%v\n",
-		id, replaces, app, summary, body, sound, actions)
+	_, quiet := hints["suppress-sound"]
+	fmt.Printf("уведомление id=%d replaces=%d app=%s title=%s body=%s quiet=%v actions=%v\n",
+		id, replaces, app, summary, body, quiet, actions)
 	return id, nil
 }
 
