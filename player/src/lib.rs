@@ -196,7 +196,9 @@ fn attach_audio(shared: &Arc<Shared>) -> Option<(u32, u16)> {
 }
 
 fn detach_audio(shared: &Arc<Shared>) {
-    OUT.with(|o| {
+    // Плеер может закрываться при завершении потока, когда общий вывод уже
+    // уничтожен (порядок уничтожения thread_local не задан): тогда — ничего.
+    let _ = OUT.try_with(|o| {
         if let Some(Some(out)) = o.borrow().as_ref() {
             let mut cur = lock(&out.current);
             if cur.as_ref().is_some_and(|c| Arc::ptr_eq(c, shared)) {
