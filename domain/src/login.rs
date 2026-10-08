@@ -595,9 +595,10 @@ impl LoginModel {
             }
             Pending::TestProxy => {
                 self.proxy.checking = false;
+                let ru = self.lang == "ru";
                 self.proxy.check = Some(match (r.error, r.payload) {
                     (None, Payload::ProxyCheck { rtt_ms }) => Ok(rtt_ms),
-                    (Some(e), _) => Err(e.text),
+                    (Some(e), _) => Err(crate::errors::error_text(&e, ru)),
                     _ => Err(String::new()),
                 });
             }

@@ -97,7 +97,7 @@ impl ChatModel {
                 out.push(ChatEffect::InspectFiles { paths: paths.clone(), append });
             }
             (Some(e), _) => {
-                let t = e.text.clone();
+                let t = crate::errors::error_text(e, self.lang == "ru");
                 self.toast(&t);
             }
             _ => {}
@@ -269,7 +269,8 @@ impl ChatModel {
                 self.toast(&t);
             }
             (Some(e), _) => {
-                let t = if ru { format!("Не сохранено: {}", e.text) } else { format!("Not saved: {}", e.text) };
+                let why = crate::errors::error_text(e, ru);
+                let t = if ru { format!("Не сохранено: {why}") } else { format!("Not saved: {why}") };
                 self.toast(&t);
             }
             _ => {}

@@ -533,7 +533,7 @@ impl ChatModel {
                 }
             }
             if matches!(p, Pending::ChatAction { .. }) {
-                let t = e.text.clone();
+                let t = crate::errors::error_text(e, self.lang == "ru");
                 self.toast(&t);
             }
             return;

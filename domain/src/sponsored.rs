@@ -120,7 +120,7 @@ impl ChatModel {
                 self.toast(t);
             }
             (Some(e), _) => {
-                let t = e.text.clone();
+                let t = crate::errors::error_text(e, self.lang == "ru");
                 self.toast(&t);
             }
             _ => {}

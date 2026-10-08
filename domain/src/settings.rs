@@ -337,7 +337,7 @@ impl ChatModel {
                             v.sessions = list;
                         }
                         (Some(e), _) => {
-                            let t = e.text.clone();
+                            let t = crate::errors::error_text(e, self.lang == "ru");
                             self.toast(&t);
                         }
                         _ => {}
@@ -349,7 +349,7 @@ impl ChatModel {
                     v.proxy_checking = false;
                     v.proxy_check = Some(match (&r.error, &r.payload) {
                         (None, Payload::ProxyCheck { rtt_ms }) => Ok(*rtt_ms),
-                        (Some(e), _) => Err(e.text.clone()),
+                        (Some(e), _) => Err(crate::errors::error_text(e, ru)),
                         _ => Err(String::new()),
                     });
                 }

@@ -8,6 +8,7 @@ pub mod chat;
 pub mod chatlist;
 pub mod chatstore;
 pub mod config;
+pub mod errors;
 pub mod history;
 pub mod login;
 pub mod media;

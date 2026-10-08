@@ -103,7 +103,7 @@ impl ChatModel {
             }
             (Some(e), _) => {
                 s.complete = true;
-                let t = e.text.clone();
+                let t = crate::errors::error_text(e, self.lang == "ru");
                 self.toast(&t);
             }
             _ => s.complete = true,

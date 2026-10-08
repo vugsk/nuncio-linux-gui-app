@@ -1053,7 +1053,7 @@ impl ChatModel {
                         self.load_dialogs_page(Some((date, last.top_message, peer)), out);
                     }
                 } else if let Some(e) = &r.error {
-                    self.error = Some(e.text.clone());
+                    self.error = Some(crate::errors::error_text(e, self.lang == "ru"));
                 }
             }
             Pending::History { peer_id, offset_id, add_offset, limit } => {
@@ -1073,7 +1073,7 @@ impl ChatModel {
                     }
                     out.push(ChatEffect::Db(DbOp::ReloadRows));
                 } else if let Some(e) = &r.error {
-                    self.error = Some(e.text.clone());
+                    self.error = Some(crate::errors::error_text(e, self.lang == "ru"));
                 }
             }
             Pending::Read { peer_id } => {
@@ -1122,7 +1122,7 @@ impl ChatModel {
             }
             Pending::Action => {
                 if let Some(e) = &r.error {
-                    let t = e.text.clone();
+                    let t = crate::errors::error_text(e, self.lang == "ru");
                     self.toast(&t);
                 } else {
                     self.reload_open(out);
@@ -1164,7 +1164,7 @@ impl ChatModel {
             }
             Pending::Vote { peer, msg_id } => match &r.error {
                 Some(e) => {
-                    let t = e.text.clone();
+                    let t = crate::errors::error_text(e, self.lang == "ru");
                     self.toast(&t);
                 }
                 None => {
