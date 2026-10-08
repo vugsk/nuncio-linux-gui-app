@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Временный значок nuncio (тот же рисунок, что в трее: net/tray/icon.go). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <circle cx="32" cy="32" r="32" fill="#3390ec"/>
+  <ellipse cx="32" cy="30.08" rx="17.28" ry="13.44" fill="#ffffff"/>
+  <polygon points="17.28,47.36 20.48,35.2 29.44,39.68" fill="#ffffff"/>
+</svg>

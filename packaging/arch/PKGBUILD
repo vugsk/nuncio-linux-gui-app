@@ -1,0 +1,116 @@
+# Пакет Arch для nuncio (В10, формат выбран пользователем 2026-10-08).
+#
+# Собирается из этого репозитория (последний коммит, не рабочая копия):
+#   cd packaging/arch && makepkg -si
+#
+# Сторонние исходники (FFmpeg с подписью, OpenSSL, шрифт эмодзи, готовые
+# бинарники Skia) скачивает makepkg и сверяет по SHA-256 — те же суммы, что в
+# third_party/deps.toml; сама сборка к ним по сети не обращается. Крейты Rust
+# и модули Go скачиваются в prepare() по Cargo.lock и go.sum.
+#
+# Версии и суммы сторонних файлов — копии из third_party/deps.toml: при их
+# смене обновлять оба места (tools/check_pkgbuild.sh сверяет).
+
+pkgname=nuncio
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Unofficial Telegram client for Linux (Rust + Slint, Go network layer)'
+arch=('x86_64')
+url='https://core.telegram.org/api'
+license=('GPL-3.0-or-later')
+depends=(
+  'glibc' 'gcc-libs' 'alsa-lib' 'fontconfig' 'freetype2' 'libpng' 'zlib' 'bzip2' 'brotli' 'expat'
+  'wayland' 'libxkbcommon' 'libx11' 'libxcursor' 'libxrandr' 'libxi' 'libglvnd'
+  'org.freedesktop.secrets'
+)
+makedepends=('git' 'rust' 'go' 'python' 'just' 'protobuf' 'cmake' 'clang' 'nasm' 'perl' 'gnupg' 'pkgconf')
+optdepends=(
+  'xdg-desktop-portal: системный диалог выбора файлов (вложения, сохранение)'
+  'sound-theme-freedesktop: звук уведомлений'
+  'pipewire-alsa: звук через PipeWire'
+  'mesa: «Графика: GPU» (Skia, OpenGL)'
+)
+options=('!lto' '!debug')
+
+_ffmpeg=9.0.1
+_openssl=3.6.4
+_noto=v2026-09-24-unicode18_0
+_skia=skia-binaries-b7f043e0b1e2a850e702-x86_64-unknown-linux-gnu-ganesh-gl-jpegd-jpege-pdf-vulkan.tar.gz
+_protoc_gen_go=v1.36.12
+
+source=(
+  "nuncio::git+file://$(realpath "$startdir/../..")"
+  "https://ffmpeg.org/releases/ffmpeg-$_ffmpeg.tar.xz"
+  "https://ffmpeg.org/releases/ffmpeg-$_ffmpeg.tar.xz.asc"
+  "ffmpeg-release-key.asc::https://ffmpeg.org/ffmpeg-devel.asc"
+  "https://github.com/openssl/openssl/releases/download/openssl-$_openssl/openssl-$_openssl.tar.gz"
+  "NotoColorEmoji.ttf::https://raw.githubusercontent.com/googlefonts/noto-emoji/$_noto/2D/fonts/NotoColorEmoji.ttf"
+  "NotoColorEmoji.LICENSE::https://raw.githubusercontent.com/googlefonts/noto-emoji/$_noto/2D/fonts/LICENSE"
+  "https://github.com/rust-skia/skia-binaries/releases/download/0.153.3/$_skia"
+)
+noextract=("ffmpeg-$_ffmpeg.tar.xz" "openssl-$_openssl.tar.gz" "$_skia")
+sha256sums=(
+  'SKIP'
+  'cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635'
+  'b613a00005232a1245ace7080088781ac23a916119d3e5b0d6c042368eee0177'
+  '397b3becedcd5a98769967ff1ff8501ddc89f8368b8f766e4701377d7dbaabe5'
+  '9bffaa1ad1e07b354c21bd3324ec02fa15579f45a7d0494b3e74bc449b7333ef'
+  '15671215ab769fdc7162a045d56fd7d7e477c51b04e6b3c761d914d8fdd6cc44'
+  '6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2'
+  '9ebe4c448cc9f789bad241cbd11739cdf759e27db5719c23a7635e096d5807b3'
+)
+
+pkgver() {
+  cd nuncio
+  printf '0.1.0.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd nuncio
+  # Сторонние файлы — в кэш fetch_deps.py под ожидаемыми именами: он их
+  # сверит по SHA-256 (и подпись FFmpeg по отпечатку ключа) без сети.
+  mkdir -p .deps-cache
+  local f
+  for f in "ffmpeg-$_ffmpeg.tar.xz" "ffmpeg-$_ffmpeg.tar.xz.asc" ffmpeg-release-key.asc \
+    "openssl-$_openssl.tar.gz" NotoColorEmoji.ttf NotoColorEmoji.LICENSE; do
+    cp -L "$srcdir/$f" .deps-cache/
+  done
+  export RUSTUP_TOOLCHAIN=stable CARGO_HOME="$srcdir/cargo" GOPATH="$srcdir/go" GOFLAGS=-modcacherw
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+  (cd net && go mod download)
+  (cd tools/tlgen && go mod download)
+  GOBIN="$srcdir/gobin" go install "google.golang.org/protobuf/cmd/protoc-gen-go@$_protoc_gen_go"
+}
+
+build() {
+  cd nuncio
+  export RUSTUP_TOOLCHAIN=stable CARGO_HOME="$srcdir/cargo" GOPATH="$srcdir/go" GOFLAGS=-modcacherw
+  export PATH="$srcdir/gobin:$PATH"
+  export CARGO_TARGET_DIR=target
+  # Skia — из скачанного и сверенного makepkg архива, не из сети.
+  export SKIA_BINARIES_URL="file://$srcdir/$_skia"
+  python3 third_party/fetch_deps.py openssl ffmpeg noto-emoji
+  just tl core proto net
+  cargo build --frozen --release -p app
+}
+
+check() {
+  cd nuncio
+  export RUSTUP_TOOLCHAIN=stable CARGO_HOME="$srcdir/cargo" GOPATH="$srcdir/go" GOFLAGS=-modcacherw
+  export CARGO_TARGET_DIR=target SKIA_BINARIES_URL="file://$srcdir/$_skia"
+  cargo test --frozen --release -p domain
+  (cd net && go test ./...)
+}
+
+package() {
+  cd nuncio
+  install -Dm755 target/release/nuncio "$pkgdir/usr/bin/nuncio"
+  install -Dm644 packaging/nuncio.desktop "$pkgdir/usr/share/applications/nuncio.desktop"
+  install -Dm644 packaging/nuncio.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/nuncio.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 third_party/NOTICES.md "$pkgdir/usr/share/licenses/$pkgname/NOTICES.md"
+  # Лицензии статически встроенного: FFmpeg (LGPL-2.1+), OpenSSL, шрифт эмодзи (OFL).
+  install -Dm644 target/native/ffmpeg/COPYING.LGPLv2.1 "$pkgdir/usr/share/licenses/$pkgname/FFmpeg-COPYING.LGPLv2.1"
+  install -Dm644 target/native/OpenSSL.LICENSE.txt "$pkgdir/usr/share/licenses/$pkgname/OpenSSL-LICENSE.txt"
+  install -Dm644 target/native/NotoColorEmoji.LICENSE "$pkgdir/usr/share/licenses/$pkgname/NotoColorEmoji-LICENSE"
+}

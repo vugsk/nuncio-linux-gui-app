@@ -95,9 +95,12 @@ def verify_signature(archive: Path, dep: dict) -> None:
     deps.toml. Временное хранилище ключей — личное gpg не трогается."""
     sig = archive.with_name(archive.name + ".asc")
     key = CACHE / "ffmpeg-release-key.asc"
-    print(f"  скачиваю подпись {dep['url']}.asc и ключ {dep['signing_key_url']}")
-    urllib.request.urlretrieve(dep["url"] + ".asc", sig)
-    urllib.request.urlretrieve(dep["signing_key_url"], key)
+    # Подпись и ключ уже положены (сборка пакета скачивает их сама) — без сети;
+    # отпечаток ключа всё равно сверяется ниже.
+    if not (sig.exists() and key.exists()):
+        print(f"  скачиваю подпись {dep['url']}.asc и ключ {dep['signing_key_url']}")
+        urllib.request.urlretrieve(dep["url"] + ".asc", sig)
+        urllib.request.urlretrieve(dep["signing_key_url"], key)
     home = CACHE / "gnupg"
     shutil.rmtree(home, ignore_errors=True)
     home.mkdir(mode=0o700)

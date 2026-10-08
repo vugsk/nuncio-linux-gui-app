@@ -865,12 +865,24 @@ impl Domain {
 /// (проверки под Xvfb). Без GPU Skia не запустится — тогда software.
 /// true — выбран GPU.
 fn select_renderer(gpu: bool) -> bool {
+    // Имя окна для окружения: app_id на Wayland и WM_CLASS на X11 — по нему
+    // находятся nuncio.desktop и значок (пакет В10).
+    let selector = || {
+        slint::BackendSelector::new().with_winit_window_attributes_hook(|a| {
+            use slint::winit_030::winit::platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11};
+            let a = WindowAttributesExtWayland::with_name(a, "nuncio", "nuncio");
+            WindowAttributesExtX11::with_name(a, "nuncio", "nuncio")
+        })
+    };
     if let Ok(env) = std::env::var("SLINT_BACKEND") {
         log::info!("рендерер: из SLINT_BACKEND ({env})");
+        if let Err(e) = selector().select() {
+            log::warn!("рендерер: {e}");
+        }
         return false;
     }
     let gpu = gpu && std::env::var_os(SOFTWARE_FALLBACK).is_none();
-    let pick = |r: &str| slint::BackendSelector::new().backend_name("winit".into()).renderer_name(r.into()).select();
+    let pick = |r: &str| selector().backend_name("winit".into()).renderer_name(r.into()).select();
     if gpu {
         match pick("skia-opengl") {
             Ok(()) => {

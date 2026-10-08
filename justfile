@@ -102,6 +102,7 @@ lint:
     cargo deny check
     tools/go_licenses.sh
     tools/verify_skia.sh
+    tools/check_pkgbuild.sh
     cd net && test -z "$(gofmt -l .)" && go vet ./... && staticcheck ./...
     cd tools/tlgen && test -z "$(gofmt -l .)" && go vet ./... && staticcheck ./...
     cd core && clang-tidy -p build src/*.cpp tests/*.cpp

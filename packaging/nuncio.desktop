@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=nuncio
+GenericName=Telegram client
+GenericName[ru]=Клиент Telegram
+Comment=Unofficial Telegram client (uses the Telegram API)
+Comment[ru]=Неофициальный клиент Telegram (использует Telegram API)
+Exec=nuncio
+Icon=nuncio
+Terminal=false
+Categories=Network;InstantMessaging;Chat;
+Keywords=telegram;messenger;chat;
+StartupWMClass=nuncio
+StartupNotify=true

@@ -27,7 +27,7 @@
 ## OpenSSL 3.6.4 — Apache-2.0, статически
 
 - `libcrypto` урезанной сборкой для ядра (`core/`, решение Р-11). Текст
-  лицензии (`LICENSE.txt`) кладётся `just deps` в `target/native/`.
+  лицензии кладётся `just deps` в `target/native/OpenSSL.LICENSE.txt`.
 
 ## Noto Color Emoji — SIL OFL 1.1
 
