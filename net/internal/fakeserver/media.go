@@ -89,6 +89,52 @@ func MediaChat() ([]string, []Attach, map[int64][]byte) {
 	return texts, att, files
 }
 
+// StickerSet — набор стикеров поддельного аккаунта (панель стикеров).
+type StickerSet struct {
+	ID, Hash int64
+	Title    string
+	Docs     []*tl.Document
+}
+
+// stickerDoc — стикер: статичный WebP (сам файл) или «анимированный» TGS
+// (файл — заглушка, показывается превью m из thumb).
+func stickerDoc(id int64, webp []byte, tgs bool, set *tl.InputStickerSetID, files, thumbs map[int64][]byte) *tl.Document {
+	attrs := []tl.DocumentAttributeClass{&tl.DocumentAttributeImageSize{W: 512, H: 512},
+		&tl.DocumentAttributeSticker{Alt: "😀", Stickerset: set}}
+	d := &tl.Document{Id: id, AccessHash: id * 3, FileReference: []byte{7}, Date: 1, DcId: 2, Attributes: attrs}
+	if tgs {
+		files[id] = []byte("tgs")
+		thumbs[id] = webp
+		d.MimeType, d.Size = "application/x-tgsticker", 3
+		d.Thumbs = []tl.PhotoSizeClass{&tl.PhotoSize{Type: "m", W: 128, H: 128, Size: int32(len(webp))}}
+	} else {
+		files[id] = webp
+		d.MimeType, d.Size = "image/webp", int64(len(webp))
+	}
+	return d
+}
+
+// StickerChat — чат «Стикеры» (статичный и «анимированный») и два набора
+// для панели: «Котики» (статичные) и «Анимации» (TGS). webp — картинки 512×512.
+func StickerChat(webp [][]byte, files, thumbs map[int64][]byte) ([]string, []Attach, []StickerSet) {
+	setA := &tl.InputStickerSetID{Id: 7001, AccessHash: 71}
+	setB := &tl.InputStickerSetID{Id: 7002, AccessHash: 72}
+	pick := func(i int) []byte { return webp[i%len(webp)] }
+	a := StickerSet{ID: 7001, Hash: 71, Title: "Котики"}
+	for i := 0; i < 4; i++ {
+		a.Docs = append(a.Docs, stickerDoc(int64(9301+i), pick(i), false, setA, files, thumbs))
+	}
+	b := StickerSet{ID: 7002, Hash: 72, Title: "Анимации"}
+	for i := 0; i < 3; i++ {
+		b.Docs = append(b.Docs, stickerDoc(int64(9401+i), pick(i+1), true, setB, files, thumbs))
+	}
+	att := []Attach{
+		{Index: 0, Media: &tl.MessageMediaDocument{Document: a.Docs[0]}},
+		{Index: 1, Media: &tl.MessageMediaDocument{Document: b.Docs[0]}},
+	}
+	return []string{"", "", "после стикеров"}, att, []StickerSet{a, b}
+}
+
 // TtlChat — чат «Секрет»: самоуничтожающееся фото (10 с) и уже истёкшее.
 func TtlChat(files map[int64][]byte) ([]string, []Attach) {
 	ttl := int32(10)
@@ -234,6 +280,13 @@ func (a *Account) mediaOf(in tl.InputMediaClass) (tl.MessageMediaClass, error) {
 		}
 		if m, ok := a.uploadedMedia[id]; ok {
 			return m, nil
+		}
+		for _, st := range a.Stickers {
+			for _, d := range st.Docs {
+				if d.Id == id {
+					return &tl.MessageMediaDocument{Document: d}, nil
+				}
+			}
 		}
 		return nil, &rpcErr{400, "MEDIA_INVALID"}
 	}

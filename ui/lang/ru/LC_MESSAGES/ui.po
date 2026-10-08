@@ -684,3 +684,6 @@ msgstr "Рекламу показывает Telegram: условия Telegram AP
 
 msgid "Volume"
 msgstr "Громкость"
+
+msgid "Stickers"
+msgstr "Стикеры"

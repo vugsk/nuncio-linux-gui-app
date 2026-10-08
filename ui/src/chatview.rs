@@ -15,7 +15,7 @@ use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPix
 
 use crate::richtext::{self, Fonts, Span, Style};
 use crate::scroller::Scroller;
-use crate::{avatar, AlbumCell, App, Chat, DialogItem, FolderItem, LiveFrame, MemberItem, MessageItem, PickerItem, PollRow, SharedCell, SharedRow,
+use crate::{avatar, AlbumCell, App, Chat, DialogItem, FolderItem, LiveFrame, MemberItem, MessageItem, PickerItem, PollRow, SharedCell, SharedRow, StickerCell, StickerTab,
     PrepItem, RichLine, RichSeg, SearchRow, ViewerWindow};
 
 /// Подписи на языке интерфейса (в Rust: собираются из данных, не из разметки).
@@ -892,6 +892,35 @@ impl ChatRenderer {
         self.image(key, Some(px))
     }
 
+    /// Панель стикеров: вкладки («Недавние» и установленные наборы) и сетка.
+    fn fill_stickers(&mut self, chat: &Chat, m: &ChatModel, images: &HashMap<String, SharedPixelBuffer<Rgba8Pixel>>,
+        ru: bool) {
+        let p = &m.sticker_panel;
+        chat.set_sticker_open(p.open);
+        if !p.open {
+            return;
+        }
+        let mut tabs = vec![StickerTab {
+            id: "0".into(),
+            title: if ru { "Недавние" } else { "Recent" }.into(),
+            on: p.current == domain::stickers::RECENT,
+        }];
+        tabs.extend(p.sets.iter().map(|s| StickerTab { id: s.id.to_string().into(), title: s.title.clone().into(),
+            on: p.current == s.id }));
+        chat.set_sticker_tabs(model(tabs));
+        chat.set_sticker_loading(p.loading == Some(p.current));
+        let cells: Vec<StickerCell> = m
+            .panel_stickers()
+            .iter()
+            .map(|mi| {
+                let img = domain::media::sticker_image(mi)
+                    .and_then(|f| self.media_image(&sticker_panel_key(&f.key()), images));
+                StickerCell { has_img: img.is_some(), img: img.unwrap_or_else(no_image) }
+            })
+            .collect();
+        chat.set_sticker_cells(model(cells));
+    }
+
     /// Вкладки общих медиа в «Сведениях» (Св-1): сетка медиа или список.
     fn fill_shared(&mut self, chat: &Chat, m: &ChatModel, images: &HashMap<String, SharedPixelBuffer<Rgba8Pixel>>,
         ru: bool) {
@@ -1006,6 +1035,15 @@ impl ChatRenderer {
                 it.file_info = if size > 0 { size_label(size, ru).into() } else { "".into() };
             }
             let has_feed = feed.contains_key(&msg.id);
+            // Стикер: картинка без пузыря (без картинки — словом, как раньше).
+            if mi.kind == K::Sticker {
+                if has_feed {
+                    it.mkind = 1;
+                    it.msticker = true;
+                    it.media = "".into();
+                }
+                continue;
+            }
             // Самоуничтожающееся: строка-заглушка, открывается окном просмотра.
             if mi.self_destruct() {
                 it.mkind = 2;
@@ -1633,6 +1671,14 @@ impl ChatRenderer {
     }
 }
 
+/// Сторона картинки стикера в панели (ячейка 68 px, вдвое — для чёткости).
+pub const STICKER_PANEL_PX: u32 = 136;
+
+/// Ключ раскодированной картинки стикера панели.
+pub fn sticker_panel_key(file_key: &str) -> String {
+    format!("sticker:{file_key}:{STICKER_PANEL_PX}x{STICKER_PANEL_PX}")
+}
+
 /// Ключ строки рекламы: отрицательный (не сообщение и не очередь отправки).
 const SPONSORED_KEY: i32 = i32::MIN + 1;
 
@@ -1863,6 +1909,7 @@ impl ChatRenderer {
         }
         self.fill_shared(&chat, m, avatars, ru);
         fill_sponsored(&chat, m);
+        self.fill_stickers(&chat, m, avatars, ru);
         // Поиск по чату.
         if let Some(cs) = &m.chat_search {
             let me = if ru { "Вы" } else { "You" };

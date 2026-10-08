@@ -4779,6 +4779,7 @@ dependencies = [
  "domain",
  "emojis",
  "harfrust 0.13.3",
+ "image-webp",
  "log",
  "memmap2",
  "player",

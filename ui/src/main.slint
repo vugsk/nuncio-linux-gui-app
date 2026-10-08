@@ -75,6 +75,18 @@ export struct SharedRow {
     url: string,
 }
 
+// Панель стикеров: вкладка набора и ячейка стикера.
+export struct StickerTab {
+    id: string,
+    title: string,
+    on: bool,
+}
+
+export struct StickerCell {
+    img: image,
+    has-img: bool,
+}
+
 export struct MemberItem {
     id: string,
     name: string,
@@ -183,6 +195,7 @@ export struct MessageItem {
     mh: length,
     mplay: bool,          // видео: кнопка «играть»
     mround: bool,         // кружок (видеосообщение): круг без пузыря
+    msticker: bool,       // стикер: картинка с прозрачностью без пузыря
     mgif: bool,           // GIF: плашка, играет в ленте сам
     mpath: string,        // скачанный файл GIF или кружка — для игры в ленте
     mdur: string,         // длительность видео
@@ -290,6 +303,14 @@ export global Chat {
     in property <bool> info-blocked;
     in property <bool> info-self;
     in property <[MemberItem]> info-members;
+    // Панель стикеров над полем ввода.
+    in property <bool> sticker-open;
+    in property <[StickerTab]> sticker-tabs;
+    in property <[StickerCell]> sticker-cells;
+    in property <bool> sticker-loading;
+    callback sticker-toggle();
+    callback sticker-select(string);
+    callback sticker-send(int);
     // Реклама в конце ленты (каналы и боты): одна строка, по щелчку — карточка.
     in property <string> sp-title;
     in property <string> sp-text;
@@ -1360,7 +1381,7 @@ component Bubble inherits VerticalLayout {
             // переносится по этой ширине (Чт-11); превью ссылки — с карточку.
             property <bool> visual: root.item.mkind == 1 || root.item.mkind == 5;
             // Кружок и GIF без подписи — без пузыря, как в Telegram.
-            property <bool> bare: (root.item.mround || root.item.mgif) && root.item.text == "";
+            property <bool> bare: (root.item.mround || root.item.mgif || root.item.msticker) && root.item.text == "";
             property <length> full: min(480px, root.width * 0.75);
             property <length> fit: self.visual ? root.item.mw + 8px
                 : root.item.mkind == 3 && root.item.mhas-img ? min(self.full, root.item.mw + 39px) : 0px;
@@ -2173,6 +2194,53 @@ component ChatPane inherits Rectangle {
                 }
             }
         }
+        // Панель стикеров: вкладки наборов и сетка; щелчок — отправить.
+        if Chat.sticker-open: Rectangle {
+            height: 300px;
+            background: Theme.card-bg;
+            border-width: 1px;
+            border-color: Theme.card-border;
+            VerticalLayout {
+                padding: 8px;
+                spacing: 6px;
+                Flickable {
+                    height: 30px;
+                    content-width: tabs.preferred-width;
+                    tabs := HorizontalLayout {
+                        spacing: 4px;
+                        for t in Chat.sticker-tabs: FmtButton {
+                            label: t.title;
+                            on: t.on;
+                            clicked => { Chat.sticker-select(t.id); }
+                        }
+                    }
+                }
+                Flickable {
+                    vertical-stretch: 1;
+                    content-height: grid.height;
+                    grid := Rectangle {
+                        property <int> cols: max(1, floor((parent.width - 4px) / 80px));
+                        height: Math.ceil(Chat.sticker-cells.length / self.cols) * 80px;
+                        for c[i] in Chat.sticker-cells: Rectangle {
+                            x: Math.mod(i, parent.cols) * 80px;
+                            y: Math.floor(i / parent.cols) * 80px;
+                            width: 76px;
+                            height: 76px;
+                            border-radius: Theme.radius;
+                            background: st.has-hover ? Theme.soft : transparent;
+                            if c.has-img: Image { x: 4px; y: 4px; width: 68px; height: 68px; source: c.img; image-fit: contain; }
+                            st := TouchArea { mouse-cursor: pointer; clicked => { Chat.sticker-send(i); } }
+                        }
+                    }
+                }
+                if Chat.sticker-loading || Chat.sticker-cells.length == 0: Text {
+                    text: Chat.sticker-loading ? @tr("Loading…") : @tr("Nothing here yet");
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                }
+            }
+        }
         // Поле ввода: гибрид (Дз-17).
         Rectangle {
             height: max(48px, field.height + 24px);
@@ -2207,6 +2275,26 @@ component ChatPane inherits Rectangle {
                         y: (parent.height - self.height) / 2;
                         width: 100%;
                         enabled: Chat.can-write;
+                    }
+                }
+                // Стикеры: панель над полем ввода.
+                Rectangle {
+                    width: 32px;
+                    accessible-role: button;
+                    accessible-label: @tr("Stickers");
+                    stk-touch := TouchArea {
+                        enabled: Chat.can-write;
+                        mouse-cursor: pointer;
+                        clicked => { Chat.sticker-toggle(); }
+                    }
+                    Path {
+                        width: 20px;
+                        height: 20px;
+                        stroke: Chat.sticker-open || stk-touch.has-hover ? Theme.link : Theme.text-muted;
+                        stroke-width: 1.6px;
+                        viewbox-width: 20;
+                        viewbox-height: 20;
+                        commands: "M 12 18 L 4 18 A 2 2 0 0 1 2 16 L 2 4 A 2 2 0 0 1 4 2 L 16 2 A 2 2 0 0 1 18 4 L 18 12 Z M 12 18 L 12 14 A 2 2 0 0 1 14 12 L 18 12 M 6.5 8 L 6.5 8.5 M 13.5 8 L 13.5 8.5 M 6.5 12 Q 9 14 11 12.5";
                     }
                 }
                 Rectangle {

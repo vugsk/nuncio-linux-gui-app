@@ -119,3 +119,8 @@ messages.reportSponsoredMessage
 # В10: самоуничтожающиеся вложения — отметка «содержимое просмотрено»
 messages.readMessageContents
 channels.readMessageContents
+
+# Стикеры: установленные наборы, набор целиком, недавние
+messages.getAllStickers
+messages.getStickerSet
+messages.getRecentStickers

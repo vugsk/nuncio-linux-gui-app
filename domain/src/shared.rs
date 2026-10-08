@@ -145,7 +145,7 @@ impl ChatModel {
                 let side = 2 * GRID_CELL;
                 let (w, h) = if w < h { (side, (side * h / w).min(4 * side)) } else { ((side * w / h).min(4 * side), side) };
                 Some((m.id, FeedImage { file, stripped: mi.stripped.clone(), w, h, album: (0, 1), local: String::new(),
-                    round: false }))
+                    round: false, sticker: false }))
             })
             .collect()
     }

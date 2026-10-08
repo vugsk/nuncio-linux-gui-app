@@ -572,7 +572,11 @@ impl Domain {
                     if !self.avatars.contains_key(&k) && !self.bad_avatars.contains(&k) {
                         let path = path.clone();
                         let round = f.round;
-                        want.push((k, Box::new(move || ui::photo::load_feed_with(&path, tw, th, round))));
+                        if f.sticker {
+                            want.push((k, Box::new(move || ui::photo::load_sticker(&path, tw, th))));
+                        } else {
+                            want.push((k, Box::new(move || ui::photo::load_feed_with(&path, tw, th, round))));
+                        }
                     }
                 }
                 _ if !f.stripped.is_empty() => {
@@ -585,6 +589,18 @@ impl Domain {
                     }
                 }
                 _ => {}
+            }
+        }
+        // Картинки панели стикеров (открытый набор).
+        for f in chat.sticker_files() {
+            let k = ui::chatview::sticker_panel_key(&f.key());
+            if let Some(path) = chat.media_paths.get(&f.key()) {
+                keep.insert(k.clone());
+                if !self.avatars.contains_key(&k) && !self.bad_avatars.contains(&k) {
+                    let path = path.clone();
+                    let px = ui::chatview::STICKER_PANEL_PX;
+                    want.push((k, Box::new(move || ui::photo::load_sticker(&path, px, px))));
+                }
             }
         }
         // Миниатюры панели подготовки (Св-4).
@@ -614,7 +630,7 @@ impl Domain {
         }
         let before = self.avatars.len();
         self.avatars.retain(|k, _| {
-            !["photo:", "strip:", "full:", "local:", "prep:"].iter().any(|p| k.starts_with(p)) || keep.contains(k)
+            !["photo:", "strip:", "full:", "local:", "prep:", "sticker:"].iter().any(|p| k.starts_with(p)) || keep.contains(k)
         });
         let mut changed = before != self.avatars.len();
         for (k, load) in want {

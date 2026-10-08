@@ -116,6 +116,10 @@ func payloadAny(id uint64, p any) *pb.Event {
 		r.Payload = &pb.CommandResult_Sponsored{Sponsored: v}
 	case *pb.SponsoredReport:
 		r.Payload = &pb.CommandResult_SponsoredReport{SponsoredReport: v}
+	case *pb.StickerSets:
+		r.Payload = &pb.CommandResult_StickerSets{StickerSets: v}
+	case *pb.StickerList:
+		r.Payload = &pb.CommandResult_StickerList{StickerList: v}
 	}
 	return &pb.Event{Body: &pb.Event_Result{Result: r}}
 }

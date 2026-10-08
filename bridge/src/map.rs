@@ -402,6 +402,14 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
             show_label: t.show_label,
             quit_label: t.quit_label,
         }),
+        Command::GetStickerSets => C::GetStickerSets(proto::GetStickerSets {}),
+        Command::GetStickerSet { id, access_hash } => C::GetStickerSet(proto::GetStickerSet { id, access_hash }),
+        Command::SendSticker { peer, file, random_id, reply_to } => C::SendSticker(proto::SendSticker {
+            peer: Some(peer_ref_to(peer)),
+            file: Some(file_to(file)),
+            random_id,
+            reply_to,
+        }),
         Command::ReadContents { peer, ids } => C::ReadContents(proto::ReadContents { peer: Some(peer_ref_to(peer)), ids }),
         Command::GetSponsored { peer } => C::GetSponsored(proto::GetSponsored { peer: Some(peer_ref_to(peer)) }),
         Command::ViewSponsored { random_id } => C::ViewSponsored(proto::ViewSponsored { random_id }),
@@ -542,6 +550,21 @@ pub fn event_from(ev: proto::Event) -> Option<Event> {
                         })
                         .collect(),
                 ),
+                Some(P::StickerSets(l)) => Payload::StickerSets(
+                    l.sets
+                        .into_iter()
+                        .map(|x| domain::model::StickerSetInfo {
+                            id: x.id,
+                            access_hash: x.access_hash,
+                            title: x.title,
+                            count: x.count,
+                        })
+                        .collect(),
+                ),
+                Some(P::StickerList(l)) => Payload::Stickers {
+                    set_id: l.set_id,
+                    stickers: l.stickers.into_iter().map(media_from).collect(),
+                },
                 Some(P::Sponsored(l)) => Payload::Sponsored(
                     l.messages
                         .into_iter()

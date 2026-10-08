@@ -509,6 +509,11 @@ pub enum Command {
     GetSponsored { peer: PeerRef },
     /// Содержимое просмотрено (самоуничтожающиеся вложения).
     ReadContents { peer: PeerRef, ids: Vec<i32> },
+    /// Установленные наборы стикеров (`Payload::StickerSets`).
+    GetStickerSets,
+    /// Набор целиком; `id` 0 — недавние (`Payload::Stickers`).
+    GetStickerSet { id: i64, access_hash: i64 },
+    SendSticker { peer: PeerRef, file: FileRef, random_id: i64, reply_to: i32 },
     ViewSponsored { random_id: Vec<u8> },
     ClickSponsored { random_id: Vec<u8> },
     /// `option` пусто — запросить причины; иначе — выбранная.
@@ -661,6 +666,9 @@ pub enum Payload {
     Sessions(Vec<Session>),
     /// Рекламные сообщения чата (каналы и боты).
     Sponsored(Vec<Sponsored>),
+    StickerSets(Vec<StickerSetInfo>),
+    /// Стикеры набора (`set_id` 0 — недавние).
+    Stickers { set_id: i64, stickers: Vec<Media> },
     /// Ответ на жалобу на рекламу: выбрать причину, скрыто или принято.
     SponsoredReport { kind: SponsoredReportKind, title: String, options: Vec<(String, Vec<u8>)> },
 }
@@ -689,6 +697,15 @@ pub enum Event {
     NotificationClicked(i64),
     /// Значок в трее: доступность и щелчки.
     Tray(TrayEvent),
+}
+
+/// Установленный набор стикеров.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StickerSetInfo {
+    pub id: i64,
+    pub access_hash: i64,
+    pub title: String,
+    pub count: i32,
 }
 
 /// Рекламное сообщение (каналы и чаты с ботами).

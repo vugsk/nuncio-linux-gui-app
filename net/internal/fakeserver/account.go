@@ -22,6 +22,7 @@ import (
 type Account struct {
 	Phone      string // только цифры
 	Ads        bool   // реклама в чатах с ботами (Contact.Bot)
+	Stickers   []StickerSet
 	Code       string
 	Password   string // пусто — без облачного пароля
 	Hint       string
@@ -665,6 +666,36 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 			RandomId: []byte{1, 2, 3, 4}, Url: "https://example.com/ad", Title: "Пример рекламы",
 			Message: "Текст рекламного объявления для проверки.", ButtonText: "Открыть", CanReport: true,
 			SponsorInfo: &info, AdditionalInfo: &extra}}, Chats: []tl.ChatClass{}, Users: []tl.UserClass{}}, nil
+	case *tl.MessagesGetAllStickersRequest:
+		out := &tl.MessagesAllStickers{Hash: 1, Sets: []tl.StickerSetClass{}}
+		for _, st := range a.Stickers {
+			out.Sets = append(out.Sets, &tl.StickerSet{Id: st.ID, AccessHash: st.Hash, Title: st.Title,
+				ShortName: fmt.Sprintf("set%d", st.ID), Count: int32(len(st.Docs)), Hash: 1})
+		}
+		return out, nil
+	case *tl.MessagesGetStickerSetRequest:
+		in, _ := r.Stickerset.(*tl.InputStickerSetID)
+		for _, st := range a.Stickers {
+			if in != nil && in.Id == st.ID {
+				docs := make([]tl.DocumentClass, 0, len(st.Docs))
+				for _, d := range st.Docs {
+					docs = append(docs, d)
+				}
+				return &tl.MessagesStickerSet{Set: &tl.StickerSet{Id: st.ID, AccessHash: st.Hash, Title: st.Title,
+					ShortName: fmt.Sprintf("set%d", st.ID), Count: int32(len(st.Docs)), Hash: 1},
+					Packs: []tl.StickerPackClass{}, Keywords: []tl.StickerKeywordClass{}, Documents: docs}, nil
+			}
+		}
+		return nil, &rpcErr{400, "STICKERSET_INVALID"}
+	case *tl.MessagesGetRecentStickersRequest:
+		out := &tl.MessagesRecentStickers{Hash: 1, Packs: []tl.StickerPackClass{}, Stickers: []tl.DocumentClass{}, Dates: []int32{}}
+		if len(a.Stickers) > 0 {
+			for _, d := range a.Stickers[0].Docs[:2] {
+				out.Stickers = append(out.Stickers, d)
+				out.Dates = append(out.Dates, 1)
+			}
+		}
+		return out, nil
 	case *tl.MessagesReadMessageContentsRequest:
 		fmt.Printf("прочитано содержимое: %v\n", r.Id)
 		a.pts++
@@ -895,6 +926,9 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 		m, err := a.mediaOf(r.Media)
 		if err != nil {
 			return nil, err
+		}
+		if d, ok := r.Media.(*tl.InputMediaDocument); ok {
+			fmt.Printf("отправлен документ по ссылке: %d\n", d.Id.(*tl.InputDocument).Id)
 		}
 		u := a.newUpdates()
 		if err := a.postMedia(peer, r.Message, m, 0, r.RandomId, u); err != nil {

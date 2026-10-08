@@ -377,6 +377,9 @@ message Command {
     ClickSponsored click_sponsored = 68;
     ReportSponsored report_sponsored = 69;
     ReadContents read_contents = 70;
+    GetStickerSets get_sticker_sets = 71;
+    GetStickerSet get_sticker_set = 72;
+    SendSticker send_sticker = 73;
     Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
   }
 }
@@ -595,6 +598,38 @@ message ReadContents {
   repeated int32 ids = 2;
 }
 
+// Стикеры: установленные наборы (StickerSets), набор целиком или недавние
+// (id 0) — StickerList; отправка стикера ссылкой на документ.
+message GetStickerSets {}
+
+message GetStickerSet {
+  int64 id = 1;
+  int64 access_hash = 2;
+}
+
+message StickerSetInfo {
+  int64 id = 1;
+  int64 access_hash = 2;
+  string title = 3;
+  int32 count = 4;
+}
+
+message StickerSets {
+  repeated StickerSetInfo sets = 1;
+}
+
+message StickerList {
+  int64 set_id = 1;
+  repeated Media stickers = 2;
+}
+
+message SendSticker {
+  PeerRef peer = 1;
+  FileRef file = 2;
+  int64 random_id = 3;
+  int32 reply_to = 4;
+}
+
 message SystemPrefs {
   int32 color_scheme = 1;   // 0 — не задано, 1 — тёмная, 2 — светлая
 }
@@ -685,6 +720,8 @@ message CommandResult {
     SessionList sessions = 113;
     SponsoredList sponsored = 114;
     SponsoredReport sponsored_report = 115;
+    StickerSets sticker_sets = 116;
+    StickerList sticker_list = 117;
   }
 }
 

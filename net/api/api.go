@@ -40,7 +40,7 @@ import (
 
 // ProtoVersion — версия client.proto, которую понимает эта сборка.
 // Rust передаёт свою в StartRequest; несовпадение — ошибка старта.
-const ProtoVersion = 14
+const ProtoVersion = 15
 
 // QueueSize — предел очереди событий (обратное давление, правило 5).
 const QueueSize = 1024
@@ -553,6 +553,12 @@ func (s *Service) handle(c command) (ev *pb.Event) {
 		s.tray.Set(s.ctx, tray.State{Enabled: t.GetEnabled(), Unread: t.GetUnread(), Tooltip: t.GetTooltip(),
 			ShowLabel: t.GetShowLabel(), QuitLabel: t.GetQuitLabel()})
 		return payload(c.id, nil)
+	case *pb.Command_GetStickerSets:
+		return s.getStickerSets(ctx, c.id)
+	case *pb.Command_GetStickerSet:
+		return s.getStickerSet(ctx, c.id, b.GetStickerSet)
+	case *pb.Command_SendSticker:
+		return s.sendSticker(ctx, c.id, b.SendSticker)
 	case *pb.Command_ReadContents:
 		return s.readContents(ctx, c.id, b.ReadContents)
 	case *pb.Command_GetSponsored:

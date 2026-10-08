@@ -669,6 +669,20 @@ pub fn bind(app: &App, send: impl Fn(Action) + Clone + 'static) {
                 s(Action::Chat(ChatIntent::MediaClick(id)));
             }
         });
+        // Панель стикеров.
+        {
+            use domain::stickers::StickerIntent as Si;
+            let s = send.clone();
+            chat.on_sticker_toggle(move || s(Action::Chat(ChatIntent::Stickers(Si::Toggle))));
+            let s = send.clone();
+            chat.on_sticker_select(move |id| {
+                if let Ok(id) = id.parse() {
+                    s(Action::Chat(ChatIntent::Stickers(Si::Select(id))));
+                }
+            });
+            let s = send.clone();
+            chat.on_sticker_send(move |i| s(Action::Chat(ChatIntent::Stickers(Si::Send(usize::try_from(i).unwrap_or(0))))));
+        }
         // Общие медиа в «Сведениях»: то же действие, что нажатие во вкладке ленты.
         let s = send.clone();
         let a = app.as_weak();

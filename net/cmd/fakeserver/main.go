@@ -37,6 +37,7 @@ func main() {
 	photos := flag.Int("photos", 0, "чат «Фото» из стольких фото, самый новый (замер памяти при прокрутке)")
 	video := flag.String("video", "", "чат «Видео»: этот ролик и голосовое из -voice (проверка плеера)")
 	voice := flag.String("voice", "", "голосовое (ogg/opus) для чата «Видео»")
+	stickers := flag.String("stickers", "", "каталог с s0.webp, s1.webp…: чат «Стикеры» и наборы для панели")
 	ttl := flag.Bool("ttl", false, "чат «Секрет»: самоуничтожающееся фото и истёкшее")
 	ads := flag.Bool("ads", false, "чат с ботом «Новости» и рекламой в нём (условия API)")
 	revoke := flag.Duration("revoke", 0, "через столько после входа завершить все сеансы (как с другого устройства)")
@@ -64,6 +65,26 @@ func main() {
 			{ID: 102, Name: "Архивный", AccessHash: 13, Archived: true, Unread: -1, Messages: []string{"старое"}},
 		}, acc.Contacts...)
 		acc.Folders = []fakeserver.FakeFolder{{ID: 2, Title: "Работа", Include: []int64{101}}}
+	}
+	if *stickers != "" {
+		var webp [][]byte
+		for i := 0; ; i++ {
+			b, err := os.ReadFile(fmt.Sprintf("%s/s%d.webp", *stickers, i))
+			if err != nil {
+				break
+			}
+			webp = append(webp, b)
+		}
+		if acc.Files == nil {
+			acc.Files = map[int64][]byte{}
+		}
+		if acc.Thumbs == nil {
+			acc.Thumbs = map[int64][]byte{}
+		}
+		texts, att, sets := fakeserver.StickerChat(webp, acc.Files, acc.Thumbs)
+		acc.Stickers = sets
+		acc.Contacts = append(acc.Contacts, fakeserver.Contact{ID: 107, Name: "Стикеры", AccessHash: 18, Unread: -1,
+			Messages: texts, Attach: att})
 	}
 	if *ttl {
 		if acc.Files == nil {

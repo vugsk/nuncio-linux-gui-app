@@ -142,6 +142,76 @@ pub fn load_feed_with(path: &str, tw: u32, th: u32, round: bool) -> Option<Share
     Some(rounded(w, h, &rgb, tw, th, radius_for(tw, th, round)))
 }
 
+/// Стикер (WebP, PNG или JPEG) → RGBA с прозрачностью размера `tw`×`th`:
+/// без скругления и без смешивания с фоном ленты.
+pub fn load_sticker(path: &str, tw: u32, th: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    let data = std::fs::read(path).ok()?;
+    let (w, h, rgba) = decode_rgba(&data)?;
+    Some(resize_rgba(w, h, &rgba, tw, th))
+}
+
+/// Картинка с прозрачностью → RGBA.
+fn decode_rgba(data: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+    if data.len() > 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        let mut dec = image_webp::WebPDecoder::new(std::io::Cursor::new(data)).ok()?;
+        let (w, h) = dec.dimensions();
+        let mut buf = vec![0u8; dec.output_buffer_size()?];
+        dec.read_image(&mut buf).ok()?;
+        let rgba = if dec.has_alpha() { buf } else { buf.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect() };
+        return Some((w as usize, h as usize, rgba));
+    }
+    if data.starts_with(&[0x89, b'P', b'N', b'G']) {
+        let mut dec = png::Decoder::new(std::io::Cursor::new(data));
+        dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        let mut r = dec.read_info().ok()?;
+        let mut buf = vec![0; r.output_buffer_size()?];
+        let info = r.next_frame(&mut buf).ok()?;
+        buf.truncate(info.buffer_size());
+        let rgba = match info.color_type {
+            png::ColorType::Rgba => buf,
+            png::ColorType::Rgb => buf.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+            png::ColorType::GrayscaleAlpha => buf.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+            png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+            png::ColorType::Indexed => return None,
+        };
+        return Some((info.width as usize, info.height as usize, rgba));
+    }
+    let (w, h, rgb) = decode_jpeg(data)?;
+    Some((w, h, rgb.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect()))
+}
+
+/// Уменьшение RGBA усреднением по площади с учётом прозрачности (цвет
+/// взвешивается альфой — края без тёмной каймы).
+fn resize_rgba(w: usize, h: usize, src: &[u8], tw: u32, th: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+    let (tw_, th_) = (tw.max(1) as usize, th.max(1) as usize);
+    let mut out = SharedPixelBuffer::<Rgba8Pixel>::new(tw_ as u32, th_ as u32);
+    let buf = out.make_mut_slice();
+    for ty in 0..th_ {
+        let (y0, y1) = (ty * h / th_, ((ty + 1) * h / th_).max(ty * h / th_ + 1).min(h));
+        for tx in 0..tw_ {
+            let (x0, x1) = (tx * w / tw_, ((tx + 1) * w / tw_).max(tx * w / tw_ + 1).min(w));
+            let (mut r, mut g, mut b, mut a, mut n) = (0u64, 0u64, 0u64, 0u64, 0u64);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = (y * w + x) * 4;
+                    let al = u64::from(src[i + 3]);
+                    r += u64::from(src[i]) * al;
+                    g += u64::from(src[i + 1]) * al;
+                    b += u64::from(src[i + 2]) * al;
+                    a += al;
+                    n += 1;
+                }
+            }
+            buf[ty * tw_ + tx] = if a == 0 {
+                Rgba8Pixel { r: 0, g: 0, b: 0, a: 0 }
+            } else {
+                Rgba8Pixel { r: (r / a) as u8, g: (g / a) as u8, b: (b / a) as u8, a: (a / n.max(1)) as u8 }
+            };
+        }
+    }
+    out
+}
+
 /// Мини-превью (JPEG ~40 px) → размытая картинка размера для ленты.
 pub fn stripped(jpeg: &[u8], tw: u32, th: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     stripped_with(jpeg, tw, th, false)
@@ -264,6 +334,21 @@ mod tests {
         jpg.extend([0u8; 9]);
         assert_eq!(header_size(&jpg), Some((400, 300)));
         assert_eq!(header_size(b"GIF89a"), None);
+    }
+
+    #[test]
+    fn sticker_keeps_alpha() {
+        // 4×4: левая половина непрозрачная красная, правая прозрачная → 2×2.
+        let mut src = Vec::new();
+        for _y in 0..4 {
+            for x in 0..4 {
+                src.extend(if x < 2 { [255, 0, 0, 255] } else { [0, 0, 0, 0] });
+            }
+        }
+        let out = resize_rgba(4, 4, &src, 2, 2);
+        let px = out.as_slice();
+        assert_eq!((px[0].r, px[0].a), (255, 255));
+        assert_eq!(px[1].a, 0, "прозрачное осталось прозрачным");
     }
 
     #[test]

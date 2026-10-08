@@ -219,6 +219,8 @@ pub enum ChatIntent {
     WindowActive(bool),
     /// Реклама в конце ленты (sponsored.rs).
     Sponsored(crate::sponsored::SponsoredIntent),
+    /// Панель стикеров (stickers.rs).
+    Stickers(crate::stickers::StickerIntent),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,6 +242,9 @@ pub(crate) enum Pending {
     ChatSearch { peer_id: i64, seq: u64 },
     Shared { peer_id: i64, seq: u64 },
     Sponsored { peer_id: i64 },
+    StickerSets,
+    StickerSet { id: i64 },
+    SendSticker,
     SponsoredReport,
     ChatAction { peer_id: i64, kind: crate::model::ChatActionKind },
     Download { key: String, size: i64 },
@@ -283,6 +288,8 @@ pub struct ChatModel {
     /// удаляются после просмотра; отправленные отметки «содержимое просмотрено».
     pub(crate) ephemeral: HashMap<String, Option<String>>,
     pub(crate) contents_read: HashSet<(i64, i32)>,
+    /// Панель стикеров в поле ввода (stickers.rs).
+    pub sticker_panel: crate::stickers::StickerPanel,
     pub confirm: Option<crate::chatlist::Confirm>,
     /// Вложения (В7, media.rs): скачивания в работе, скачанное окна, неудачи.
     pub transfers: HashMap<String, crate::media::Transfer>,
@@ -847,6 +854,7 @@ impl ChatModel {
             ChatIntent::Settings(si) => self.settings_intent(si, &mut out),
             ChatIntent::WindowActive(v) => self.window_active = v,
             ChatIntent::Sponsored(i) => self.sponsored_intent(i, &mut out),
+            ChatIntent::Stickers(i) => self.sticker_intent(i, &mut out),
             ChatIntent::NotificationClicked(peer_id) => {
                 out = self.intent(ChatIntent::OpenChat(peer_id));
                 out.push(ChatEffect::RaiseWindow);
@@ -1170,6 +1178,9 @@ impl ChatModel {
             | Pending::ChatAction { .. }) => self.list_result(p, r, out),
             Pending::Shared { peer_id, seq } => self.shared_result(peer_id, seq, r, out),
             Pending::Sponsored { peer_id } => self.sponsored_result(peer_id, r),
+            Pending::StickerSets => self.sticker_sets_result(r),
+            Pending::StickerSet { id } => self.sticker_set_result(id, r, out),
+            Pending::SendSticker => self.sticker_sent(r),
             Pending::SponsoredReport => self.sponsored_report_result(r),
             Pending::Download { key, size } => {
                 let path = match (&r.error, &r.payload) {

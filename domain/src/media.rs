@@ -115,6 +115,10 @@ pub fn auto_files(m: &Media) -> Vec<&FileRef> {
     if m.self_destruct() {
         return v;
     }
+    if m.kind == MediaKind::Sticker {
+        v.extend(sticker_image(m).filter(|f| f.size <= AUTO_MAX_SIZE));
+        return v;
+    }
     match m.kind {
         MediaKind::Photo => v.extend(m.file.as_ref()),
         MediaKind::Video | MediaKind::Document | MediaKind::VideoNote | MediaKind::Audio | MediaKind::Gif => {
@@ -141,6 +145,7 @@ impl ChatModel {
     /// Ключи файлов, нужных окну истории (для поиска в кэше).
     pub fn window_media_keys(&self) -> Vec<String> {
         let mut keys = Vec::new();
+        keys.extend(self.sticker_files().iter().map(|f| f.key()));
         for m in self.history.iter().chain(self.shared_images_src()) {
             if let Some(mi) = &m.media_info {
                 keys.extend(auto_files(mi).into_iter().map(|f| f.key()));
@@ -176,6 +181,15 @@ impl ChatModel {
                 {
                     want.push((f.clone(), m.id, mi.name.clone()));
                 }
+            }
+        }
+        // Панель стикеров: картинки открытого набора.
+        for f in self.sticker_files() {
+            let k = f.key();
+            if !self.media_paths.contains_key(&k) && !self.transfers.contains_key(&k) && !self.media_failed.contains(&k)
+                && !want.iter().any(|w| w.0.key() == k)
+            {
+                want.push((f, 0, String::new()));
             }
         }
         let running = self.transfers.len();
@@ -392,6 +406,23 @@ pub const FEED_MAX_W: i32 = 420;
 pub const FEED_MAX_H: i32 = 460;
 
 /// Открывается в окне просмотра: фото, видео (В8), превью ссылки с фото.
+/// Сторона стикера в ленте, px (как в Telegram Desktop — около 200).
+pub const STICKER_SIZE: i32 = 192;
+
+/// Размер стикера в ленте: вписать в `STICKER_SIZE` с сохранением пропорций.
+pub fn sticker_size(w: i32, h: i32) -> (i32, i32) {
+    let (w, h) = (w.max(1), h.max(1));
+    let k = STICKER_SIZE as f32 / w.max(h) as f32;
+    (((w as f32 * k).round() as i32).max(1), ((h as f32 * k).round() as i32).max(1))
+}
+
+/// Что показывать у стикера: статичный WebP — сам файл; анимированный (TGS)
+/// и видеостикер (WebM) — пока превью от сервера, первый кадр (решение
+/// пользователя: анимацию — отдельным шагом).
+pub fn sticker_image(mi: &Media) -> Option<&FileRef> {
+    if mi.mime == "image/webp" { mi.file.as_ref().or(mi.thumb.as_ref()) } else { mi.thumb.as_ref() }
+}
+
 pub fn viewable(mi: &Media) -> bool {
     match mi.kind {
         // Кружок играет в ленте (со звуком по щелчку), не в окне просмотра.
@@ -423,12 +454,15 @@ pub struct FeedImage {
     pub local: String,
     /// Кружок (видеосообщение): квадрат с круглой маской.
     pub round: bool,
+    /// Стикер: без пузыря и скругления, с прозрачностью.
+    pub sticker: bool,
 }
 
 impl FeedImage {
     /// Ключ раскодированной картинки скачанного файла (размер — часть ключа).
     pub fn photo_key(&self) -> Option<String> {
         match &self.file {
+            Some(f) if self.sticker => Some(format!("sticker:{}:{}x{}", f.key(), self.w, self.h)),
             Some(f) => Some(format!("photo:{}:{}x{}{}", f.key(), self.w, self.h, if self.round { "r" } else { "" })),
             None if !self.local.is_empty() => Some(format!("local:{}:{}x{}", self.local, self.w, self.h)),
             None => None,
@@ -516,6 +550,14 @@ pub fn feed_images(history: &[Message]) -> HashMap<i32, FeedImage> {
         if mi.self_destruct() {
             continue; // в ленте — заглушка, не картинка
         }
+        if mi.kind == MediaKind::Sticker {
+            let (w, h) = sticker_size(mi.width, mi.height);
+            if let Some(file) = sticker_image(mi) {
+                out.insert(m.id, FeedImage { file: Some(file.clone()), stripped: Vec::new(), w, h, album: (0, 1),
+                    local: String::new(), round: false, sticker: true });
+            }
+            continue;
+        }
         let (file, w, h, stripped) = match mi.kind {
             MediaKind::Photo => (mi.file.clone(), mi.width, mi.height, mi.stripped.clone()),
             MediaKind::Video | MediaKind::VideoNote | MediaKind::Gif => {
@@ -534,7 +576,8 @@ pub fn feed_images(history: &[Message]) -> HashMap<i32, FeedImage> {
         }
         let round = mi.kind == MediaKind::VideoNote;
         let (w, h) = if round { (ROUND_SIZE, ROUND_SIZE) } else { feed_size(w, h) };
-        out.insert(m.id, FeedImage { file, stripped, w, h, album: (0, 1), local: mi.local_path.clone(), round });
+        out.insert(m.id, FeedImage { file, stripped, w, h, album: (0, 1), local: mi.local_path.clone(), round,
+            sticker: false });
     }
     for r in albums(history) {
         let (cells, _) = album_layout(r.len());
