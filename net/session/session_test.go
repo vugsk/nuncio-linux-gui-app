@@ -58,6 +58,14 @@ func TestAcceptID(t *testing.T) {
 	if len(s.seen) > seenLimit || len(s.seenOrder) > seenLimit {
 		t.Fatalf("память повторов не ограничена: %d", len(s.seen))
 	}
+	// Вытесненный из памяти msg_id (и всё, что ниже) — старое: не принимать.
+	if s.acceptIDLocked(base | 3) {
+		t.Fatal("принят повтор msg_id, вытесненного из памяти повторов")
+	}
+	// msg_id растут со временем: новое — позже всех прежних (включая «будущее» выше).
+	if !s.acceptIDLocked(now.Add(62*time.Second).Unix()<<32 | 1) {
+		t.Fatal("не принят новый msg_id после вытеснения")
+	}
 }
 
 func TestGunzipLimit(t *testing.T) {

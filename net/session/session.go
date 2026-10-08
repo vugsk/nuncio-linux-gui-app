@@ -91,16 +91,19 @@ type Session struct {
 	cfg       Config
 	sessionID int64
 
-	mu         sync.Mutex
-	salt       int64
-	offset     time.Duration
-	lastMsgID  int64
-	seqCount   int32
-	pending    map[int64]*pending
-	acks       []int64
-	ackTimer   *time.Timer
-	seen       map[int64]struct{}
-	seenOrder  []int64
+	mu        sync.Mutex
+	salt      int64
+	offset    time.Duration
+	lastMsgID int64
+	seqCount  int32
+	pending   map[int64]*pending
+	acks      []int64
+	ackTimer  *time.Timer
+	seen      map[int64]struct{}
+	seenOrder []int64
+	// floor — наибольший msg_id, вытесненный из памяти повторов: не больше
+	// его — старое (Security Guidelines: «ниже всех хранимых» — отбросить).
+	floor      int64
 	containers map[int64][]int64 // id контейнера -> id вложенных запросов (для повторов)
 	contOrder  []int64
 	closed     bool
@@ -343,21 +346,26 @@ func (s *Session) readLoop() {
 			s.fail(fmt.Errorf("session: соединение: %w", err))
 			return
 		}
+		// Пакет не прошёл проверку (msg_key, длина, дополнение) или пришёл с
+		// чужим session_id: по Security Guidelines — отбросить и переподключиться
+		// (данные из него не используются).
 		h, body, err := s.cfg.Key.Decrypt(pkt)
 		if err != nil {
-			continue // чужой или испорченный пакет: не отвечаем и не падаем
+			s.fail(fmt.Errorf("session: пакет не прошёл проверку: %w", err))
+			return
 		}
 		if int64(h.SessionID) != s.sessionID {
-			continue
+			s.fail(errors.New("session: чужой session_id"))
+			return
 		}
 		s.handle(int64(h.MsgID), int32(h.SeqNo), body, true)
 	}
 }
 
 // acceptID проверяет msg_id входящего сообщения: нечётный (от сервера), в окне
-// времени, не повтор.
+// времени, не повтор и не старше вытесненных из памяти повторов.
 func (s *Session) acceptIDLocked(id int64) bool {
-	if id%2 == 0 {
+	if id%2 == 0 || id <= s.floor {
 		return false
 	}
 	msgTime := time.Unix(id>>32, 0)
@@ -371,8 +379,12 @@ func (s *Session) acceptIDLocked(id int64) bool {
 	s.seen[id] = struct{}{}
 	s.seenOrder = append(s.seenOrder, id)
 	if len(s.seenOrder) > seenLimit {
-		delete(s.seen, s.seenOrder[0])
+		old := s.seenOrder[0]
+		delete(s.seen, old)
 		s.seenOrder = s.seenOrder[1:]
+		if old > s.floor {
+			s.floor = old
+		}
 	}
 	return true
 }
