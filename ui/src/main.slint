@@ -1136,10 +1136,14 @@ component MediaImage inherits Rectangle {
     in property <float> progress;
     in property <bool> round;
     in property <bool> gif;
-    border-radius: root.round ? self.width / 2 : 10px;
-    background: root.has-img ? transparent : Theme.soft;
-    clip: true;
-    if root.has-img: Image { source: root.img; width: parent.width; height: parent.height; image-fit: fill; }
+    // Стикер: без скругления и подложки; анимированный — кадры поверх, а
+    // первый кадр под ними скрыт (иначе просвечивал бы сквозь прозрачное).
+    in property <bool> sticker;
+    in property <bool> animated;
+    border-radius: root.sticker ? 0px : root.round ? self.width / 2 : 10px;
+    background: root.has-img || root.sticker ? transparent : Theme.soft;
+    clip: !root.sticker;
+    if root.has-img && !root.animated: Image { source: root.img; width: parent.width; height: parent.height; image-fit: fill; }
     // Кадр, играющий в ленте, — поверх превью (маска уже наложена в Rust).
     for lf in Chat.live: Image {
         visible: lf.mid == root.id;
@@ -1240,6 +1244,8 @@ component MediaBlock inherits VerticalLayout {
         progress: root.item.file-progress;
         round: root.item.mround;
         gif: root.item.mgif;
+        sticker: root.item.msticker;
+        animated: root.item.msticker && root.item.mpath != "";
     }
     if root.item.mkind == 5: Rectangle {
         width: root.item.mw;

@@ -3425,6 +3425,7 @@ dependencies = [
  "cpal",
  "ffmpeg-next",
  "log",
+ "png",
 ]
 
 [[package]]

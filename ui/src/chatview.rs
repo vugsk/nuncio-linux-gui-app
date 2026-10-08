@@ -248,23 +248,35 @@ struct Preview {
 }
 
 /// Маска кадров ленты (скругление или круг): по размеру кадра, один раз.
+/// Маска кадров, играющих в ленте: скруглённые углы (GIF), круг (кружок)
+/// или никакой (видеостикер — у кадра своя прозрачность).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MaskKind {
+    Rounded,
+    Round,
+    None,
+}
+
 struct Masked {
-    round: bool,
+    kind: MaskKind,
     size: (u32, u32),
     mask: Vec<u8>,
 }
 
 impl Masked {
-    fn new(round: bool) -> Self {
-        Self { round, size: (0, 0), mask: Vec::new() }
+    fn new(kind: MaskKind) -> Self {
+        Self { kind, size: (0, 0), mask: Vec::new() }
     }
 
     fn image(&mut self, f: &mut player::Frame) -> Image {
-        if self.size != (f.width, f.height) {
-            self.size = (f.width, f.height);
-            self.mask = crate::photo::mask(f.width, f.height, crate::photo::radius_for(f.width, f.height, self.round));
+        if self.kind != MaskKind::None {
+            if self.size != (f.width, f.height) {
+                self.size = (f.width, f.height);
+                let round = self.kind == MaskKind::Round;
+                self.mask = crate::photo::mask(f.width, f.height, crate::photo::radius_for(f.width, f.height, round));
+            }
+            crate::photo::apply_mask(&mut f.rgba, &self.mask);
         }
-        crate::photo::apply_mask(&mut f.rgba, &self.mask);
         Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&f.rgba, f.width, f.height))
     }
 }
@@ -1041,6 +1053,10 @@ impl ChatRenderer {
                     it.mkind = 1;
                     it.msticker = true;
                     it.media = "".into();
+                    // Видеостикер скачан — играет в ленте сам (как GIF), с прозрачностью.
+                    if mi.mime == "video/webm" {
+                        it.mpath = mi.file.as_ref().and_then(|f| m.media_paths.get(&f.key())).cloned().unwrap_or_default().into();
+                    }
                 }
                 continue;
             }
@@ -1398,7 +1414,7 @@ impl ChatRenderer {
         match player::Player::open(std::path::Path::new(path), side, side) {
             Ok(p) => {
                 log::info!("воспроизведение: кружок, {:.1} с", p.info().duration);
-                self.playback = Some(Playback { player: p, msg, video: false, row: Some(Masked::new(true)), ended: false,
+                self.playback = Some(Playback { player: p, msg, video: false, row: Some(Masked::new(MaskKind::Round)), ended: false,
                     tick: 0 });
                 self.ensure_timer();
             }
@@ -1449,13 +1465,16 @@ impl ChatRenderer {
     /// Видимые GIF и кружки играют сами (без звука, по кругу); ушедшие с экрана — стоп.
     fn sync_previews(&mut self, rows: std::ops::RangeInclusive<usize>) {
         let sound = self.playback.as_ref().map(|p| p.msg);
-        let want: Vec<(i32, String, u32, u32, bool)> = self
+        let want: Vec<(i32, String, u32, u32, MaskKind)> = self
             .items
             .get(rows)
             .unwrap_or_default()
             .iter()
-            .filter(|i| (i.mgif || i.mround) && !i.mpath.is_empty())
-            .filter_map(|i| Some((i.mid.parse::<i32>().ok()?, i.mpath.to_string(), i.mw as u32, i.mh as u32, i.mround)))
+            .filter(|i| (i.mgif || i.mround || i.msticker) && !i.mpath.is_empty())
+            .filter_map(|i| {
+                let kind = if i.msticker { MaskKind::None } else if i.mround { MaskKind::Round } else { MaskKind::Rounded };
+                Some((i.mid.parse::<i32>().ok()?, i.mpath.to_string(), i.mw as u32, i.mh as u32, kind))
+            })
             .filter(|w| Some(w.0) != sound)
             .take(PREVIEWS_MAX)
             .collect();
@@ -1464,13 +1483,13 @@ impl ChatRenderer {
             self.stop_preview(mid);
         }
         let mut started = false;
-        for (mid, path, w, h, round) in want {
+        for (mid, path, w, h, kind) in want {
             if self.previews.iter().any(|p| p.mid == mid) {
                 continue;
             }
             match player::Player::open_with(std::path::Path::new(&path), w.max(2), h.max(2), true) {
                 Ok(player) => {
-                    self.previews.push(Preview { mid, player, masked: Masked::new(round) });
+                    self.previews.push(Preview { mid, player, masked: Masked::new(kind) });
                     started = true;
                 }
                 Err(e) => log::warn!("превью не играет: {e}"),

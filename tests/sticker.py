@@ -74,9 +74,17 @@ shot("1-feed")
 from PIL import Image
 img = Image.open(f"{t}/1-feed.png").convert("RGB")
 # Стикер без пузыря: у края картинки — фон ленты, не рамка пузыря.
-check(img.getpixel((473, 390))[0] > 200, f"статичный стикер виден: {img.getpixel((473, 390))}")
-check(img.getpixel((400, 320)) == img.getpixel((700, 320)), "прозрачный угол стикера — фон ленты (без пузыря)")
-check(img.getpixel((473, 598))[1] > 150, "у «анимированного» — превью")
+check(img.getpixel((473, 148))[0] > 200, f"статичный стикер виден: {img.getpixel((473, 148))}")
+check(img.getpixel((400, 80)) == img.getpixel((700, 80)), "прозрачный угол стикера — фон ленты (без пузыря)")
+check(img.getpixel((473, 356))[1] > 150, "у «анимированного» TGS — первый кадр")
+# Видеостикер: кадры меняются, вокруг круга — фон ленты (прозрачность VP9).
+box = (392, 482, 554, 644)
+a = img.crop(box)
+time.sleep(0.45)
+shot("1b-feed")
+b = Image.open(f"{t}/1b-feed.png").convert("RGB")
+check(a.tobytes() != b.crop(box).tobytes(), "видеостикер играет (кадры меняются)")
+check(b.getpixel((396, 486)) == b.getpixel((700, 486)), "у видеостикера прозрачный фон, без чёрного квадрата")
 click(1032, 776)               # кнопка стикеров
 check(wait(lambda: "наборы стикеров: 2" in text(net)), "наборы получены")
 time.sleep(2)

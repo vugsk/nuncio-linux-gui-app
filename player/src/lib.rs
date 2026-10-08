@@ -522,7 +522,14 @@ fn decode(sh: &Shared, path: &Path, max_w: u32, max_h: u32, out_rate: u32, out_c
     // Пакеты видео, прочитанные ради звука, ждут сжатыми: в кадры (3,7 МБ
     // на 720p) декодируются, только когда в очереди кадров есть место —
     // иначе при звуке, лежащем в файле кусками, кадров набиралось на секунду.
-    let mut vpackets: VecDeque<ff::Packet> = VecDeque::new();
+    let mut vpackets: VecDeque<(ff::Packet, Option<ff::Packet>)> = VecDeque::new();
+    // Прозрачность VP9 в WebM (видеостикеры): слой альфы лежит в побочных
+    // данных пакета (BlockAdditional), встроенный декодер его не читает —
+    // второй декодер VP9 даёт его яркостью; кадры альфы — по порядку.
+    let mut alpha_dec: Option<ff::decoder::Video> = None;
+    let mut alpha_scaler: Option<(ff::format::Pixel, u32, u32, ff::software::scaling::Context)> = None;
+    let mut alpha_planes: VecDeque<Vec<u8>> = VecDeque::new();
+    let target = video.as_ref().map(|v| fit(v.2.width(), v.2.height(), max_w, max_h));
     let mut read_eof = false;
     let room = |sh: &Shared| lock(&sh.video).len() < VIDEO_AHEAD;
 
@@ -541,6 +548,10 @@ fn decode(sh: &Shared, path: &Path, max_w: u32, max_h: u32, out_rate: u32, out_c
             }
             resampler = None;
             vpackets.clear();
+            alpha_planes.clear();
+            if let Some(a) = alpha_dec.as_mut() {
+                a.flush();
+            }
             read_eof = false;
             let old: Vec<Frame> = lock(&sh.video).drain(..).collect();
             for f in old {
@@ -564,10 +575,14 @@ fn decode(sh: &Shared, path: &Path, max_w: u32, max_h: u32, out_rate: u32, out_c
         }
         // Видео: из накопленных пакетов, пока есть место для кадров.
         while room(sh) {
-            let Some(pk) = vpackets.pop_front() else { break };
+            let Some((pk, apk)) = vpackets.pop_front() else { break };
+            if let (Some(apk), Some((tw, th))) = (apk, target) {
+                decode_alpha(&mut alpha_dec, &mut alpha_scaler, &mut alpha_planes, &apk, tw, th);
+            }
             if let Some(v) = video.as_mut() {
                 if v.2.send_packet(&pk).is_ok() {
-                    drain_video(sh, &mut video, &mut vframe, &mut scaled, &mut scaler, max_w, max_h, skip_until);
+                    drain_video(sh, &mut video, &mut vframe, &mut scaled, &mut scaler, max_w, max_h, skip_until,
+                        &mut alpha_planes);
                 }
             }
         }
@@ -575,7 +590,8 @@ fn decode(sh: &Shared, path: &Path, max_w: u32, max_h: u32, out_rate: u32, out_c
             if let Some(v) = video.as_mut() {
                 let _ = v.2.send_eof();
             }
-            drain_video(sh, &mut video, &mut vframe, &mut scaled, &mut scaler, max_w, max_h, skip_until);
+            drain_video(sh, &mut video, &mut vframe, &mut scaled, &mut scaler, max_w, max_h, skip_until,
+                &mut alpha_planes);
             sh.eof.store(true, Ordering::Relaxed);
         }
         // Читать дальше, только если не хватает звука или пакетов видео.
@@ -601,7 +617,8 @@ fn decode(sh: &Shared, path: &Path, max_w: u32, max_h: u32, out_rate: u32, out_c
         }
         let idx = packet.stream();
         if video.as_ref().is_some_and(|v| v.0 == idx) {
-            vpackets.push_back(packet);
+            let alpha = alpha_packet(&packet);
+            vpackets.push_back((packet, alpha));
         } else if let Some(a) = audio.as_mut().filter(|a| a.0 == idx) {
             if a.2.send_packet(&packet).is_ok() {
                 drain_audio(sh, &mut audio, &mut aframe, &mut resampler, out_rate, out_ch, skip_until);
@@ -617,13 +634,10 @@ type AudioDec = Option<(usize, f64, ff::decoder::Audio)>;
 #[allow(clippy::too_many_arguments)]
 fn drain_video(sh: &Shared, video: &mut VideoDec, frame: &mut ff::frame::Video, scaled: &mut ff::frame::Video,
     scaler: &mut Option<(ff::format::Pixel, u32, u32, ff::software::scaling::Context)>, max_w: u32, max_h: u32,
-    skip_until: f64) {
+    skip_until: f64, alpha: &mut VecDeque<Vec<u8>>) {
     let Some((_, tb, dec)) = video.as_mut() else { return };
     while dec.receive_frame(frame).is_ok() {
         let pts = frame.timestamp().unwrap_or(0) as f64 * *tb;
-        if pts + 0.001 < skip_until {
-            continue;
-        }
         let (w, h, fmt) = (frame.width(), frame.height(), frame.format());
         let rebuild = !matches!(scaler, Some((f, sw, shh, _)) if *f == fmt && *sw == w && *shh == h);
         if rebuild {
@@ -651,7 +665,73 @@ fn drain_video(sh: &Shared, video: &mut VideoDec, frame: &mut ff::frame::Video, 
         for y in 0..th as usize {
             rgba[y * row..(y + 1) * row].copy_from_slice(&src[y * stride..y * stride + row]);
         }
+        // Слой прозрачности того же кадра (видеостикер).
+        if let Some(a) = alpha.pop_front().filter(|a| a.len() == tw as usize * th as usize) {
+            for (px, &v) in rgba.chunks_exact_mut(4).zip(&a) {
+                px[3] = v;
+            }
+        }
+        if pts + 0.001 < skip_until {
+            continue;
+        }
         lock(&sh.video).push_back(Frame { width: tw, height: th, rgba, pts });
+    }
+}
+
+/// Пакет слоя прозрачности из побочных данных (8 байт BlockAddID, затем кадр VP9).
+fn alpha_packet(pk: &ff::Packet) -> Option<ff::Packet> {
+    let sd = pk.side_data().find(|d| d.kind() == ff::codec::packet::side_data::Type::MatroskaBlockAdditional)?;
+    let data = sd.data().get(8..).filter(|d| !d.is_empty())?;
+    let mut a = ff::Packet::copy(data);
+    a.set_pts(pk.pts());
+    a.set_dts(pk.dts());
+    Some(a)
+}
+
+/// Декодировать кадр слоя прозрачности и уменьшить его яркость до `tw`×`th`.
+fn decode_alpha(dec: &mut Option<ff::decoder::Video>,
+    scaler: &mut Option<(ff::format::Pixel, u32, u32, ff::software::scaling::Context)>, out: &mut VecDeque<Vec<u8>>,
+    pk: &ff::Packet, tw: u32, th: u32) {
+    if dec.is_none() {
+        let Some(codec) = ff::decoder::find(ff::codec::Id::VP9) else { return };
+        match ff::codec::context::Context::new_with_codec(codec).decoder().video() {
+            Ok(d) => *dec = Some(d),
+            Err(e) => {
+                log::warn!("прозрачность видео: {e}");
+                return;
+            }
+        }
+    }
+    let Some(d) = dec.as_mut() else { return };
+    if d.send_packet(pk).is_err() {
+        return;
+    }
+    let mut f = ff::frame::Video::empty();
+    while d.receive_frame(&mut f).is_ok() {
+        let (w, h, fmt) = (f.width(), f.height(), f.format());
+        if !matches!(scaler, Some((sf, sw, sh, _)) if *sf == fmt && *sw == w && *sh == h) {
+            match ff::software::scaling::Context::get(fmt, w, h, ff::format::Pixel::GRAY8, tw, th,
+                ff::software::scaling::Flags::BILINEAR)
+            {
+                Ok(c) => *scaler = Some((fmt, w, h, c)),
+                Err(e) => {
+                    log::warn!("прозрачность видео: {e}");
+                    return;
+                }
+            }
+        }
+        let Some((_, _, _, c)) = scaler.as_mut() else { return };
+        let mut g = ff::frame::Video::empty();
+        if c.run(&f, &mut g).is_err() {
+            continue;
+        }
+        let stride = g.stride(0);
+        let src = g.data(0);
+        let mut plane = Vec::with_capacity(tw as usize * th as usize);
+        for y in 0..th as usize {
+            plane.extend_from_slice(&src[y * stride..y * stride + tw as usize]);
+        }
+        out.push_back(plane);
     }
 }
 
@@ -692,6 +772,55 @@ fn drain_audio(sh: &Shared, audio: &mut AudioDec, frame: &mut ff::frame::Audio,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Видеостикер: прозрачность VP9 в WebM (слой BlockAdditional) доходит до
+    /// альфы кадра. Образец делает системный ffmpeg с libvpx; нет его — пропуск.
+    #[test]
+    fn webm_alpha_reaches_frame() {
+        let dir = std::env::temp_dir().join(format!("nuncio-alpha-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("a.png");
+        let webm = dir.join("a.webm");
+        // 64×64: левая половина прозрачная, правая — непрозрачная зелёная.
+        let mut rgba = Vec::new();
+        for _y in 0..64 {
+            for x in 0..64 {
+                rgba.extend(if x < 32 { [0, 0, 0, 0] } else { [40, 200, 80, 255] });
+            }
+        }
+        {
+            let f = std::fs::File::create(&png).unwrap();
+            let mut enc = png::Encoder::new(f, 64, 64);
+            enc.set_color(png::ColorType::Rgba);
+            enc.write_header().unwrap().write_image_data(&rgba).unwrap();
+        }
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-loop", "1", "-i"])
+            .arg(&png)
+            .args(["-t", "0.5", "-r", "10", "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0"])
+            .arg(&webm)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let p = Player::open_with(&webm, 64, 64, true).expect("открывается");
+        let mut frame = None;
+        for _ in 0..100 {
+            if let Some(f) = p.take_frame() {
+                frame = Some(f);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(p);
+        let _ = std::fs::remove_dir_all(&dir);
+        let f = frame.expect("кадр");
+        let at = |x: usize, y: usize| f.rgba[(y * f.width as usize + x) * 4 + 3];
+        assert!(at(8, 32) < 16, "слева прозрачно: {}", at(8, 32));
+        assert!(at(56, 32) > 240, "справа непрозрачно: {}", at(56, 32));
+    }
 
     /// Звук уведомления из системной темы декодируется нашей сборкой FFmpeg
     /// (Ogg/Vorbis); без вывода на устройство. Нет файла — пропуск.

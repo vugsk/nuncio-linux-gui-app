@@ -116,7 +116,8 @@ func stickerDoc(id int64, webp []byte, tgs bool, set *tl.InputStickerSetID, file
 
 // StickerChat — чат «Стикеры» (статичный и «анимированный») и два набора
 // для панели: «Котики» (статичные) и «Анимации» (TGS). webp — картинки 512×512.
-func StickerChat(webp [][]byte, files, thumbs map[int64][]byte) ([]string, []Attach, []StickerSet) {
+// video (необязательно) — видеостикер WebM с прозрачностью, videoThumb — его первый кадр WebP.
+func StickerChat(webp [][]byte, video, videoThumb []byte, files, thumbs map[int64][]byte) ([]string, []Attach, []StickerSet) {
 	setA := &tl.InputStickerSetID{Id: 7001, AccessHash: 71}
 	setB := &tl.InputStickerSetID{Id: 7002, AccessHash: 72}
 	pick := func(i int) []byte { return webp[i%len(webp)] }
@@ -132,7 +133,19 @@ func StickerChat(webp [][]byte, files, thumbs map[int64][]byte) ([]string, []Att
 		{Index: 0, Media: &tl.MessageMediaDocument{Document: a.Docs[0]}},
 		{Index: 1, Media: &tl.MessageMediaDocument{Document: b.Docs[0]}},
 	}
-	return []string{"", "", "после стикеров"}, att, []StickerSet{a, b}
+	texts := []string{"", "", "после стикеров"}
+	if len(video) > 0 {
+		id := int64(9501)
+		files[id], thumbs[id] = video, videoThumb
+		d := &tl.Document{Id: id, AccessHash: id * 3, FileReference: []byte{7}, Date: 1, DcId: 2, MimeType: "video/webm",
+			Size: int64(len(video)), Attributes: []tl.DocumentAttributeClass{
+				&tl.DocumentAttributeVideo{W: 256, H: 256, Duration: 1},
+				&tl.DocumentAttributeSticker{Alt: "😀", Stickerset: setA}},
+			Thumbs: []tl.PhotoSizeClass{&tl.PhotoSize{Type: "m", W: 128, H: 128, Size: int32(len(videoThumb))}}}
+		texts = []string{"", "", "", "после стикеров"}
+		att = append(att, Attach{Index: 2, Media: &tl.MessageMediaDocument{Document: d}})
+	}
+	return texts, att, []StickerSet{a, b}
 }
 
 // TtlChat — чат «Секрет»: самоуничтожающееся фото (10 с) и уже истёкшее.

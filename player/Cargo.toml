@@ -10,3 +10,6 @@ description = "Воспроизведение видео и звука (В8, С�
 ffmpeg-next = { version = "9.0.0", default-features = false, features = ["format", "codec", "software-scaling", "software-resampling", "static"] }
 cpal = "0.18.2"
 log = "0.4.34"
+
+[dev-dependencies]
+png = { version = "0.18.1", default-features = false }

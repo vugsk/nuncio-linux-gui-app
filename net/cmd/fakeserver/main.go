@@ -81,7 +81,9 @@ func main() {
 		if acc.Thumbs == nil {
 			acc.Thumbs = map[int64][]byte{}
 		}
-		texts, att, sets := fakeserver.StickerChat(webp, acc.Files, acc.Thumbs)
+		video, _ := os.ReadFile(*stickers + "/v0.webm")
+		videoThumb, _ := os.ReadFile(*stickers + "/v0.webp")
+		texts, att, sets := fakeserver.StickerChat(webp, video, videoThumb, acc.Files, acc.Thumbs)
 		acc.Stickers = sets
 		acc.Contacts = append(acc.Contacts, fakeserver.Contact{ID: 107, Name: "Стикеры", AccessHash: 18, Unread: -1,
 			Messages: texts, Attach: att})
