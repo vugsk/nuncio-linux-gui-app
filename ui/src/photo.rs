@@ -202,10 +202,11 @@ fn resize_rgba(w: usize, h: usize, src: &[u8], tw: u32, th: u32) -> SharedPixelB
                     n += 1;
                 }
             }
-            buf[ty * tw_ + tx] = if a == 0 {
-                Rgba8Pixel { r: 0, g: 0, b: 0, a: 0 }
-            } else {
-                Rgba8Pixel { r: (r / a) as u8, g: (g / a) as u8, b: (b / a) as u8, a: (a / n.max(1)) as u8 }
+            buf[ty * tw_ + tx] = match (r.checked_div(a), g.checked_div(a), b.checked_div(a)) {
+                (Some(r), Some(g), Some(b)) => {
+                    Rgba8Pixel { r: r as u8, g: g as u8, b: b as u8, a: (a / n.max(1)) as u8 }
+                }
+                _ => Rgba8Pixel { r: 0, g: 0, b: 0, a: 0 },
             };
         }
     }

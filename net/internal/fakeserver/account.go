@@ -113,11 +113,19 @@ func (a *Account) seed() {
 		total += len(c.Messages)
 	}
 	// По 10 минут между сообщениями: длинная история растягивается на дни.
-	date := int32(time.Now().Unix()) - int32(total+1)*600
+	// Короткая (меньше суток) — целиком сегодня: иначе вскоре после полуночи
+	// появлялся разделитель «вчера/сегодня», и раскладка проверок съезжала.
+	now := time.Now()
+	step := int32(600)
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	if span := int64(total+1) * 600; span < 86400 && now.Unix()-span < midnight.Unix() {
+		step = int32(max(1, (now.Unix()-midnight.Unix()-60)/int64(total+1)))
+	}
+	date := int32(now.Unix()) - int32(total+1)*step
 	for _, c := range a.Contacts {
 		for i, t := range c.Messages {
 			a.pts++
-			date += 600
+			date += step
 			out := c.OutEvery > 0 && i%c.OutEvery == c.OutEvery-1
 			m := fakeMsg{id: int32(len(a.msgs) + 1), peer: c.ID, text: t, date: date, out: out}
 			for _, at := range c.Attach {
