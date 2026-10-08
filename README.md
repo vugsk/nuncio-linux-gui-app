@@ -16,9 +16,9 @@
 - **Вложения:** фото и альбомы, файлы, голосовые, видео и видеосообщения (свой
   статический FFmpeg), GIF, превью ссылок, опросы; окно просмотра; отправка через
   системный диалог и вставку из буфера; вкладки общих медиа в «Сведениях».
-- **Стикеры:** в ленте — без пузыря, с прозрачностью; панель в поле ввода
-  (недавние и установленные наборы), отправка щелчком. Анимированные (TGS) и
-  видеостикеры пока показываются неподвижно — первым кадром.
+- **Стикеры:** статичные, видео (WebM с прозрачностью) и анимированные (TGS,
+  через ThorVG) — в ленте без пузыря; панель в поле ввода (недавние и
+  установленные наборы), отправка щелчком.
 - **Система:** уведомления D-Bus со своим звуком и громкостью, значок в трее со
   счётчиком, темы (системная, тёмная, светлая, своя из файла — на лету), размер
   текста, русский и английский, прокси (SOCKS5, MTProxy), «Графика: GPU» (Skia).
@@ -71,11 +71,11 @@ API_HASH=0123456789abcdef0123456789abcdef
 
 ## Сборка из исходников
 
-Нужны: Rust, Go, CMake, компилятор C++20, `clang`, `nasm`, `protoc` + `protoc-gen-go`,
+Нужны: Rust, Go, CMake, Meson + Ninja, компилятор C++20, `clang`, `nasm`, `protoc` + `protoc-gen-go`,
 `just`, Python 3; для `just lint` ещё `cargo-deny`, `staticcheck`, `clang-tidy`.
 
 ```
-just deps    # шаг 0: OpenSSL, FFmpeg, шрифт эмодзи (third_party/deps.toml, SHA-256)
+just deps    # шаг 0: OpenSSL, FFmpeg, ThorVG, шрифт эмодзи (third_party/deps.toml, SHA-256)
 just build   # tl, core, proto, net, cargo build
 just test    # ядро (и под ASan/UBSan), go test -race, cargo test
 just lint    # clippy, cargo deny, лицензии Go, Skia по SHA-256, PKGBUILD ↔ deps.toml, go vet, staticcheck, clang-tidy
@@ -118,4 +118,4 @@ just e2e     # сквозные проверки под Xvfb против под
 ## Лицензия
 
 GPL-3.0-or-later, см. `LICENSE`. Встроенные сторонние компоненты (FFmpeg — LGPL-2.1+,
-OpenSSL, Skia, Noto Color Emoji) и их лицензии — `third_party/NOTICES.md`.
+OpenSSL, Skia, ThorVG, Noto Color Emoji) и их лицензии — `third_party/NOTICES.md`.

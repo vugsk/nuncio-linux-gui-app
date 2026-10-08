@@ -4779,6 +4779,7 @@ version = "0.1.0"
 dependencies = [
  "domain",
  "emojis",
+ "flate2",
  "harfrust 0.13.3",
  "image-webp",
  "log",

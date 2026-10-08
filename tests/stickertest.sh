@@ -32,6 +32,16 @@ for f in range(10):
     im.save(f"{sys.argv[1]}/f{f:02d}.png")
     if f == 0:
         im.save(f"{sys.argv[1]}/v0.webp", "WEBP", lossless=True)
+# TGS: Lottie в gzip — зелёный квадрат едет слева направо (1 с, по кругу).
+import gzip, json
+lottie = {"v": "5.7.4", "fr": 30, "ip": 0, "op": 30, "w": 512, "h": 512, "layers": [{"ty": 4, "ind": 1, "ip": 0,
+    "op": 30, "st": 0, "ks": {"o": {"a": 0, "k": 100}, "r": {"a": 0, "k": 0},
+    "p": {"a": 1, "k": [{"t": 0, "s": [130, 256, 0]}, {"t": 30, "s": [382, 256, 0]}]},
+    "a": {"a": 0, "k": [0, 0, 0]}, "s": {"a": 0, "k": [100, 100, 100]}},
+    "shapes": [{"ty": "rc", "p": {"a": 0, "k": [0, 0]}, "s": {"a": 0, "k": [200, 200]}, "r": {"a": 0, "k": 40}},
+               {"ty": "fl", "c": {"a": 0, "k": [0.3, 0.8, 0.45, 1]}, "o": {"a": 0, "k": 100}}]}]}
+with gzip.open(f"{sys.argv[1]}/t0.tgs", "wb") as g:
+    g.write(json.dumps(lottie).encode())
 PY
 ffmpeg -hide_banner -loglevel error -y -framerate 10 -i "$T/stickers/f%02d.png" -c:v libvpx-vp9 -pix_fmt yuva420p \
   -auto-alt-ref 0 "$T/stickers/v0.webm"

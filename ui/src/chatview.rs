@@ -243,8 +243,14 @@ struct Playback {
 /// GIF или кружок, играющий в ленте сам, без звука (В8).
 struct Preview {
     mid: i32,
-    player: player::Player,
+    src: PreviewSrc,
     masked: Masked,
+}
+
+/// Что играет в ленте само: видео (GIF, кружок, видеостикер) или Lottie (TGS).
+enum PreviewSrc {
+    Video(player::Player),
+    Lottie(crate::lottie::Lottie),
 }
 
 /// Маска кадров ленты (скругление или круг): по размеру кадра, один раз.
@@ -1053,9 +1059,10 @@ impl ChatRenderer {
                     it.mkind = 1;
                     it.msticker = true;
                     it.media = "".into();
-                    // Видеостикер скачан — играет в ленте сам (как GIF), с прозрачностью.
-                    if mi.mime == "video/webm" {
+                    // Видеостикер и TGS скачаны — играют в ленте сами (как GIF), с прозрачностью.
+                    if matches!(mi.mime.as_str(), "video/webm" | "application/x-tgsticker") {
                         it.mpath = mi.file.as_ref().and_then(|f| m.media_paths.get(&f.key())).cloned().unwrap_or_default().into();
+                        it.mlottie = mi.mime == "application/x-tgsticker";
                     }
                 }
                 continue;
@@ -1465,7 +1472,7 @@ impl ChatRenderer {
     /// Видимые GIF и кружки играют сами (без звука, по кругу); ушедшие с экрана — стоп.
     fn sync_previews(&mut self, rows: std::ops::RangeInclusive<usize>) {
         let sound = self.playback.as_ref().map(|p| p.msg);
-        let want: Vec<(i32, String, u32, u32, MaskKind)> = self
+        let want: Vec<(i32, String, u32, u32, MaskKind, bool)> = self
             .items
             .get(rows)
             .unwrap_or_default()
@@ -1473,7 +1480,7 @@ impl ChatRenderer {
             .filter(|i| (i.mgif || i.mround || i.msticker) && !i.mpath.is_empty())
             .filter_map(|i| {
                 let kind = if i.msticker { MaskKind::None } else if i.mround { MaskKind::Round } else { MaskKind::Rounded };
-                Some((i.mid.parse::<i32>().ok()?, i.mpath.to_string(), i.mw as u32, i.mh as u32, kind))
+                Some((i.mid.parse::<i32>().ok()?, i.mpath.to_string(), i.mw as u32, i.mh as u32, kind, i.mlottie))
             })
             .filter(|w| Some(w.0) != sound)
             .take(PREVIEWS_MAX)
@@ -1483,13 +1490,19 @@ impl ChatRenderer {
             self.stop_preview(mid);
         }
         let mut started = false;
-        for (mid, path, w, h, kind) in want {
+        for (mid, path, w, h, kind, lottie) in want {
             if self.previews.iter().any(|p| p.mid == mid) {
                 continue;
             }
-            match player::Player::open_with(std::path::Path::new(&path), w.max(2), h.max(2), true) {
-                Ok(player) => {
-                    self.previews.push(Preview { mid, player, masked: Masked::new(kind) });
+            let src = if lottie {
+                // Стикер TGS — вдвое крупнее показа (чёткость), уменьшит Slint.
+                crate::lottie::Lottie::open(&path, w.max(2) * 2, h.max(2) * 2).map(PreviewSrc::Lottie)
+            } else {
+                player::Player::open_with(std::path::Path::new(&path), w.max(2), h.max(2), true).map(PreviewSrc::Video)
+            };
+            match src {
+                Ok(src) => {
+                    self.previews.push(Preview { mid, src, masked: Masked::new(kind) });
                     started = true;
                 }
                 Err(e) => log::warn!("превью не играет: {e}"),
@@ -1516,12 +1529,23 @@ impl ChatRenderer {
         // GIF и кружки в ленте: кадр по часам, по кругу.
         let mut frames = Vec::new();
         for p in &mut self.previews {
-            if let Some(mut f) = p.player.take_frame() {
-                frames.push((p.mid, p.masked.image(&mut f)));
-                p.player.recycle(f);
-            }
-            if p.player.ended() {
-                p.player.seek(0.0);
+            match &mut p.src {
+                PreviewSrc::Video(player) => {
+                    if let Some(mut f) = player.take_frame() {
+                        frames.push((p.mid, p.masked.image(&mut f)));
+                        player.recycle(f);
+                    }
+                    if player.ended() {
+                        player.seek(0.0);
+                    }
+                }
+                PreviewSrc::Lottie(l) => {
+                    let (w, h) = l.size();
+                    if let Some(rgba) = l.frame() {
+                        let px = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(rgba, w, h);
+                        frames.push((p.mid, Image::from_rgba8(px)));
+                    }
+                }
             }
         }
         for (mid, img) in frames {

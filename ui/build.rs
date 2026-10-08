@@ -18,6 +18,15 @@ fn main() {
     slint_build::compile_with_config("src/app.slint", config).expect("не удалось скомпилировать src/app.slint");
     println!("cargo:rerun-if-changed=lang");
 
+    // ThorVG (анимированные стикеры TGS): статически, `just deps thorvg`.
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let tvg = manifest_dir.join("../target/native/thorvg/lib");
+    assert!(tvg.join("libthorvg-1.a").exists(), "нет {}: выполните `just deps thorvg`", tvg.display());
+    println!("cargo:rustc-link-search=native={}", tvg.display());
+    println!("cargo:rustc-link-lib=static=thorvg-1");
+    println!("cargo:rustc-link-lib=dylib=stdc++");
+    println!("cargo:rerun-if-changed={}", tvg.join("libthorvg-1.a").display());
+
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let font_path = manifest.join("../target/native/NotoColorEmoji.ttf");
     println!("cargo:rerun-if-changed={}", font_path.display());

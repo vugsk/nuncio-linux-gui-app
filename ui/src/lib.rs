@@ -15,6 +15,7 @@ slint::include_modules!();
 
 pub mod avatar;
 pub mod chatview;
+pub mod lottie;
 pub mod composer;
 pub mod photo;
 pub mod richtext;

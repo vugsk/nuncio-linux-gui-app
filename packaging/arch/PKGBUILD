@@ -23,7 +23,7 @@ depends=(
   'wayland' 'libxkbcommon' 'libx11' 'libxcursor' 'libxrandr' 'libxi' 'libglvnd'
   'org.freedesktop.secrets'
 )
-makedepends=('git' 'rust' 'go' 'python' 'just' 'protobuf' 'cmake' 'clang' 'nasm' 'perl' 'gnupg' 'pkgconf')
+makedepends=('git' 'rust' 'go' 'python' 'just' 'protobuf' 'cmake' 'clang' 'nasm' 'perl' 'gnupg' 'pkgconf' 'meson' 'ninja')
 optdepends=(
   'xdg-desktop-portal: системный диалог выбора файлов (вложения, сохранение)'
   'sound-theme-freedesktop: звук уведомлений'
@@ -35,6 +35,7 @@ options=('!lto' '!debug')
 _ffmpeg=9.0.1
 _openssl=3.6.4
 _noto=v2026-09-24-unicode18_0
+_thorvg=1.1.2
 _skia=skia-binaries-b7f043e0b1e2a850e702-x86_64-unknown-linux-gnu-ganesh-gl-jpegd-jpege-pdf-vulkan.tar.gz
 _protoc_gen_go=v1.36.12
 
@@ -47,8 +48,9 @@ source=(
   "NotoColorEmoji.ttf::https://raw.githubusercontent.com/googlefonts/noto-emoji/$_noto/2D/fonts/NotoColorEmoji.ttf"
   "NotoColorEmoji.LICENSE::https://raw.githubusercontent.com/googlefonts/noto-emoji/$_noto/2D/fonts/LICENSE"
   "https://github.com/rust-skia/skia-binaries/releases/download/0.153.3/$_skia"
+  "thorvg-$_thorvg.tar.gz::https://github.com/thorvg/thorvg/archive/refs/tags/v$_thorvg.tar.gz"
 )
-noextract=("ffmpeg-$_ffmpeg.tar.xz" "openssl-$_openssl.tar.gz" "$_skia")
+noextract=("ffmpeg-$_ffmpeg.tar.xz" "openssl-$_openssl.tar.gz" "$_skia" "thorvg-$_thorvg.tar.gz")
 sha256sums=(
   'SKIP'
   'cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635'
@@ -58,6 +60,7 @@ sha256sums=(
   '15671215ab769fdc7162a045d56fd7d7e477c51b04e6b3c761d914d8fdd6cc44'
   '6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2'
   '9ebe4c448cc9f789bad241cbd11739cdf759e27db5719c23a7635e096d5807b3'
+  'cd466f4abf2522a6dcdc1a69a75d04a214b7163c89731fb8481eceaa6cb73842'
 )
 
 pkgver() {
@@ -72,7 +75,7 @@ prepare() {
   mkdir -p .deps-cache
   local f
   for f in "ffmpeg-$_ffmpeg.tar.xz" "ffmpeg-$_ffmpeg.tar.xz.asc" ffmpeg-release-key.asc \
-    "openssl-$_openssl.tar.gz" NotoColorEmoji.ttf NotoColorEmoji.LICENSE; do
+    "openssl-$_openssl.tar.gz" NotoColorEmoji.ttf NotoColorEmoji.LICENSE "thorvg-$_thorvg.tar.gz"; do
     cp -L "$srcdir/$f" .deps-cache/
   done
   export RUSTUP_TOOLCHAIN=stable CARGO_HOME="$srcdir/cargo" GOPATH="$srcdir/go" GOFLAGS=-modcacherw
@@ -89,7 +92,7 @@ build() {
   export CARGO_TARGET_DIR=target
   # Skia — из скачанного и сверенного makepkg архива, не из сети.
   export SKIA_BINARIES_URL="file://$srcdir/$_skia"
-  python3 third_party/fetch_deps.py openssl ffmpeg noto-emoji
+  python3 third_party/fetch_deps.py openssl ffmpeg noto-emoji thorvg
   just tl core proto net
   cargo build --frozen --release -p app
 }
@@ -113,5 +116,6 @@ package() {
   # Лицензии статически встроенного: FFmpeg (LGPL-2.1+), OpenSSL, шрифт эмодзи (OFL).
   install -Dm644 target/native/ffmpeg/COPYING.LGPLv2.1 "$pkgdir/usr/share/licenses/$pkgname/FFmpeg-COPYING.LGPLv2.1"
   install -Dm644 target/native/OpenSSL.LICENSE.txt "$pkgdir/usr/share/licenses/$pkgname/OpenSSL-LICENSE.txt"
+  install -Dm644 target/native/thorvg/LICENSE "$pkgdir/usr/share/licenses/$pkgname/ThorVG-LICENSE"
   install -Dm644 target/native/NotoColorEmoji.LICENSE "$pkgdir/usr/share/licenses/$pkgname/NotoColorEmoji-LICENSE"
 }

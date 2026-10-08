@@ -20,7 +20,7 @@ test: core-asan
     cd tools/tlgen && go vet ./... && go test ./...
     cargo test
 
-# Шаг 0: скачивает и собирает OpenSSL и FFmpeg (third_party/deps.toml).
+# Шаг 0: скачивает и собирает OpenSSL, FFmpeg, ThorVG и шрифт эмодзи (third_party/deps.toml).
 # Не входит в `build` по умолчанию — тяжёлая и нужна не на каждой сборке.
 deps *what:
     python3 third_party/fetch_deps.py {{what}}

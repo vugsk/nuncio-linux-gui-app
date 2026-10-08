@@ -117,8 +117,8 @@ pub fn auto_files(m: &Media) -> Vec<&FileRef> {
     }
     if m.kind == MediaKind::Sticker {
         v.extend(sticker_image(m).filter(|f| f.size <= AUTO_MAX_SIZE));
-        // Видеостикер играет в ленте сам — сам файл (маленький).
-        if m.mime == "video/webm" {
+        // Видеостикер и TGS играют в ленте сами — сам файл (маленький).
+        if matches!(m.mime.as_str(), "video/webm" | "application/x-tgsticker") {
             v.extend(m.file.as_ref().filter(|f| f.size <= AUTOPLAY_MAX_SIZE));
         }
         return v;

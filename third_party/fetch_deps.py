@@ -145,9 +145,38 @@ def fetch_noto_emoji(dep: dict) -> None:
         shutil.copy2(CACHE / name, NATIVE / name)
 
 
+def build_thorvg(dep: dict) -> None:
+    print("ThorVG", dep["version"])
+    archive = CACHE / f"thorvg-{dep['version']}.tar.gz"
+    if not dep["sha256"]:
+        # Первая загрузка: скачать, распаковать для просмотра, показать сумму.
+        if not archive.exists():
+            print(f"  скачиваю {dep['url']}")
+            urllib.request.urlretrieve(dep["url"], archive)
+        src = extract(archive, CACHE / "build-thorvg")
+        raise SystemExit(f"  SHA-256 {sha256_of(archive)}\n  исходники: {src}\n"
+                         "  Сумма ещё не закреплена в deps.toml — сборка не начата.")
+    download(dep["url"], archive, dep["sha256"])
+    src = extract(archive, CACHE / "build-thorvg")
+    build = src / "builddir"
+    shutil.rmtree(build, ignore_errors=True)
+    run(["meson", "setup", str(build), *dep["meson_args"]], cwd=src)
+    run(["ninja", "-C", str(build)], cwd=src)
+    prefix = NATIVE / "thorvg"
+    shutil.rmtree(prefix, ignore_errors=True)
+    (prefix / "lib").mkdir(parents=True)
+    (prefix / "include").mkdir(parents=True)
+    for artifact in dep["artifacts"]:
+        shutil.copy2(build / artifact, prefix / "lib" / Path(artifact).name)
+    for header in dep["headers"]:
+        shutil.copy2(src / header, prefix / "include" / Path(header).name)
+    shutil.copy2(src / "LICENSE", prefix / "LICENSE")
+    print("  -> target/native/thorvg/{lib,include}")
+
+
 def main() -> None:
     deps = tomllib.loads((ROOT / "third_party" / "deps.toml").read_text())
-    wanted = sys.argv[1:] or ["openssl", "ffmpeg", "noto-emoji"]
+    wanted = sys.argv[1:] or ["openssl", "ffmpeg", "noto-emoji", "thorvg"]
     CACHE.mkdir(exist_ok=True)
     if "openssl" in wanted:
         build_openssl(deps["openssl"])
@@ -155,6 +184,8 @@ def main() -> None:
         build_ffmpeg(deps["ffmpeg"])
     if "noto-emoji" in wanted:
         fetch_noto_emoji(deps["noto-emoji"])
+    if "thorvg" in wanted:
+        build_thorvg(deps["thorvg"])
     print("Готово:", NATIVE)
 
 

@@ -75,8 +75,16 @@ from PIL import Image
 img = Image.open(f"{t}/1-feed.png").convert("RGB")
 # Стикер без пузыря: у края картинки — фон ленты, не рамка пузыря.
 check(img.getpixel((473, 148))[0] > 200, f"статичный стикер виден: {img.getpixel((473, 148))}")
-check(img.getpixel((400, 80)) == img.getpixel((700, 80)), "прозрачный угол стикера — фон ленты (без пузыря)")
-check(img.getpixel((473, 356))[1] > 150, "у «анимированного» TGS — первый кадр")
+check(img.getpixel((400, 100)) == img.getpixel((1000, 100)), "прозрачный угол стикера — фон ленты (без пузыря)")
+# TGS (второй стикер): кадры меняются (ThorVG), вокруг — фон ленты.
+tbox = (392, 275, 554, 437)
+ta = img.crop(tbox)
+time.sleep(0.3)
+tb = shot_img = None
+shot("1t-feed")
+tb = Image.open(f"{t}/1t-feed.png").convert("RGB")
+check(ta.tobytes() != tb.crop(tbox).tobytes(), "TGS играет (кадры меняются)")
+check(tb.getpixel((394, 277)) == tb.getpixel((1000, 277)), "у TGS прозрачный фон")
 # Видеостикер: кадры меняются, вокруг круга — фон ленты (прозрачность VP9).
 box = (392, 482, 554, 644)
 a = img.crop(box)
@@ -84,7 +92,7 @@ time.sleep(0.45)
 shot("1b-feed")
 b = Image.open(f"{t}/1b-feed.png").convert("RGB")
 check(a.tobytes() != b.crop(box).tobytes(), "видеостикер играет (кадры меняются)")
-check(b.getpixel((396, 486)) == b.getpixel((700, 486)), "у видеостикера прозрачный фон, без чёрного квадрата")
+check(b.getpixel((396, 486)) == b.getpixel((1000, 486)), "у видеостикера прозрачный фон, без чёрного квадрата")
 click(1032, 776)               # кнопка стикеров
 check(wait(lambda: "наборы стикеров: 2" in text(net)), "наборы получены")
 time.sleep(2)

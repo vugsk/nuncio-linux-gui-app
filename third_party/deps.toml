@@ -71,6 +71,27 @@ license_url = "https://raw.githubusercontent.com/googlefonts/noto-emoji/v2026-09
 license_sha256 = "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
 artifacts = ["NotoColorEmoji.ttf", "NotoColorEmoji.LICENSE"]
 
+[thorvg]
+# Анимированные стикеры TGS (Lottie): ThorVG — MIT, преемник rlottie от
+# Samsung (rlottie архивирован; решение пользователя 2026-10-09). Только
+# программная отрисовка и загрузчик Lottie, статически, через C API.
+# Подписи у выпусков нет: сумма — с первой загрузки (пусто — fetch_deps.py
+# скачает, распакует для просмотра, напечатает сумму и остановится).
+version = "1.1.2"
+url = "https://github.com/thorvg/thorvg/archive/refs/tags/v1.1.2.tar.gz"
+sha256 = "cd466f4abf2522a6dcdc1a69a75d04a214b7163c89731fb8481eceaa6cb73842"
+# Только CPU и Lottie, C API, статически. Выключены: выражения Lottie
+# (lottie_exp — встроенный интерпретатор JS: лишняя поверхность атаки для
+# данных из сети), OpenMP и потоки (кадр стикера мал), доступ к файлам.
+meson_args = [
+    "--buildtype=release", "--default-library=static",
+    "-Dengines=cpu", "-Dloaders=lottie", "-Dsavers=", "-Dbindings=capi",
+    "-Dtools=", "-Dtests=false", "-Dlog=false", "-Dthreads=false",
+    "-Dsimd=false", "-Dstatic=true", "-Dfile=false", "-Dextra=",
+]
+artifacts = ["src/libthorvg-1.a"]
+headers = ["src/bindings/capi/thorvg_capi.h"]
+
 [skia]
 # Нс-8, «Графика: GPU» — рендерер Slint Skia (OpenGL). Готовые бинарники
 # скачивает сам skia-bindings при первой сборке (rust-skia/skia-binaries на

@@ -17,6 +17,8 @@ need = {
     "SHA-256 FFmpeg": deps["ffmpeg"]["sha256"] in sums,
     "SHA-256 шрифта эмодзи": deps["noto-emoji"]["sha256"] in sums,
     "SHA-256 лицензии шрифта": deps["noto-emoji"]["license_sha256"] in sums,
+    "версия ThorVG": f"_thorvg={deps['thorvg']['version']}" in pkg,
+    "SHA-256 ThorVG": deps["thorvg"]["sha256"] in sums,
 }
 for name, digest in deps["skia"]["archives"].items():
     need[f"архив Skia {name[:40]}…"] = f"_skia={name}" in pkg and digest in sums
