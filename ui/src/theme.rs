@@ -189,6 +189,27 @@ pub fn apply(app: &App, pal: &Palette, text_size: u32) {
 mod tests {
     use super::*;
 
+    /// Примеры тем в `themes/` разбираются без ошибок и задают все ключи.
+    #[test]
+    fn example_themes_are_valid() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../themes");
+        let mut n = 0;
+        for e in std::fs::read_dir(&dir).expect("каталог themes") {
+            let path = e.unwrap().path();
+            if path.extension().is_some_and(|x| x == "toml") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let (_, errors) = from_toml(&text);
+                assert!(errors.is_empty(), "{}: {errors:?}", path.display());
+                let table: toml::Table = text.parse().unwrap();
+                let missing: Vec<_> = dark().iter().map(|(k, _)| k.replace('-', "_"))
+                    .filter(|k| !table.contains_key(k)).collect();
+                assert!(missing.is_empty(), "{}: не заданы {missing:?}", path.display());
+                n += 1;
+            }
+        }
+        assert!(n > 0, "нет примеров тем");
+    }
+
     #[test]
     fn toml_theme_over_base() {
         let (p, errors) = from_toml("base = \"light\"\nwindow_bg = \"#101820\"\nsoft = \"#00000022\"\nnope = \"#fff\"\ntext = \"red\"\n");

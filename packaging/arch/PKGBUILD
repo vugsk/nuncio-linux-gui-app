@@ -107,6 +107,7 @@ package() {
   install -Dm755 target/release/nuncio "$pkgdir/usr/bin/nuncio"
   install -Dm644 packaging/nuncio.desktop "$pkgdir/usr/share/applications/nuncio.desktop"
   install -Dm644 packaging/nuncio.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/nuncio.svg"
+  install -Dm644 -t "$pkgdir/usr/share/nuncio/themes" themes/*.toml
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 third_party/NOTICES.md "$pkgdir/usr/share/licenses/$pkgname/NOTICES.md"
   # Лицензии статически встроенного: FFmpeg (LGPL-2.1+), OpenSSL, шрифт эмодзи (OFL).
