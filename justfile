@@ -95,6 +95,7 @@ e2e:
     tests/adtest.sh
     tests/exittest.sh
     tests/ttltest.sh
+    tests/themetest.sh
 
 # Проверки качества (раздел 4 заметки о сборке).
 lint:

@@ -37,9 +37,75 @@ pub fn apply_appearance(app: &App, s: &domain::settings::AppSettings, system: i3
         c
     });
     if changed {
-        theme::apply(app, &theme::palette(s, system), s.text_size);
+        let (pal, errors) = theme::palette(s, system);
+        THEME_FILE.with(|t| {
+            let mut t = t.borrow_mut();
+            t.stamp = file_stamp(s);
+            t.errors = errors;
+        });
+        theme::apply(app, &pal, s.text_size);
         chatview::set_text_size(app, s.text_size);
+        watch_theme_file(app);
     }
+}
+
+/// Файл темы (Нс-7): отметка (время изменения, размер) и ошибки разбора.
+#[derive(Default)]
+struct ThemeFile {
+    stamp: Option<(std::time::SystemTime, u64)>,
+    errors: Vec<theme::ThemeError>,
+    timer: Option<slint::Timer>,
+}
+
+thread_local! {
+    static THEME_FILE: std::cell::RefCell<ThemeFile> = std::cell::RefCell::new(ThemeFile::default());
+    static LANG_RU: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+fn file_stamp(s: &domain::settings::AppSettings) -> Option<(std::time::SystemTime, u64)> {
+    if s.theme != domain::settings::ThemeChoice::File {
+        return None;
+    }
+    let m = std::fs::metadata(&s.theme_file).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+/// Тема из файла применяется на лету: раз в секунду — отметка файла; сменилась
+/// — перечитать. Нечитаемый файл (редактор сохраняет через удаление) — прежняя
+/// тема остаётся до следующей удачной записи.
+fn watch_theme_file(app: &App) {
+    if THEME_FILE.with(|t| t.borrow().timer.is_some()) {
+        return;
+    }
+    let weak = app.as_weak();
+    let timer = slint::Timer::default();
+    timer.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(1), move || {
+        let Some(app) = weak.upgrade() else { return };
+        let Some((s, system)) = APPEARANCE.with(|a| a.borrow().clone()) else { return };
+        let Some(stamp) = file_stamp(&s) else { return };
+        if THEME_FILE.with(|t| t.borrow().stamp == Some(stamp)) {
+            return;
+        }
+        let (pal, errors) = theme::palette(&s, system);
+        let unreadable = errors.iter().any(|e| matches!(e, theme::ThemeError::Unreadable(_)));
+        THEME_FILE.with(|t| {
+            let mut t = t.borrow_mut();
+            t.stamp = Some(stamp);
+            t.errors = errors;
+        });
+        if !unreadable {
+            log::info!("тема: файл изменён, применена");
+            theme::apply(&app, &pal, s.text_size);
+        }
+        app.global::<Settings>().set_theme_errors(theme_errors().into());
+    });
+    THEME_FILE.with(|t| t.borrow_mut().timer = Some(timer));
+}
+
+/// Ошибки файла темы на языке интерфейса (для настроек), по строке на ошибку.
+pub fn theme_errors() -> String {
+    let ru = LANG_RU.get();
+    THEME_FILE.with(|t| t.borrow().errors.iter().map(|e| e.text(ru)).collect::<Vec<_>>().join("\n"))
 }
 
 mod flags {
@@ -849,6 +915,7 @@ fn open_link(url: &str) {
 }
 
 pub fn apply_language(lang: &str) {
+    LANG_RU.set(lang == "ru");
     // Для английского перевода нет: строки в разметке уже английские.
     let _ = slint::select_bundled_translation(if lang == "ru" { "ru" } else { "" });
 }

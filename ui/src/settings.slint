@@ -35,6 +35,7 @@ export global Settings {
     // Внешний вид.
     in property <int> theme;       // 0 как в системе, 1 тёмная, 2 светлая, 3 из файла
     in property <string> theme-file;
+    in property <string> theme-errors;
     in property <int> text-size;
     in property <int> lang;        // 0 русский, 1 English
     in property <bool> gpu;
@@ -200,6 +201,14 @@ component AppearancePage inherits VerticalLayout {
         alignment: start;
         Text { text: Settings.theme-file; color: Theme.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
         Link { text: @tr("Choose file"); font-size: 12px; clicked => { Settings.pick-theme(); } }
+    }
+    // Ошибки файла темы (обновляются на лету вместе с темой).
+    if Settings.theme == 3 && Settings.theme-errors != "": Text {
+        text: Settings.theme-errors;
+        color: Theme.error;
+        font-size: 11px;
+        wrap: word-wrap;
+        width: 400px;
     }
     SectionTitle { text: @tr("Text size"); }
     HorizontalLayout {

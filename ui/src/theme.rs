@@ -61,12 +61,42 @@ fn parse_color(s: &str) -> Option<u32> {
     }
 }
 
+/// Ошибка файла темы — показывается в настройках на языке интерфейса.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThemeError {
+    /// Не TOML: номер строки (если известен) и сообщение разборщика.
+    Parse(Option<usize>, String),
+    UnknownKey(String),
+    BadColor(String),
+    Unreadable(String),
+}
+
+impl ThemeError {
+    pub fn text(&self, ru: bool) -> String {
+        match (self, ru) {
+            (Self::Parse(Some(l), e), true) => format!("Файл не разобран, строка {l}: {e}"),
+            (Self::Parse(Some(l), e), false) => format!("Can't parse the file, line {l}: {e}"),
+            (Self::Parse(None, e), true) => format!("Файл не разобран: {e}"),
+            (Self::Parse(None, e), false) => format!("Can't parse the file: {e}"),
+            (Self::UnknownKey(k), true) => format!("Неизвестный ключ «{k}»"),
+            (Self::UnknownKey(k), false) => format!("Unknown key \"{k}\""),
+            (Self::BadColor(k), true) => format!("«{k}»: нужен цвет #rrggbb или #rrggbbaa"),
+            (Self::BadColor(k), false) => format!("\"{k}\": expected a #rrggbb or #rrggbbaa colour"),
+            (Self::Unreadable(e), true) => format!("Файл не прочитан: {e}"),
+            (Self::Unreadable(e), false) => format!("Can't read the file: {e}"),
+        }
+    }
+}
+
 /// Тема из файла TOML: основа и переопределённые цвета; ошибки — списком.
-pub fn from_toml(text: &str) -> (Palette, Vec<String>) {
+pub fn from_toml(text: &str) -> (Palette, Vec<ThemeError>) {
     let mut errors = Vec::new();
     let table: toml::Table = match text.parse() {
         Ok(t) => t,
-        Err(e) => return (dark(), vec![format!("файл темы не разобран: {e}")]),
+        Err(e) => {
+            let line = e.span().map(|r| text[..r.start.min(text.len())].matches('\n').count() + 1);
+            return (dark(), vec![ThemeError::Parse(line, e.message().trim().to_string())]);
+        }
     };
     let mut pal = match table.get("base").and_then(|v| v.as_str()) {
         Some("light") => light(),
@@ -78,35 +108,27 @@ pub fn from_toml(text: &str) -> (Palette, Vec<String>) {
         }
         let name = k.replace('_', "-");
         let Some(slot) = pal.iter_mut().find(|(n, _)| *n == name) else {
-            errors.push(format!("неизвестный ключ «{k}»"));
+            errors.push(ThemeError::UnknownKey(k.clone()));
             continue;
         };
         match v.as_str().and_then(parse_color) {
             Some(c) => slot.1 = c,
-            None => errors.push(format!("«{k}»: нужен цвет #rrggbb или #rrggbbaa")),
+            None => errors.push(ThemeError::BadColor(k.clone())),
         }
     }
     (pal, errors)
 }
 
 /// Палитра по настройкам и теме рабочего стола (0 — не задано, 1 — тёмная, 2 — светлая).
-pub fn palette(s: &AppSettings, system: i32) -> Palette {
+/// Ошибки — для показа в настройках (только у темы из файла).
+pub fn palette(s: &AppSettings, system: i32) -> (Palette, Vec<ThemeError>) {
     match s.theme {
-        ThemeChoice::Dark => dark(),
-        ThemeChoice::Light => light(),
-        ThemeChoice::System => if system == 2 { light() } else { dark() },
+        ThemeChoice::Dark => (dark(), Vec::new()),
+        ThemeChoice::Light => (light(), Vec::new()),
+        ThemeChoice::System => (if system == 2 { light() } else { dark() }, Vec::new()),
         ThemeChoice::File => match std::fs::read_to_string(&s.theme_file) {
-            Ok(text) => {
-                let (p, errors) = from_toml(&text);
-                for e in errors {
-                    log::warn!("тема: {e}");
-                }
-                p
-            }
-            Err(e) => {
-                log::warn!("тема: файл не прочитан: {e}");
-                dark()
-            }
+            Ok(text) => from_toml(&text),
+            Err(e) => (dark(), vec![ThemeError::Unreadable(e.kind().to_string())]),
         },
     }
 }
@@ -174,7 +196,9 @@ mod tests {
         assert_eq!(get("window-bg"), 0x101820ff);
         assert_eq!(get("soft"), 0x00000022);
         assert_eq!(get("card-bg"), 0xffffffff, "остальное — от светлой основы");
-        assert_eq!(errors.len(), 2, "неизвестный ключ и неверный цвет: {errors:?}");
+        assert_eq!(errors, vec![ThemeError::UnknownKey("nope".into()), ThemeError::BadColor("text".into())]);
+        let (_, e) = from_toml("window_bg = \"#101820\"\ntext = [");
+        assert!(matches!(&e[..], [ThemeError::Parse(Some(2), _)]), "строка ошибки разбора: {e:?}");
         assert_eq!(dark().len(), light().len());
         assert!(dark().iter().zip(light()).all(|(a, b)| a.0 == b.0), "один набор токенов");
     }

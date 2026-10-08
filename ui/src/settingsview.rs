@@ -171,6 +171,7 @@ pub fn render(app: &App, m: &ChatModel, images: &HashMap<String, SharedPixelBuff
         ThemeChoice::File => 3,
     });
     g.set_theme_file(s.theme_file.clone().into());
+    g.set_theme_errors(crate::theme_errors().into());
     g.set_text_size(s.text_size as i32);
     g.set_lang(i32::from(m.lang != "ru"));
     g.set_gpu(s.gpu);
