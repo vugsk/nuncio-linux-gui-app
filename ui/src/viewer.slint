@@ -28,6 +28,7 @@ export component ViewerWindow inherits Window {
     in property <string> author;
     in property <string> date;
     in property <string> counter;   // «3 из 12»
+    in property <bool> ephemeral;   // самоуничтожающееся: без «Сохранить» и «Переслать»
     in property <string> caption;
     in property <string> progress;  // ход скачивания полного размера
     in property <bool> can-prev;
@@ -129,8 +130,8 @@ export component ViewerWindow inherits Window {
                 HorizontalLayout {
                     spacing: 6px;
                     if root.zoom > 1: Action { text: @tr("Fit"); clicked => { root.zoom = 1; root.pan-x = 0; root.pan-y = 0; } }
-                    Action { text: @tr("Save"); clicked => { root.save(); } }
-                    Action { text: @tr("Forward"); clicked => { root.forward(); } }
+                    if !root.ephemeral: Action { text: @tr("Save"); clicked => { root.save(); } }
+                    if !root.ephemeral: Action { text: @tr("Forward"); clicked => { root.forward(); } }
                     Action { text: @tr("Show in chat"); clicked => { root.show-in-chat(); } }
                     Action { text: "✕"; clicked => { root.close-viewer(); } }
                 }

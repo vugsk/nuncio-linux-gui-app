@@ -111,6 +111,10 @@ pub struct Transfer {
 /// Файлы вложения, которые показываются в ленте без действий пользователя.
 pub fn auto_files(m: &Media) -> Vec<&FileRef> {
     let mut v = Vec::new();
+    // Самоуничтожающееся — только по нажатию и без кэша.
+    if m.self_destruct() {
+        return v;
+    }
     match m.kind {
         MediaKind::Photo => v.extend(m.file.as_ref()),
         MediaKind::Video | MediaKind::Document | MediaKind::VideoNote | MediaKind::Audio | MediaKind::Gif => {
@@ -199,6 +203,20 @@ impl ChatModel {
         let Some(mi) = m.media_info.clone() else { return };
         let Some(peer_id) = self.open else { return };
         let Some(peer) = self.peer_ref(peer_id) else { return };
+        if mi.self_destruct() {
+            let ru = self.lang == "ru";
+            if mi.expired() {
+                self.toast(if ru { "Срок просмотра истёк" } else { "This media has expired" });
+                return;
+            }
+            // С первого открытия у получателя идёт срок (сервер потом удалит).
+            if !m.out && self.contents_read.insert((peer_id, msg_id)) {
+                self.send(Command::ReadContents { peer, ids: vec![msg_id] }, Pending::Other, out);
+            }
+            for f in [&mi.full, &mi.file].into_iter().flatten() {
+                self.ephemeral.entry(f.key()).or_insert(None);
+            }
+        }
         // Фото и видео — окно просмотра (файл полного размера или само видео
         // скачивается там; видео играет, когда скачано — В8).
         if viewable(&mi) {
@@ -267,6 +285,11 @@ impl ChatModel {
     pub(crate) fn download_done(&mut self, key: String, size: i64, path: Option<String>, out: &mut Vec<ChatEffect>) {
         self.transfers.remove(&key);
         match path {
+            // Самоуничтожающееся: не в кэш, удалится после просмотра.
+            Some(p) if self.ephemeral.contains_key(&key) => {
+                self.ephemeral.insert(key.clone(), Some(p.clone()));
+                self.media_paths.insert(key, p);
+            }
             Some(p) => {
                 out.push(ChatEffect::Db(DbOp::MediaSaved { key: key.clone(), path: p.clone(), size }));
                 self.media_paths.insert(key, p);
@@ -310,6 +333,18 @@ impl ChatModel {
         }
         self.refetched.extend(ids.iter().map(|id| (peer_id, *id)));
         self.send(Command::LoadMessages { peer, ids }, Pending::Quotes { peer_id }, out);
+    }
+
+    /// Удалить скачанные самоуничтожающиеся файлы (окно просмотра закрыто,
+    /// чат сменился). Ещё качающиеся удалятся, когда докачаются и снова сюда.
+    pub(crate) fn purge_ephemeral(&mut self, out: &mut Vec<ChatEffect>) {
+        let done: Vec<String> = self.ephemeral.iter().filter(|(_, p)| p.is_some()).map(|(k, _)| k.clone()).collect();
+        for k in done {
+            if let Some(Some(p)) = self.ephemeral.remove(&k) {
+                self.media_paths.remove(&k);
+                out.push(ChatEffect::DeleteFile(p));
+            }
+        }
     }
 
     /// Ключ файла, открытого в окне просмотра.
@@ -478,6 +513,9 @@ pub fn feed_images(history: &[Message]) -> HashMap<i32, FeedImage> {
     let mut out = HashMap::new();
     for m in history {
         let Some(mi) = &m.media_info else { continue };
+        if mi.self_destruct() {
+            continue; // в ленте — заглушка, не картинка
+        }
         let (file, w, h, stripped) = match mi.kind {
             MediaKind::Photo => (mi.file.clone(), mi.width, mi.height, mi.stripped.clone()),
             MediaKind::Video | MediaKind::VideoNote | MediaKind::Gif => {

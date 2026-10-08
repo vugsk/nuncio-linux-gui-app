@@ -129,6 +129,7 @@ message Media {
   string emoji = 15;             // стикер
   WebPage webpage = 16;
   Poll poll = 17;
+  int32 ttl_seconds = 18;        // самоуничтожающееся (личные чаты); без файла — срок истёк
 }
 
 // Ссылка на файл для upload.getFile.
@@ -375,6 +376,7 @@ message Command {
     ViewSponsored view_sponsored = 67;
     ClickSponsored click_sponsored = 68;
     ReportSponsored report_sponsored = 69;
+    ReadContents read_contents = 70;
     Ping ping = 100;      // проверка связки Rust -> Go -> ядро, веха В0
   }
 }
@@ -584,6 +586,13 @@ message SponsoredReport {
 message ReportOption {
   string text = 1;
   bytes option = 2;
+}
+
+// Содержимое сообщений просмотрено (самоуничтожающиеся вложения: с этого
+// момента идёт срок, по его истечении сервер удаляет сообщение).
+message ReadContents {
+  PeerRef peer = 1;
+  repeated int32 ids = 2;
 }
 
 message SystemPrefs {

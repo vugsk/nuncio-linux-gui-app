@@ -930,7 +930,7 @@ impl ChatRenderer {
                         url: url.into() });
                     continue;
                 }
-                let Some(mi) = x.media_info.as_deref() else { continue };
+                let Some(mi) = x.media_info.as_deref().filter(|mi| !mi.self_destruct()) else { continue };
                 let Some(file) = mi.file.as_ref() else { continue };
                 let key = file.key();
                 let size = if file.size > 0 { file.size } else { mi.size };
@@ -1006,6 +1006,28 @@ impl ChatRenderer {
                 it.file_info = if size > 0 { size_label(size, ru).into() } else { "".into() };
             }
             let has_feed = feed.contains_key(&msg.id);
+            // Самоуничтожающееся: строка-заглушка, открывается окном просмотра.
+            if mi.self_destruct() {
+                it.mkind = 2;
+                it.file_ttl = true;
+                let video = mi.kind != K::Photo;
+                it.file_name = match (video, ru) {
+                    (false, true) => "Самоуничтожающееся фото",
+                    (false, false) => "Self-destructing photo",
+                    (true, true) => "Самоуничтожающееся видео",
+                    (true, false) => "Self-destructing video",
+                }
+                .into();
+                it.file_info = match (mi.expired(), msg.out, ru) {
+                    (true, _, true) => "Срок просмотра истёк".into(),
+                    (true, _, false) => "Expired".into(),
+                    (false, true, true) => "Вы отправили".into(),
+                    (false, true, false) => "You sent it".into(),
+                    (false, false, true) => "Нажмите, чтобы посмотреть".into(),
+                    (false, false, false) => "Click to view".into(),
+                };
+                continue;
+            }
             match mi.kind {
                 K::Photo if has_feed => it.mkind = 1,
                 K::Video | K::Gif | K::VideoNote if has_feed => {
@@ -1271,6 +1293,7 @@ impl ChatRenderer {
             w.set_has_photo(img.is_some());
             w.set_photo(img.unwrap_or_default());
         }
+        w.set_ephemeral(msg.media_info.as_ref().is_some_and(|mi| mi.self_destruct()));
         w.set_counter(match pos {
             Some(p) if ids.len() > 1 => format!("{} {} {}", p + 1, if ru { "из" } else { "of" }, ids.len()).into(),
             _ => "".into(),

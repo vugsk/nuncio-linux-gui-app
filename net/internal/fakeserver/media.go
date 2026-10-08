@@ -89,6 +89,15 @@ func MediaChat() ([]string, []Attach, map[int64][]byte) {
 	return texts, att, files
 }
 
+// TtlChat — чат «Секрет»: самоуничтожающееся фото (10 с) и уже истёкшее.
+func TtlChat(files map[int64][]byte) ([]string, []Attach) {
+	ttl := int32(10)
+	return []string{"", "", "после секретного"}, []Attach{
+		{Index: 0, Media: &tl.MessageMediaPhoto{Photo: fakePhoto(files, 8101, 640, 480, 30), TtlSeconds: &ttl}},
+		{Index: 1, Media: &tl.MessageMediaPhoto{TtlSeconds: &ttl}},
+	}
+}
+
 // fileBytes — часть файла для upload.getFile.
 func (a *Account) fileBytes(loc tl.InputFileLocationClass, off int64, limit int32) ([]byte, bool) {
 	var id int64

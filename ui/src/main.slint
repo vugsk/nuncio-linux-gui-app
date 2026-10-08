@@ -191,6 +191,7 @@ export struct MessageItem {
     file-state: int,      // 0 скачать, 1 скачивается, 2 скачано, 3 играет, 4 пауза (голосовые, В8)
     file-progress: float,
     file-voice: bool,
+    file-ttl: bool,       // самоуничтожающееся: значок таймера, без картинки в ленте
     wp-site: string,
     wp-title: string,
     wp-desc: string,
@@ -1243,8 +1244,8 @@ component MediaBlock inherits VerticalLayout {
             border-radius: 20px;
             background: Theme.link;
             Text {
-                text: root.item.file-state == 0 ? "↓" : root.item.file-state == 1 ? "✕" : root.item.file-state == 3 ? "❚❚"
-                    : root.item.file-voice ? "▶" : "≡";
+                text: root.item.file-ttl ? "⏱" : root.item.file-state == 0 ? "↓" : root.item.file-state == 1 ? "✕"
+                    : root.item.file-state == 3 ? "❚❚" : root.item.file-voice ? "▶" : "≡";
                 color: Theme.on-link;
                 font-size: 18px;
                 font-weight: 700;

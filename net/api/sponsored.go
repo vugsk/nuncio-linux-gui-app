@@ -84,3 +84,17 @@ func str(p *string) string {
 	}
 	return *p
 }
+
+// readContents — содержимое просмотрено (самоуничтожающиеся вложения).
+func (s *Service) readContents(ctx context.Context, id uint64, c *pb.ReadContents) *pb.Event {
+	var err error
+	if ch, ok := conv.InputChannel(c.GetPeer()); ok {
+		_, err = s.m.Invoke(ctx, &tl.ChannelsReadMessageContentsRequest{Channel: ch, Id: c.GetIds()})
+	} else {
+		_, err = s.m.Invoke(ctx, &tl.MessagesReadMessageContentsRequest{Id: c.GetIds()})
+	}
+	if err != nil {
+		return resultError(id, err)
+	}
+	return payload(id, nil)
+}

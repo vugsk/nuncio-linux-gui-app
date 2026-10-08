@@ -94,6 +94,7 @@ e2e:
     tests/sharedtest.sh
     tests/adtest.sh
     tests/exittest.sh
+    tests/ttltest.sh
 
 # Проверки качества (раздел 4 заметки о сборке).
 lint:

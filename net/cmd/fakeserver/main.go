@@ -37,6 +37,7 @@ func main() {
 	photos := flag.Int("photos", 0, "чат «Фото» из стольких фото, самый новый (замер памяти при прокрутке)")
 	video := flag.String("video", "", "чат «Видео»: этот ролик и голосовое из -voice (проверка плеера)")
 	voice := flag.String("voice", "", "голосовое (ogg/opus) для чата «Видео»")
+	ttl := flag.Bool("ttl", false, "чат «Секрет»: самоуничтожающееся фото и истёкшее")
 	ads := flag.Bool("ads", false, "чат с ботом «Новости» и рекламой в нём (условия API)")
 	revoke := flag.Duration("revoke", 0, "через столько после входа завершить все сеансы (как с другого устройства)")
 	flag.Parse()
@@ -63,6 +64,14 @@ func main() {
 			{ID: 102, Name: "Архивный", AccessHash: 13, Archived: true, Unread: -1, Messages: []string{"старое"}},
 		}, acc.Contacts...)
 		acc.Folders = []fakeserver.FakeFolder{{ID: 2, Title: "Работа", Include: []int64{101}}}
+	}
+	if *ttl {
+		if acc.Files == nil {
+			acc.Files = map[int64][]byte{}
+		}
+		texts, att := fakeserver.TtlChat(acc.Files)
+		acc.Contacts = append(acc.Contacts, fakeserver.Contact{ID: 106, Name: "Секрет", AccessHash: 17, Unread: -1,
+			Messages: texts, Attach: att})
 	}
 	if *ads {
 		acc.Ads = true

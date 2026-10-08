@@ -251,6 +251,10 @@ impl ChatModel {
     pub(crate) fn viewer_save(&mut self, out: &mut Vec<ChatEffect>) {
         let ru = self.lang == "ru";
         let Some(id) = self.viewer else { return };
+        if self.find_msg(id).and_then(|m| m.media_info.as_ref()).is_some_and(|mi| mi.self_destruct()) {
+            self.toast(if ru { "Самоуничтожающееся нельзя сохранить" } else { "Self-destructing media can't be saved" });
+            return;
+        }
         let Some(path) = self.viewer_key().and_then(|k| self.media_paths.get(&k).cloned()) else {
             self.toast(if ru { "Фото ещё загружается" } else { "Photo is still loading" });
             return;

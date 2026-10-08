@@ -304,6 +304,11 @@ impl Domain {
                             }
                         }
                     }
+                    ChatEffect::DeleteFile(path) => {
+                        if let Err(e) = std::fs::remove_file(&path) {
+                            log::warn!("файл не удалён: {e}");
+                        }
+                    }
                     ChatEffect::OpenFile(path) => {
                         if let Err(e) = std::process::Command::new("xdg-open").arg(&path).spawn() {
                             log::warn!("xdg-open: {e}");

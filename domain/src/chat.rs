@@ -76,6 +76,8 @@ pub enum ChatEffect {
     Clipboard(String),
     /// Открыть скачанный файл во внешней программе.
     OpenFile(String),
+    /// Удалить файл (скачанное самоуничтожающееся вложение после просмотра).
+    DeleteFile(String),
     /// Осмотреть выбранные файлы (размер, картинка ли) — затем `set_prepared`.
     InspectFiles { paths: Vec<String>, append: bool },
     /// Очистить кэш файлов (временный пункт меню до настроек В9).
@@ -277,6 +279,10 @@ pub struct ChatModel {
     pub shared: Option<crate::shared::SharedMedia>,
     /// Реклама открытого чата (sponsored.rs).
     pub sponsored: Option<crate::sponsored::SponsoredState>,
+    /// Самоуничтожающиеся вложения: скачанные файлы (ключ → путь) — не в кэш,
+    /// удаляются после просмотра; отправленные отметки «содержимое просмотрено».
+    pub(crate) ephemeral: HashMap<String, Option<String>>,
+    pub(crate) contents_read: HashSet<(i64, i32)>,
     pub confirm: Option<crate::chatlist::Confirm>,
     /// Вложения (В7, media.rs): скачивания в работе, скачанное окна, неудачи.
     pub transfers: HashMap<String, crate::media::Transfer>,
@@ -592,6 +598,7 @@ impl ChatModel {
                 self.window = Window::default();
                 self.first_requested = false;
                 self.shared_chat_changed(&mut out);
+                self.purge_ephemeral(&mut out);
                 self.sponsored_chat_opened(&mut out);
                 self.seen = 0;
                 // Вход к первому непрочитанному с линией «Новые сообщения» (Чт-10).
@@ -616,6 +623,7 @@ impl ChatModel {
                 }
             }
             ChatIntent::CloseChat => {
+                self.purge_ephemeral(&mut out);
                 self.open = None;
                 self.history.clear();
             }
@@ -677,6 +685,11 @@ impl ChatModel {
                 self.compose = Compose::Plain;
             }
             ChatIntent::Forward(ids) => {
+                if ids.iter().any(|id| self.find_msg(*id).and_then(|m| m.media_info.as_ref()).is_some_and(|mi| mi.self_destruct())) {
+                    let t = if self.lang == "ru" { "Самоуничтожающееся нельзя переслать" } else { "Self-destructing media can't be forwarded" };
+                    self.toast(t);
+                    return out;
+                }
                 if let Some(from) = self.open {
                     self.open_picker(PickerPurpose::Forward { from, ids }, &mut out);
                 }
@@ -819,7 +832,10 @@ impl ChatModel {
             ChatIntent::List(li) => self.list_intent(li, &mut out),
             ChatIntent::MediaClick(id) => self.media_click(id, &mut out),
             ChatIntent::Vote(id, option) => self.vote(id, option, &mut out),
-            ChatIntent::CloseViewer => self.viewer = None,
+            ChatIntent::CloseViewer => {
+                self.viewer = None;
+                self.purge_ephemeral(&mut out);
+            }
             ChatIntent::ViewerSave => self.viewer_save(&mut out),
             ChatIntent::ViewerForward => out = self.viewer_to_chat(true),
             ChatIntent::ViewerShowInChat => out = self.viewer_to_chat(false),

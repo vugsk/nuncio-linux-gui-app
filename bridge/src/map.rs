@@ -187,6 +187,7 @@ fn media_from(m: proto::Media) -> Media {
             photo_height: w.photo_height,
         }),
         local_path: String::new(),
+        ttl_seconds: m.ttl_seconds,
         poll: m.poll.map(|p| Poll {
             id: p.id,
             question: p.question,
@@ -401,6 +402,7 @@ pub fn command_to(id: u64, cmd: Command) -> proto::Command {
             show_label: t.show_label,
             quit_label: t.quit_label,
         }),
+        Command::ReadContents { peer, ids } => C::ReadContents(proto::ReadContents { peer: Some(peer_ref_to(peer)), ids }),
         Command::GetSponsored { peer } => C::GetSponsored(proto::GetSponsored { peer: Some(peer_ref_to(peer)) }),
         Command::ViewSponsored { random_id } => C::ViewSponsored(proto::ViewSponsored { random_id }),
         Command::ClickSponsored { random_id } => C::ClickSponsored(proto::ClickSponsored { random_id }),

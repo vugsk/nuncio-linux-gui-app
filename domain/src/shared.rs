@@ -131,7 +131,7 @@ impl ChatModel {
         self.shared_items()
             .iter()
             .filter_map(|m| {
-                let mi = m.media_info.as_ref()?;
+                let mi = m.media_info.as_ref().filter(|mi| !mi.self_destruct())?;
                 let file = match mi.kind {
                     MediaKind::Photo => mi.file.clone(),
                     MediaKind::Video | MediaKind::Gif | MediaKind::VideoNote => mi.thumb.clone(),
@@ -152,11 +152,19 @@ impl ChatModel {
 
     /// Фото и видео для стрелок окна просмотра: из истории или из вкладки.
     pub fn viewer_ids(&self) -> Vec<i32> {
+        // Самоуничтожающееся открывается одно и в общий просмотр не входит.
+        if let Some(v) = self.viewer.filter(|v| {
+            self.find_msg(*v).and_then(|m| m.media_info.as_ref()).is_some_and(|mi| mi.self_destruct())
+        }) {
+            return vec![v];
+        }
         let in_history = self.viewer.is_some_and(|v| self.history.iter().any(|m| m.id == v));
         let src: &[Message] = if in_history { &self.history } else { self.shared_items() };
         let mut ids: Vec<i32> = src
             .iter()
-            .filter(|m| m.media_info.as_ref().is_some_and(|mi| viewable(mi) && mi.kind != MediaKind::WebPage))
+            .filter(|m| {
+                m.media_info.as_ref().is_some_and(|mi| viewable(mi) && mi.kind != MediaKind::WebPage && !mi.self_destruct())
+            })
             .map(|m| m.id)
             .collect();
         // Вкладка идёт от новых к старым, история — наоборот: стрелка вправо — новее.

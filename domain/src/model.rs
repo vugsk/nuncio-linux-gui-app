@@ -214,6 +214,22 @@ pub struct Media {
     /// Своё неотправленное (очередь): файл на диске — для показа до выгрузки.
     #[serde(default)]
     pub local_path: String,
+    /// Самоуничтожающееся вложение (личные чаты), с; без файла — срок истёк.
+    #[serde(default)]
+    pub ttl_seconds: i32,
+}
+
+impl Media {
+    /// Самоуничтожающееся: не скачивается само, не кэшируется, не сохраняется
+    /// и не пересылается (условия API: не мешать таким сообщениям).
+    pub fn self_destruct(&self) -> bool {
+        self.ttl_seconds > 0
+    }
+
+    /// Срок истёк: сервер прислал вложение без файла.
+    pub fn expired(&self) -> bool {
+        self.self_destruct() && self.file.is_none() && self.full.is_none()
+    }
 }
 
 /// Вложение для отправки (`Command::SendMedia`).
@@ -491,6 +507,8 @@ pub enum Command {
     SetTray(TrayState),
     /// Реклама чата (условия API Telegram); результат — `Payload::Sponsored`.
     GetSponsored { peer: PeerRef },
+    /// Содержимое просмотрено (самоуничтожающиеся вложения).
+    ReadContents { peer: PeerRef, ids: Vec<i32> },
     ViewSponsored { random_id: Vec<u8> },
     ClickSponsored { random_id: Vec<u8> },
     /// `option` пусто — запросить причины; иначе — выбранная.

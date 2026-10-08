@@ -160,9 +160,24 @@ func text(t tl.TextWithEntitiesClass) string {
 func MediaInfo(m tl.MessageMediaClass) *pb.Media {
 	switch v := m.(type) {
 	case *tl.MessageMediaPhoto:
-		return photoMedia(v.Photo)
+		m := photoMedia(v.Photo)
+		if v.TtlSeconds != nil {
+			// Самоуничтожающееся; без фото — срок уже истёк.
+			if m == nil {
+				m = &pb.Media{Kind: pb.Media_PHOTO}
+			}
+			m.TtlSeconds = *v.TtlSeconds
+		}
+		return m
 	case *tl.MessageMediaDocument:
-		return documentMedia(v.Document, v.Video, v.Round, v.Voice)
+		m := documentMedia(v.Document, v.Video, v.Round, v.Voice)
+		if v.TtlSeconds != nil {
+			if m == nil {
+				m = &pb.Media{Kind: pb.Media_VIDEO}
+			}
+			m.TtlSeconds = *v.TtlSeconds
+		}
+		return m
 	case *tl.MessageMediaWebPage:
 		w, ok := v.Webpage.(*tl.WebPage)
 		if !ok {

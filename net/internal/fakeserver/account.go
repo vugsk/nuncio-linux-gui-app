@@ -665,6 +665,10 @@ func (c *conn) accountAnswer(o tlbin.Object) (tlbin.Object, error) {
 			RandomId: []byte{1, 2, 3, 4}, Url: "https://example.com/ad", Title: "Пример рекламы",
 			Message: "Текст рекламного объявления для проверки.", ButtonText: "Открыть", CanReport: true,
 			SponsorInfo: &info, AdditionalInfo: &extra}}, Chats: []tl.ChatClass{}, Users: []tl.UserClass{}}, nil
+	case *tl.MessagesReadMessageContentsRequest:
+		fmt.Printf("прочитано содержимое: %v\n", r.Id)
+		a.pts++
+		return &tl.MessagesAffectedMessages{Pts: a.pts, PtsCount: 1}, nil
 	case *tl.MessagesViewSponsoredMessageRequest:
 		fmt.Println("реклама: просмотр")
 		return boolTrue{}, nil
