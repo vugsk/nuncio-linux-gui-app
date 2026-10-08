@@ -1,0 +1,8 @@
+# Скачанное и собранное makepkg
+/src/
+/pkg/
+/nuncio/
+*.tar.*
+*.asc
+*.ttf
+NotoColorEmoji.LICENSE
