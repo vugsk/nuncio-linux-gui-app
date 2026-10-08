@@ -5,7 +5,8 @@
 # завышена), затем PSS из smaps_rollup. Режимы: software и Skia (настройка
 # gpu в config.toml). Трей и уведомления выключены; окно появляется на
 # рабочем столе примерно на 40 с за прогон. Разверните его на весь экран
-# сразу после появления, чтобы сравнить с П-5 (2560×1440).
+# сразу после появления, чтобы сравнить с П-5 (2560×1440). Окно не закрывать:
+# оно закрывается само после замера.
 #
 #   tests/gpumeasure.sh
 set -euo pipefail
@@ -38,8 +39,10 @@ for mode in software gpu; do
     sleep 2
     mem=$(awk '/^Pss:/ {p=$2} /^Pss_Anon:/ {a=$2} END {printf "PSS %.1f МБ (анонимная %.1f МБ)", p/1024, a/1024}' \
       "/proc/$APP/smaps_rollup" 2>/dev/null || echo "процесс завершился")
-    renderer=$(grep -o "рендерер: .*" "$H/state/nuncio.log" | tail -1)
-    frame=$(grep -o "кадр: .*" "$H/state/nuncio.log" | head -1)
+    renderer=$(grep -o "рендерер: .*" "$H/state/nuncio.log" | tail -1 || true)
+    frame=$(grep -o "кадр: .*" "$H/state/nuncio.log" | head -1 || true)
+    # Окно закрыли раньше замера (закрытие без трея завершает приложение).
+    [ -n "$frame" ] || frame="кадр не замерен: окно закрылось раньше 35 с"
     echo "$mode прогон $run: $renderer; $mem; $frame"
     kill -TERM $APP 2>/dev/null || true
     wait $APP 2>/dev/null || true
