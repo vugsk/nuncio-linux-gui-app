@@ -107,7 +107,13 @@ func main() {
 		texts, att, files := fakeserver.MediaChat()
 		acc.Contacts = append(acc.Contacts, fakeserver.Contact{ID: 103, Name: "Вложения", AccessHash: 14, Unread: -1,
 			Messages: texts, Attach: att})
-		acc.Files = files
+		// Не затирать файлы других чатов (стикеры, фото) — дополнить.
+		if acc.Files == nil {
+			acc.Files = map[int64][]byte{}
+		}
+		for k, v := range files {
+			acc.Files[k] = v
+		}
 		acc.PartDelay = *partDelay
 	}
 	if *photos > 0 {
