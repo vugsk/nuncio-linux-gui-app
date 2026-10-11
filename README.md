@@ -33,6 +33,29 @@
 
 ## Установка (Arch Linux)
 
+### Из репозитория pacman
+
+Готовые подписанные пакеты лежат в выпуске
+[`repo`](https://github.com/vugsk/nuncio-linux-gui-app/releases/tag/repo). Один раз
+доверить ключ подписи и подключить репозиторий:
+
+```
+curl -LO https://github.com/vugsk/nuncio-linux-gui-app/releases/download/repo/nuncio-repo.asc
+sudo pacman-key --add nuncio-repo.asc
+sudo pacman-key --lsign-key <ОТПЕЧАТОК>
+```
+
+В `/etc/pacman.conf`:
+
+```
+[nuncio]
+Server = https://github.com/vugsk/nuncio-linux-gui-app/releases/download/repo
+```
+
+Затем `sudo pacman -Syu nuncio`; дальше обновляется вместе с системой.
+
+### Сборка пакета из исходников
+
 ```
 git clone https://github.com/vugsk/nuncio-linux-gui-app.git
 cd nuncio-linux-gui-app/packaging/arch && makepkg -si
@@ -84,6 +107,7 @@ just build   # tl, core, proto, net, cargo build
 just test    # ядро (и под ASan/UBSan), go test -race, cargo test
 just lint    # clippy, cargo deny, лицензии Go, Skia по SHA-256, PKGBUILD ↔ deps.toml, go vet, staticcheck, clang-tidy
 just e2e     # сквозные проверки под Xvfb против поддельного сервера Telegram
+just repo    # собрать, подписать и выложить пакет в свой репозиторий pacman
 ```
 
 После смены `proto/client.proto` — `just proto` и `just net` перед `cargo build`.

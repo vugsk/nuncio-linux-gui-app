@@ -111,3 +111,9 @@ lint:
 
 clean:
     rm -rf target core/build core/build-asan core/build-fuzz net/tl net/gen
+
+# Свой репозиторий pacman [nuncio] в выпуске GitHub `repo`: makepkg, подпись,
+# repo-add, загрузка через gh (packaging/repo/publish.sh). Ключ — отпечаток в
+# packaging/repo/key.fingerprint или NUNCIO_REPO_KEY.
+repo:
+    packaging/repo/publish.sh
