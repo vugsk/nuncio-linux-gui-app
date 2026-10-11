@@ -12,7 +12,7 @@
 # смене обновлять оба места (tools/check_pkgbuild.sh сверяет).
 
 pkgname=nuncio
-pkgver=0.1.0.r70.gb74dbe3
+pkgver=0.1.0.r71.g1e2d960
 pkgrel=1
 pkgdesc='Unofficial Telegram client for Linux (Rust + Slint, Go network layer)'
 arch=('x86_64')
@@ -22,6 +22,9 @@ depends=(
   'glibc' 'gcc-libs' 'alsa-lib' 'fontconfig' 'freetype2' 'libpng' 'zlib' 'bzip2' 'brotli' 'expat'
   'wayland' 'libxkbcommon' 'libx11' 'libxcursor' 'libxrandr' 'libxi' 'libglvnd'
   'org.freedesktop.secrets'
+  # Хоть один шрифт: без шрифтов раскладка текста Slint (fontique) падает при
+  # запуске — найдено проверкой в чистом контейнере (tests/cleaninstall.sh).
+  'ttf-font'
 )
 makedepends=('git' 'rust' 'go' 'python' 'just' 'protobuf' 'cmake' 'clang' 'nasm' 'perl' 'gnupg' 'pkgconf' 'meson' 'ninja')
 optdepends=(
