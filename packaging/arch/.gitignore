@@ -6,3 +6,5 @@
 *.asc
 *.ttf
 NotoColorEmoji.LICENSE
+*.signature
+*.pubkey

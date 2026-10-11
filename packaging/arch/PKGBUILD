@@ -42,8 +42,11 @@ _protoc_gen_go=v1.36.12
 source=(
   "nuncio::git+file://$(realpath "$startdir/../..")"
   "https://ffmpeg.org/releases/ffmpeg-$_ffmpeg.tar.xz"
-  "https://ffmpeg.org/releases/ffmpeg-$_ffmpeg.tar.xz.asc"
-  "ffmpeg-release-key.asc::https://ffmpeg.org/ffmpeg-devel.asc"
+  # Подпись и ключ FFmpeg — под именами без .asc: иначе makepkg проверяет
+  # подпись сам, по личной связке GPG. Проверяет fetch_deps.py — своей
+  # временной связкой и по закреплённому в deps.toml отпечатку ключа.
+  "ffmpeg-$_ffmpeg.tar.xz.signature::https://ffmpeg.org/releases/ffmpeg-$_ffmpeg.tar.xz.asc"
+  "ffmpeg-release-key.pubkey::https://ffmpeg.org/ffmpeg-devel.asc"
   "https://github.com/openssl/openssl/releases/download/openssl-$_openssl/openssl-$_openssl.tar.gz"
   "NotoColorEmoji.ttf::https://raw.githubusercontent.com/googlefonts/noto-emoji/$_noto/2D/fonts/NotoColorEmoji.ttf"
   "NotoColorEmoji.LICENSE::https://raw.githubusercontent.com/googlefonts/noto-emoji/$_noto/2D/fonts/LICENSE"
@@ -74,10 +77,12 @@ prepare() {
   # сверит по SHA-256 (и подпись FFmpeg по отпечатку ключа) без сети.
   mkdir -p .deps-cache
   local f
-  for f in "ffmpeg-$_ffmpeg.tar.xz" "ffmpeg-$_ffmpeg.tar.xz.asc" ffmpeg-release-key.asc \
-    "openssl-$_openssl.tar.gz" NotoColorEmoji.ttf NotoColorEmoji.LICENSE "thorvg-$_thorvg.tar.gz"; do
+  for f in "ffmpeg-$_ffmpeg.tar.xz" "openssl-$_openssl.tar.gz" NotoColorEmoji.ttf NotoColorEmoji.LICENSE \
+    "thorvg-$_thorvg.tar.gz"; do
     cp -L "$srcdir/$f" .deps-cache/
   done
+  cp -L "$srcdir/ffmpeg-$_ffmpeg.tar.xz.signature" ".deps-cache/ffmpeg-$_ffmpeg.tar.xz.asc"
+  cp -L "$srcdir/ffmpeg-release-key.pubkey" .deps-cache/ffmpeg-release-key.asc
   export RUSTUP_TOOLCHAIN=stable CARGO_HOME="$srcdir/cargo" GOPATH="$srcdir/go" GOFLAGS=-modcacherw
   cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
   (cd net && go mod download)
