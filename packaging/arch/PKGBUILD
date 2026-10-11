@@ -100,6 +100,12 @@ build() {
   export CARGO_TARGET_DIR=target
   # Skia — из скачанного и сверенного makepkg архива, не из сети.
   export SKIA_BINARIES_URL="file://$srcdir/$_skia"
+  # Пути каталога сборки не должны попадать в бинарник (makepkg предупреждал
+  # «ссылка на $srcdir»; так же и воспроизводимость): Rust, Go, C и C++.
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$srcdir=/build"
+  export GOFLAGS="$GOFLAGS -trimpath"
+  export CFLAGS="${CFLAGS:-} -ffile-prefix-map=$srcdir=/build"
+  export CXXFLAGS="${CXXFLAGS:-} -ffile-prefix-map=$srcdir=/build"
   python3 third_party/fetch_deps.py openssl ffmpeg noto-emoji thorvg
   just tl core proto net
   cargo build --frozen --release -p app
