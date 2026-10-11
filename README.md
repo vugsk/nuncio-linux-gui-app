@@ -34,7 +34,7 @@
 ## Установка (Arch Linux)
 
 ```
-git clone <адрес этого репозитория> nuncio-linux-gui-app
+git clone https://github.com/vugsk/nuncio-linux-gui-app.git
 cd nuncio-linux-gui-app/packaging/arch && makepkg -si
 ```
 

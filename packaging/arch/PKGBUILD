@@ -12,11 +12,11 @@
 # смене обновлять оба места (tools/check_pkgbuild.sh сверяет).
 
 pkgname=nuncio
-pkgver=0.1.0.r71.g1e2d960
+pkgver=0.1.0.r74.g0dc1197
 pkgrel=1
 pkgdesc='Unofficial Telegram client for Linux (Rust + Slint, Go network layer)'
 arch=('x86_64')
-url='https://core.telegram.org/api'
+url='https://github.com/vugsk/nuncio-linux-gui-app'
 license=('GPL-3.0-or-later')
 depends=(
   'glibc' 'gcc-libs' 'alsa-lib' 'fontconfig' 'freetype2' 'libpng' 'zlib' 'bzip2' 'brotli' 'expat'
