@@ -42,7 +42,7 @@
 ```
 curl -LO https://github.com/vugsk/nuncio-linux-gui-app/releases/download/repo/nuncio-repo.asc
 sudo pacman-key --add nuncio-repo.asc
-sudo pacman-key --lsign-key <ОТПЕЧАТОК>
+sudo pacman-key --lsign-key F1B9F8FFB1AC33048203D6C0D5FC95562304F56D
 ```
 
 В `/etc/pacman.conf`:
