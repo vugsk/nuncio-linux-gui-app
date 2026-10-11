@@ -12,11 +12,30 @@
 # Артефакты C++ и Go
 /core/build/
 /core/build-*/
+/core/.cache/
+compile_commands.json
 *.o
 *.a
 *.so
 /tools/tlgen/tlgen
 
-# IDE
+# Собранные пакеты (выходы makepkg — ещё и в packaging/arch/.gitignore)
+*.pkg.tar.*
+
+# Ключи API и прочие локальные секреты — никогда в репозиторий
+*.env
+/code.txt
+/password.txt
+
+# IDE и редакторы
 .idea/
 *.iml
+.vscode/
+.zed/
+*.swp
+*~
+.claude/
+
+# Мусор окружения
+.DS_Store
+.directory
