@@ -31,7 +31,9 @@ find_package(Threads REQUIRED)
 target_link_libraries(openssl_crypto INTERFACE Threads::Threads ${CMAKE_DL_LIBS})
 
 add_compile_options(-Wall -Wextra -Werror -fstack-protector-strong)
-if(NOT TG_SANITIZE AND NOT TG_FUZZ)
+# Свой уровень — только если сборка не задала его сама (makepkg Arch передаёт
+# -Wp,-D_FORTIFY_SOURCE=3 в CXXFLAGS: повторное определение при -Werror — ошибка).
+if(NOT TG_SANITIZE AND NOT TG_FUZZ AND NOT CMAKE_CXX_FLAGS MATCHES "_FORTIFY_SOURCE")
     add_compile_definitions(_FORTIFY_SOURCE=2)
 endif()
 if(TG_SANITIZE)
